@@ -14,7 +14,7 @@ function createFloatingWindow() {
       <horizontal>
         <button id="openFile" text="选轴" w="55dp"/>
         <button id="calibrate" text="校准" w="55dp"/>
-        <button id="close" text="关闭" w="55dp"/>
+        <button id="exitBtn" text="关闭" w="55dp"/>
       </horizontal>
       <text id="warning" text="" textSize="12sp" textColor="#aa2222"/>
     </vertical>

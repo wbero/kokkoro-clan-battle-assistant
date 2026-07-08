@@ -3,7 +3,7 @@
 auto.waitFor();
 
 // AutoJS6 require 需要绝对路径
-var SRC = files.path(engines.myEngine().cwd() + "/src");
+var SRC = files.path(engines.myEngine().cwd());
 
 var models = require(SRC + "/models.js");
 var configParser = require(SRC + "/config_parser.js");
@@ -21,7 +21,7 @@ var calibratorModule = require(SRC + "/calibrator.js");
 var WORK_DIR = "/sdcard/Download/可可萝自动会战助手/";
 var CONFIG_FILE = WORK_DIR + "可可萝自动会战助手.txt";
 var TEMPLATE_DIR = WORK_DIR + "templates";
-var LOOP_INTERVAL_MS = 50;  // 20fps，匹配 120fps 屏幕
+var LOOP_INTERVAL_MS = 200; // 5fps，模拟器内存有限
 
 // ---- 悬浮窗 ----
 var window = uiModule.createFloatingWindow();
@@ -383,7 +383,7 @@ window.calibrate.click(function () {
   // 校准窗口独立运行，关闭按钮会退出
 });
 
-window.close.click(function () {
+window.exitBtn.click(function () {
   stopAutomation();
   window.close();
   toast("助手已关闭");
