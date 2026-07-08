@@ -1,6 +1,6 @@
 "use strict";
 
-var SRC = files.path(engines.myEngine().cwd() + "/src");
+var SRC = files.path(engines.myEngine().cwd());
 var models = require(SRC + "/models.js");
 
 /**
