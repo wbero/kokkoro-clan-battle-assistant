@@ -1,0 +1,12 @@
+dist/*.apk
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+node_modules/
+
+# PC 测试素材（用户自己的截图和模板）
+test/screenshot.png
+test/templates/
+test/debug_*
+test/annotated*
