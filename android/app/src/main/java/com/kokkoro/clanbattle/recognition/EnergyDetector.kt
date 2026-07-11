@@ -49,7 +49,7 @@ class EnergyDetector(
     }
 
     fun detect(image: PixelImage): EnergyDetectionResult {
-        val ratios = regions.mapValues { (_, region) -> blueRatio(image, region) }
+        val ratios = regions.mapValues { (_, region) -> fillExtentRatio(image, region) }
         val previous = previousRatios
         val characters = ratios.mapValues { (role, ratio) ->
             val previousRatio = previous?.get(role)
@@ -83,19 +83,34 @@ class EnergyDetector(
         previousRatios = null
     }
 
-    private fun blueRatio(image: PixelImage, region: EnergyRegion): Float {
+    private fun fillExtentRatio(image: PixelImage, region: EnergyRegion): Float {
         require(region.x + region.width <= image.width)
         require(region.y + region.height <= image.height)
-        var bluePixels = 0
-        for (y in region.y until region.y + region.height) {
-            for (x in region.x until region.x + region.width) {
-                if (isBluePixel(image[x, y])) bluePixels++
+
+        val blueColumns = BooleanArray(region.width) { column ->
+            var bluePixels = 0
+            for (y in region.y until region.y + region.height) {
+                if (isBluePixel(image[region.x + column, y])) bluePixels++
             }
+            bluePixels.toFloat() / region.height >= MIN_BLUE_COLUMN_RATIO
         }
-        return bluePixels.toFloat() / (region.width * region.height)
+        val smoothedColumns = BooleanArray(region.width) { column ->
+            val start = maxOf(0, column - SMOOTHING_RADIUS)
+            val end = minOf(region.width - 1, column + SMOOTHING_RADIUS)
+            var blueColumnsInWindow = 0
+            for (candidate in start..end) {
+                if (blueColumns[candidate]) blueColumnsInWindow++
+            }
+            blueColumnsInWindow * 2 > end - start + 1
+        }
+        val lastFilledColumn = smoothedColumns.indexOfLast { it }
+        return if (lastFilledColumn < 0) 0f else (lastFilledColumn + 1).toFloat() / region.width
     }
 
     companion object {
+        private const val MIN_BLUE_COLUMN_RATIO = 0.2f
+        private const val SMOOTHING_RADIUS = 2
+
         fun isBluePixel(color: Int): Boolean {
             val red = color ushr 16 and 0xff
             val green = color ushr 8 and 0xff
