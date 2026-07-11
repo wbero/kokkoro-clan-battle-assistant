@@ -36,15 +36,17 @@ class ClockRecognizerDiagnosticsTest {
             trace.digits.map(DigitRecognitionTrace::slot)
         )
         trace.digits.forEach { digit ->
-            assertEquals((0..9).toSet(), digit.scores.keys)
-            assertEquals(10, digit.scores.size)
-            assertTrue(digit.scores.values.all(Double::isFinite))
+            assertEquals(ScoreKind.STRUCTURAL_IOU, digit.scoreKind)
+            assertEquals((0..9).toSet(), digit.decisionScores.keys)
+            assertEquals((0..9).toSet(), digit.nccScores.keys)
+            assertTrue(digit.decisionScores.values.all(Double::isFinite))
+            assertTrue(digit.nccScores.values.all(Double::isFinite))
             assertTrue(digit.rawMargin.isFinite())
             assertTrue(digit.chosenScore.isFinite())
             assertTrue(digit.decisionMargin.isFinite())
             assertTrue(digit.chosen in digit.allowedRange)
 
-            val rawRanking = digit.scores.entries.sortedByDescending(Map.Entry<Int, Double>::value)
+            val rawRanking = digit.decisionScores.entries.sortedByDescending(Map.Entry<Int, Double>::value)
             assertEquals(rawRanking[0].key, digit.rawTop1)
             assertEquals(rawRanking[1].key, digit.rawTop2)
             assertEquals(rawRanking[0].value - rawRanking[1].value, digit.rawMargin, 0.0)
@@ -75,24 +77,22 @@ class ClockRecognizerDiagnosticsTest {
 
     @Test
     fun `scoring work is limited to allowed ranges unless diagnostics are enabled`() {
-        assertEquals(listOf(2, 4, 10), scorerCallCounts(includeDiagnostics = false))
-        assertEquals(listOf(10, 10, 10), scorerCallCounts(includeDiagnostics = true))
+        assertEquals(ScoreCalls(listOf(2, 4, 10), emptyList()), scorerCallCounts(includeDiagnostics = false))
+        assertEquals(ScoreCalls(listOf(10, 10, 10), listOf(10, 10, 10)), scorerCallCounts(includeDiagnostics = true))
     }
 
     @Test
     fun `raw ranking can differ from allowed range decision`() {
-        val digitByTemplate = IdentityHashMap<PixelImage, Int>().apply {
-            templates.digits.forEach { (digit, template) -> put(template, digit) }
-        }
         val scores = mapOf(
             9 to 0.90,
             8 to 0.80,
             1 to 0.60,
             0 to 0.20
         )
-        val controlledRecognizer = ClockRecognizer(templates) { _, template ->
-            scores[digitByTemplate.getValue(template)] ?: 0.0
-        }
+        val controlledRecognizer = ClockRecognizer(
+            templates,
+            decisionScorer = { _, digit -> scores[digit] ?: 0.0 }
+        )
 
         val result = controlledRecognizer.recognize(
             loadImage("clock_top2/clock_1_19.png"),
@@ -112,10 +112,10 @@ class ClockRecognizerDiagnosticsTest {
     @Test
     fun `diagnostic crops are snapshots of scorer input`() {
         var capturedMinuteCrop: PixelImage? = null
-        val snapshotRecognizer = ClockRecognizer(templates) { crop, _ ->
+        val snapshotRecognizer = ClockRecognizer(templates, nccScorer = { crop, _ ->
             if (capturedMinuteCrop == null) capturedMinuteCrop = crop
             0.5
-        }
+        })
         val result = snapshotRecognizer.recognize(
             loadImage("clock_top2/clock_0_39.png"),
             minConfidence = 0.0,
@@ -129,15 +129,20 @@ class ClockRecognizerDiagnosticsTest {
         assertTrue(expectedPixels.contentEquals(minuteCrop.pixels))
     }
 
-    private fun scorerCallCounts(includeDiagnostics: Boolean): List<Int> {
-        val digitByTemplate = IdentityHashMap<PixelImage, Int>().apply {
-            templates.digits.forEach { (digit, template) -> put(template, digit) }
-        }
-        val callsByCrop = IdentityHashMap<PixelImage, Int>()
-        val countingRecognizer = ClockRecognizer(templates) { crop, template ->
-            callsByCrop[crop] = (callsByCrop[crop] ?: 0) + 1
-            if (digitByTemplate.getValue(template) == 1) 1.0 else 0.0
-        }
+    private fun scorerCallCounts(includeDiagnostics: Boolean): ScoreCalls {
+        val decisionCallsByCrop = IdentityHashMap<BinaryImage, Int>()
+        val nccCallsByCrop = IdentityHashMap<PixelImage, Int>()
+        val countingRecognizer = ClockRecognizer(
+            templates,
+            decisionScorer = { crop, digit ->
+                decisionCallsByCrop[crop] = (decisionCallsByCrop[crop] ?: 0) + 1
+                if (digit == 1) 1.0 else 0.0
+            },
+            nccScorer = { crop, _ ->
+                nccCallsByCrop[crop] = (nccCallsByCrop[crop] ?: 0) + 1
+                0.0
+            }
+        )
 
         countingRecognizer.recognize(
             loadImage("clock_top2/clock_1_19.png"),
@@ -145,8 +150,10 @@ class ClockRecognizerDiagnosticsTest {
             includeDiagnostics = includeDiagnostics
         )
 
-        return callsByCrop.values.sorted()
+        return ScoreCalls(decisionCallsByCrop.values.sorted(), nccCallsByCrop.values.sorted())
     }
+
+    private data class ScoreCalls(val decision: List<Int>, val ncc: List<Int>)
 
     private fun loadImage(name: String): PixelImage {
         val reader = PngReaderInt(requireNotNull(javaClass.classLoader?.getResourceAsStream(name)))

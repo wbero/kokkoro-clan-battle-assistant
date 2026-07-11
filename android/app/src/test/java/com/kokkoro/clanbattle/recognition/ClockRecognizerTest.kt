@@ -15,6 +15,20 @@ class ClockRecognizerTest {
     private val recognizer = ClockRecognizer(templates)
 
     @Test
+    fun `structural production scoring recognizes clock fixtures at default confidence`() {
+        mapOf(
+            "clock_1_19.png" to 79,
+            "clock_0_39.png" to 39,
+            "clock_0_09.png" to 9,
+            "clock_0_06.png" to 6
+        ).forEach { (name, expected) ->
+            val result = recognizer.recognize(loadImage("clock_top2/$name"))
+            assertTrue("$name: $result", result.ok)
+            assertEquals("$name", expected, result.timeSeconds)
+        }
+    }
+
+    @Test
     fun `top two combinations contain correct time for ambiguous digits`() {
         val cases = listOf(
             "clock_1_19.png" to 79,
@@ -33,17 +47,13 @@ class ClockRecognizerTest {
 
     @Test
     fun `third ranked ones digit remains available for sequential recovery`() {
-        val digitByTemplate = IdentityHashMap<PixelImage, Int>().apply {
-            templates.digits.forEach { (digit, template) -> put(template, digit) }
-        }
-        val slotByCrop = IdentityHashMap<PixelImage, Int>()
+        val slotByCrop = IdentityHashMap<BinaryImage, Int>()
         var nextSlot = 0
-        val controlledRecognizer = ClockRecognizer(templates) { crop, template ->
+        val controlledRecognizer = ClockRecognizer(templates, decisionScorer = { crop, digit ->
             val slot = slotByCrop[crop] ?: nextSlot.also {
                 slotByCrop[crop] = it
                 nextSlot += 1
             }
-            val digit = digitByTemplate.getValue(template)
             when (slot) {
                 0 -> if (digit == 0) 0.95 else 0.10
                 1 -> when (digit) {
@@ -61,7 +71,7 @@ class ClockRecognizerTest {
                     else -> 0.10 - digit * 0.001
                 }
             }
-        }
+        })
         val recognition = controlledRecognizer.recognize(
             loadImage("clock_top2/clock_0_06.png"),
             minConfidence = 0.0
@@ -92,17 +102,13 @@ class ClockRecognizerTest {
 
     @Test
     fun `candidate combinations exclude clocks above one minute thirty`() {
-        val digitByTemplate = IdentityHashMap<PixelImage, Int>().apply {
-            templates.digits.forEach { (digit, template) -> put(template, digit) }
-        }
-        val slotByCrop = IdentityHashMap<PixelImage, Int>()
+        val slotByCrop = IdentityHashMap<BinaryImage, Int>()
         var nextSlot = 0
-        val controlledRecognizer = ClockRecognizer(templates) { crop, template ->
+        val controlledRecognizer = ClockRecognizer(templates, decisionScorer = { crop, digit ->
             val slot = slotByCrop[crop] ?: nextSlot.also {
                 slotByCrop[crop] = it
                 nextSlot += 1
             }
-            val digit = digitByTemplate.getValue(template)
             when (slot) {
                 0 -> if (digit == 1) 0.95 else 0.10
                 1 -> when (digit) {
@@ -118,7 +124,7 @@ class ClockRecognizerTest {
                     else -> 0.10 - digit * 0.001
                 }
             }
-        }
+        })
 
         val recognition = controlledRecognizer.recognize(
             loadImage("clock_top2/clock_1_19.png"),

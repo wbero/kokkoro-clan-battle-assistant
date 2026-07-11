@@ -22,7 +22,7 @@ python tools\clock_debug_baseline.py `
 
 - `summary.json`：session、帧、丢弃、Gate、Filter、识别原因及 margin 汇总。
 - `raw_top1_confusion.csv`：行是真值/弱标签，列是 `rawTop1`，同时输出 weak+manual 与 manual-only 两套矩阵。
-- `score_means.csv`：按标签数字统计 `s0..s9` 平均分。
+- `score_means.csv`：按标签数字统计生产决策分数的平均值。新版诊断读取 `decision0..decision9`（结构 IoU），并继续兼容旧版 `s0..s9`（NCC）导出。
 - `margin_stats.csv`：整体和各标签数字的 margin 分布。
 - `transition_intervals.csv`：自动发现的 `n+1 → n-1` 跳秒区间。
 - `review_manifest.csv`：过渡区间及重点数字 `0/3/5/6/8/9` 的低 margin、错配样本。
