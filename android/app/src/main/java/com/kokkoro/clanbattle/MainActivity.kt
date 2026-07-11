@@ -137,7 +137,7 @@ class MainActivity : Activity() {
         content.addView(dryRunCheckBox)
 
         if (BuildConfig.DEBUG) content.addView(CheckBox(this).apply {
-            text = "记录时钟诊断"
+            text = "记录识别诊断（时钟＋能量）"
             isChecked = AppPreferences.clockDebugEnabled(this@MainActivity)
             setOnCheckedChangeListener { _, checked -> AppPreferences.setClockDebugEnabled(this@MainActivity, checked) }
         })

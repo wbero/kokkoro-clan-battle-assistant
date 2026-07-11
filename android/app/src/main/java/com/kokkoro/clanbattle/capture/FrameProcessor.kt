@@ -9,6 +9,8 @@ import com.kokkoro.clanbattle.axis.AxisParser
 import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.recognition.AndroidTemplateLoader
 import com.kokkoro.clanbattle.recognition.ClockRecognizer
+import com.kokkoro.clanbattle.recognition.EnergyDetector
+import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
 import com.kokkoro.clanbattle.recognition.RecognitionFilter
 import com.kokkoro.clanbattle.recognition.RecognitionResult
 import com.kokkoro.clanbattle.scheduler.GameState
@@ -31,6 +33,8 @@ class FrameProcessor(
     private val recognizer = ClockRecognizer(AndroidTemplateLoader.load(appContext))
     private val battleTemplates = BattleTemplateLoader.load(appContext)
     private val filter = RecognitionFilter(minConfidence = 0.8, minAlternativeScore = 0.55, maxFailedReads = 999)
+    private var energyDetector: EnergyDetector? = null
+    private var energyHudSize: Pair<Int, Int>? = null
     private val axis: AxisDocument = runCatching { AxisParser.parse(AppPreferences.axisText(appContext)) }
         .getOrElse { AxisDocument(com.kokkoro.clanbattle.axis.AxisType.SEQUENCE, 100, emptyMap(), emptyList()) }
     private val scheduler = Scheduler(axis.events)
@@ -43,6 +47,7 @@ class FrameProcessor(
 
     fun prepareNewBattle() {
         filter.reset()
+        energyDetector?.reset()
         scheduler.reset()
         sessionGate.prepare()
         val wasDebugEnabled = debugEnabled
@@ -79,8 +84,9 @@ class FrameProcessor(
         val region = ImageRoiExtractor.scaleReferenceRegion(image.width, image.height)
         val roi = ImageRoiExtractor.extract(image, region)
         val recognition = recognizer.recognize(roi, includeDiagnostics = debugEnabled)
+        val energy = detectEnergy(image)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
-            if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null)
+            if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null, energy)
             val elapsed = SystemClock.elapsedRealtime() - start
             statusCallback(
                 FrameStatus(
@@ -95,7 +101,7 @@ class FrameProcessor(
         }
 
         val filtered = filter.update(recognition, SystemClock.elapsedRealtime())
-        if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, filtered)
+        if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, filtered, energy)
         val usable = filtered.accepted || filtered.reason == "same-time"
         val sessionReady = usable && sessionGate.onAccepted(filtered.timeSeconds)
 
@@ -158,6 +164,20 @@ class FrameProcessor(
         )
         return FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, scaled), template)
     }
+
+    private fun detectEnergy(image: Image): EnergyDetectionResult? = runCatching {
+        val region = BattleReferenceRegions.ENERGY_HUD
+        val scaled = ImageRoiExtractor.scaleRegion(
+            image.width, image.height, region.x, region.y, region.width, region.height
+        )
+        val hud = ImageRoiExtractor.extract(image, scaled)
+        val size = hud.width to hud.height
+        if (energyDetector == null || energyHudSize != size) {
+            energyDetector = EnergyDetector(BattleReferenceRegions.energyRegionsForHud(hud.width, hud.height))
+            energyHudSize = size
+        }
+        energyDetector!!.detect(hud)
+    }.getOrNull()
 
     private fun publishWaitingStatus(label: String, score: Double, start: Long, image: Image) {
         val elapsed = SystemClock.elapsedRealtime() - start

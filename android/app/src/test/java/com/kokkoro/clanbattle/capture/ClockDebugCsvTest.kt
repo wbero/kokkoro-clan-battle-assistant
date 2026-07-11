@@ -4,6 +4,9 @@ import com.kokkoro.clanbattle.recognition.DigitRecognitionTrace
 import com.kokkoro.clanbattle.recognition.DigitSlot
 import com.kokkoro.clanbattle.recognition.PixelImage
 import com.kokkoro.clanbattle.recognition.ScoreKind
+import com.kokkoro.clanbattle.recognition.CharacterEnergyState
+import com.kokkoro.clanbattle.recognition.CharacterRole
+import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -11,6 +14,25 @@ import org.junit.Test
 import java.io.StringWriter
 
 class ClockDebugCsvTest {
+    @Test fun `energy row exactly matches stable per-role column contract`() {
+        val result = EnergyDetectionResult(
+            characters = CharacterRole.entries.associateWith { role ->
+                CharacterEnergyState(role.ordinal / 10f, role == CharacterRole.ROLE_1, role.ordinal / 100f, role == CharacterRole.ROLE_3)
+            },
+            energyDelta = 0.25f,
+            triggeredRoles = setOf(CharacterRole.ROLE_3)
+        )
+        val columns = ClockDebugCsv.ENERGY_HEADER.split(',')
+        val values = ClockDebugCsv.energyValues(12, 34, result)
+        val row = columns.zip(values.map(Any?::toString)).toMap()
+
+        assertEquals(columns.size, values.size)
+        assertEquals("0.25", row.getValue("energyDelta"))
+        assertEquals("ROLE_3", row.getValue("triggeredRoles"))
+        assertEquals("0.4", row.getValue("role5Ratio"))
+        assertEquals("true", row.getValue("role1Full"))
+        assertEquals("true", row.getValue("role3Triggered"))
+    }
     @Test fun `frames header and values are escaped`() {
         val out = StringWriter()
         val csv = ClockDebugCsv(out, ClockDebugCsv.FRAME_HEADER)
