@@ -13,7 +13,7 @@ import com.kokkoro.clanbattle.recognition.EnergyDetector
 import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
 import com.kokkoro.clanbattle.recognition.RecognitionFilter
 import com.kokkoro.clanbattle.recognition.RecognitionResult
-import com.kokkoro.clanbattle.scheduler.GameState
+import com.kokkoro.clanbattle.scheduler.GameStateDetector
 import com.kokkoro.clanbattle.scheduler.Scheduler
 import java.util.Locale
 
@@ -38,6 +38,7 @@ class FrameProcessor(
     private val axis: AxisDocument = runCatching { AxisParser.parse(AppPreferences.axisText(appContext)) }
         .getOrElse { AxisDocument(com.kokkoro.clanbattle.axis.AxisType.SEQUENCE, 100, emptyMap(), emptyList()) }
     private val scheduler = Scheduler(axis.events)
+    private val gameStateDetector = GameStateDetector()
     private val executor = ActionExecutor(appContext)
     private val sessionGate = BattleSessionGate()
     private var recorder: ClockDebugRecorder? = null
@@ -48,6 +49,7 @@ class FrameProcessor(
     fun prepareNewBattle() {
         filter.reset()
         energyDetector?.reset()
+        gameStateDetector.reset()
         scheduler.reset()
         sessionGate.prepare()
         val wasDebugEnabled = debugEnabled
@@ -85,6 +87,7 @@ class FrameProcessor(
         val roi = ImageRoiExtractor.extract(image, region)
         val recognition = recognizer.recognize(roi, includeDiagnostics = debugEnabled)
         val energy = detectEnergy(image)
+        gameStateDetector.observeEnergy(energy)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
             if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null, energy)
             val elapsed = SystemClock.elapsedRealtime() - start
@@ -106,7 +109,8 @@ class FrameProcessor(
         val sessionReady = usable && sessionGate.onAccepted(filtered.timeSeconds)
 
         if (sessionReady) {
-            val schedule = scheduler.update(GameState.RUNNING, filtered.timeSeconds)
+            val gameState = gameStateDetector.update(filtered.timeSeconds, null)
+            val schedule = scheduler.update(gameState, filtered.timeSeconds)
             executor.execute(schedule.events, image.width, image.height, axis.clickIntervalMs)
         }
 
