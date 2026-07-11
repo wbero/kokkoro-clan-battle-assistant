@@ -1,0 +1,9 @@
+.gradle/
+local.properties
+**/build/
+*.iml
+
+# Local device diagnostics and pulled clock-debug sessions.
+/clock-debug-pull-*/
+/*.png
+/*.xml
