@@ -1,6 +1,8 @@
 dist/*.apk
 *.log
 *.tmp
+__pycache__/
+*.py[cod]
 .DS_Store
 Thumbs.db
 node_modules/
@@ -12,6 +14,8 @@ archive/
 android/.gradle/
 android/**/build/
 android/local.properties
+android/clock-debug-pull-*/
+android/clock-debug-baseline-output/
 .idea/
 *.iml
 
