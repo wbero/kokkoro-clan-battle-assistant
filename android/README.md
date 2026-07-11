@@ -42,6 +42,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 Debug 构建中可在主界面勾选“记录时钟诊断”（默认关闭）。开启后，应用会把逐帧识别结果、逐位打分和限速后的诊断 PNG 写入应用外部文件目录的 `clock-debug` 子目录。每次点击“准备新战斗”会开始一个新的时间戳 session。
 
+生产识别以“自适应二值化 → 前景包围盒归一化 → 结构 IoU”作为逐位决策分数；亮度 NCC 不再参与选数，只在诊断开启时作为对照数据计算。`digits.csv` 同时包含 `decision0..decision9`（结构 IoU）、`ncc0..ncc9` 和 `scoreKind`，`rawTop`、`chosen`、`margin` 均基于结构决策分数。
+
 连接设备后，可在 PowerShell 中导出全部诊断文件：
 
 ```powershell

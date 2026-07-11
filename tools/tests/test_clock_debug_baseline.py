@@ -13,12 +13,30 @@ from tools.clock_debug_baseline import (
     digits_for_time,
     summarize_margins,
     json_safe,
+    read_digits,
     read_manual_labels,
     weak_times_from_frames,
 )
 
 
 class ClockDebugBaselineTest(unittest.TestCase):
+    def test_read_digits_prefers_structural_decision_scores_in_new_schema(self):
+        with tempfile.TemporaryDirectory() as temp:
+            session = Path(temp)
+            decision = ",".join(str(i / 10) for i in range(10))
+            ncc = ",".join(str(1 - i / 10) for i in range(10))
+            (session / "digits.csv").write_text(
+                "frameId,wallMs,slot,scoreKind,rawTop1,rawTop2,rawMargin,chosen,chosenScore,decisionMargin,decisionRule,"
+                + ",".join(f"decision{i}" for i in range(10)) + ","
+                + ",".join(f"ncc{i}" for i in range(10)) + ",cropFile\n"
+                + f"1,1000,SECOND_ONES,STRUCTURAL_IOU,9,8,0.1,9,0.9,0.1,test,{decision},{ncc},crop.png\n",
+                encoding="utf-8",
+            )
+
+            row = read_digits(session)[0]
+
+            self.assertEqual(tuple(i / 10 for i in range(10)), row.scores)
+
     def test_digits_for_time_maps_clock_slots(self):
         self.assertEqual(
             {"MINUTE": 1, "SECOND_TENS": 0, "SECOND_ONES": 6},

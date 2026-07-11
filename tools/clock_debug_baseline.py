@@ -117,6 +117,7 @@ def read_digits(session_dir: Path) -> list[DigitRow]:
     rows: list[DigitRow] = []
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         for row in csv.DictReader(handle):
+            score_prefix = "decision" if "decision0" in row else "s"
             rows.append(
                 DigitRow(
                     session=session_dir.name,
@@ -126,7 +127,7 @@ def read_digits(session_dir: Path) -> list[DigitRow]:
                     raw_top1=int(row["rawTop1"]),
                     chosen=int(row["chosen"]),
                     raw_margin=float(row["rawMargin"]),
-                    scores=tuple(float(row[f"s{i}"]) for i in range(10)),
+                    scores=tuple(float(row[f"{score_prefix}{i}"]) for i in range(10)),
                     crop_file=row.get("cropFile", ""),
                 )
             )

@@ -10,7 +10,9 @@ data class DigitRecognitionTrace(
     val slot: DigitSlot,
     val crop: PixelImage,
     val allowedRange: IntRange,
-    val scores: Map<Int, Double>,
+    val decisionScores: Map<Int, Double>,
+    val nccScores: Map<Int, Double>,
+    val scoreKind: ScoreKind,
     val rawTop1: Int,
     val rawTop2: Int,
     val rawMargin: Double,
@@ -18,7 +20,10 @@ data class DigitRecognitionTrace(
     val chosenScore: Double,
     val decisionMargin: Double,
     val decisionRule: String
-)
+) {
+    @Deprecated("Use decisionScores")
+    val scores: Map<Int, Double> get() = decisionScores
+}
 
 data class ClockRecognitionTrace(
     val groups: List<IntRange>,

@@ -8,9 +8,11 @@ import java.security.MessageDigest
 class StructuralBenchmarkTest {
     private data class Sample(val file: String, val truth: Int, val pixelHash: String)
 
-    private val templates = (0..9).associateWith { digit ->
-        DigitNormalizer.normalize(loadPngResource("templates/$digit.png"))
-    }
+    private val digitTemplates = DigitTemplates((0..9).associateWith { digit ->
+        loadPngResource("templates/$digit.png")
+    })
+    private val matcher = DigitMatcher(digitTemplates)
+    private val templates = digitTemplates.digits.mapValues { (_, image) -> DigitNormalizer.normalize(image) }
 
     @Test
     fun `normalized structural matching classifies all 96 reviewed frame rows`() {
@@ -18,11 +20,10 @@ class StructuralBenchmarkTest {
         val errors = mutableListOf<String>()
 
         samples.forEach { sample ->
-            val normalized = DigitNormalizer.normalize(loadPngResource("clock_benchmark/${sample.file}"))
-            val scores = templates.mapValues { (_, template) -> StructuralMatcher.iou(normalized, template) }
-            val predicted = scores.maxByOrNull { it.value }!!.key
+            val result = matcher.match(loadPngResource("clock_benchmark/${sample.file}"), 0..9, false)
+            val predicted = result.digit
             if (predicted != sample.truth) {
-                errors += "${sample.file}: truth=${sample.truth}, predicted=$predicted, scores=$scores"
+                errors += "${sample.file}: truth=${sample.truth}, predicted=$predicted"
             }
         }
 
@@ -36,11 +37,10 @@ class StructuralBenchmarkTest {
         val errors = mutableListOf<String>()
 
         samples.forEach { sample ->
-            val normalized = DigitNormalizer.normalize(loadPngResource("clock_benchmark/${sample.file}"))
-            val scores = templates.mapValues { (_, template) -> StructuralMatcher.iou(normalized, template) }
-            val predicted = scores.maxByOrNull { it.value }!!.key
+            val result = matcher.match(loadPngResource("clock_benchmark/${sample.file}"), 0..9, false)
+            val predicted = result.digit
             if (predicted != sample.truth) {
-                errors += "${sample.file}: truth=${sample.truth}, predicted=$predicted, scores=$scores"
+                errors += "${sample.file}: truth=${sample.truth}, predicted=$predicted"
             }
         }
 
@@ -70,6 +70,23 @@ class StructuralBenchmarkTest {
         assertEquals(13, marginsForThree.size)
         assertTrue("6 vs max(0,5) mean margin=${marginsForSix.average()}", marginsForSix.average() > 0.15)
         assertTrue("3 vs 8 mean margin=${marginsForThree.average()}", marginsForThree.average() > 0.15)
+    }
+
+    @Test
+    fun `production matcher separates six from zero and five and three from eight`() {
+        pixelDistinctSamples().forEach { sample ->
+            if (sample.truth !in setOf(3, 6)) return@forEach
+            val result = matcher.match(
+                loadPngResource("clock_benchmark/${sample.file}"),
+                0..9,
+                includeDiagnostics = true
+            )
+            val scores = requireNotNull(result.decisionScores)
+            when (sample.truth) {
+                6 -> assertTrue("${sample.file}: $scores", scores.getValue(6) > maxOf(scores.getValue(0), scores.getValue(5)))
+                3 -> assertTrue("${sample.file}: $scores", scores.getValue(3) > scores.getValue(8))
+            }
+        }
     }
 
     private fun pixelDistinctSamples(): List<Sample> =

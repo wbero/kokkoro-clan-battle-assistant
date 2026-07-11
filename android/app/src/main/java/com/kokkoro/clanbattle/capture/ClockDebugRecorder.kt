@@ -48,9 +48,7 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
                 val cropName = if (saveFrame) {
                     cropNames[index].also { savePng(digit.crop, File(current.dir, it)) }
                 } else ""
-                current.digits.write(listOf(frameId, wallMs, digit.slot, digit.rawTop1, digit.rawTop2,
-                    digit.rawMargin, digit.chosen, digit.chosenScore, digit.decisionMargin, digit.decisionRule) +
-                    (0..9).map { digit.scores[it] } + cropName)
+                current.digits.write(ClockDebugCsv.digitValues(frameId, wallMs, digit, cropName))
             }
         } }
         if (!accepted) dropped.incrementAndGet()
