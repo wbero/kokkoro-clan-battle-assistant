@@ -5,6 +5,21 @@ dist/*.apk
 Thumbs.db
 node_modules/
 
+# Local legacy archive and generated media are intentionally kept outside Git.
+archive/
+
+# Android/Gradle generated files and local machine configuration.
+android/.gradle/
+android/**/build/
+android/local.properties
+.idea/
+*.iml
+
+# Signing material must never be committed.
+*.jks
+*.keystore
+keystore.properties
+
 # PC 测试素材（用户自己的截图和模板）
 test/screenshot.png
 test/templates/
