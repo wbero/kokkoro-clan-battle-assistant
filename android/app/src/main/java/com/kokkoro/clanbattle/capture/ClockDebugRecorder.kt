@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
 import com.kokkoro.clanbattle.recognition.FilterResult
+import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
 import com.kokkoro.clanbattle.recognition.PixelImage
 import com.kokkoro.clanbattle.recognition.RecognitionResult
 import java.io.BufferedWriter
@@ -25,13 +26,14 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
         if (!closed) queue.control { sessions.start() } else false
     }
 
-    fun record(frameId: Long, wallMs: Long, elapsedMs: Long, gate: String, recognition: RecognitionResult, filter: FilterResult?) {
+    fun record(frameId: Long, wallMs: Long, elapsedMs: Long, gate: String, recognition: RecognitionResult, filter: FilterResult?, energy: EnergyDetectionResult? = null) {
         val trace = recognition.debugTrace
         val accepted = synchronized(lifecycleLock) { !closed && queue.submit {
             val current = sessions.current() ?: return@submit
             current.frames.write(listOf(frameId, wallMs, gate, recognition.rawText, recognition.ok,
                 recognition.confidence, recognition.reason, filter?.accepted, filter?.timeSeconds,
                 filter?.reason, filter?.source, dropped.get()))
+            energy?.let { current.energy.write(ClockDebugCsv.energyValues(frameId, wallMs, it)) }
             val saveFrame = trace?.digits?.let { digits ->
                 current.sampler.shouldSaveFrame(
                     elapsedMs,
@@ -79,11 +81,13 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
     private class Session(val dir: File) : AutoCloseable {
         val frames = ClockDebugCsv(BufferedWriter(FileWriter(File(dir, "frames.csv"))), ClockDebugCsv.FRAME_HEADER)
         val digits = ClockDebugCsv(BufferedWriter(FileWriter(File(dir, "digits.csv"))), ClockDebugCsv.DIGIT_HEADER)
+        val energy = ClockDebugCsv(BufferedWriter(FileWriter(File(dir, "energy.csv"))), ClockDebugCsv.ENERGY_HEADER)
         val sampler = ClockDebugFrameSampler()
 
         override fun close() {
             runCatching { frames.close() }.onFailure { Log.e(TAG, "Failed closing frames.csv", it) }
             runCatching { digits.close() }.onFailure { Log.e(TAG, "Failed closing digits.csv", it) }
+            runCatching { energy.close() }.onFailure { Log.e(TAG, "Failed closing energy.csv", it) }
         }
     }
 
