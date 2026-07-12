@@ -36,6 +36,33 @@ class ClockDebugCsv(private val writer: Writer, header: String) : Closeable {
         const val DIGIT_HEADER = "frameId,wallMs,slot,scoreKind,rawTop1,rawTop2,rawMargin,chosen,chosenScore,decisionMargin,decisionRule,decision0,decision1,decision2,decision3,decision4,decision5,decision6,decision7,decision8,decision9,ncc0,ncc1,ncc2,ncc3,ncc4,ncc5,ncc6,ncc7,ncc8,ncc9,cropFile"
         const val ENERGY_HEADER = "frameId,wallMs,energyDelta,triggeredRoles,role1Ratio,role1Full,role1Delta,role1Triggered,role2Ratio,role2Full,role2Delta,role2Triggered,role3Ratio,role3Full,role3Delta,role3Triggered,role4Ratio,role4Full,role4Delta,role4Triggered,role5Ratio,role5Full,role5Delta,role5Triggered"
         const val CONTROL_HEADER = "frameId,wallMs,autoState,autoOnScore,autoOffScore,autoMargin,globalState,globalOnScore,globalOffScore,globalMargin,role1State,role1OnScore,role1OffScore,role1Margin,role2State,role2OnScore,role2OffScore,role2Margin,role3State,role3OnScore,role3OffScore,role3Margin,role4State,role4OnScore,role4OffScore,role4Margin,role5State,role5OnScore,role5OffScore,role5Margin,consistent,observationReason,observed,desired,expected,action,retryCount,confirmed,safetyState,stepReason,menuScore,cropPrefix"
+        const val SWITCH_HEADER = "frameId,wallMs,axisName,nodeId,clockSeconds,triggeredRoles,controlsTrustworthy,busy,desired,safetyState,pauseFrameRole"
+
+        fun switchValues(
+            frameId: Long,
+            wallMs: Long,
+            axisName: String,
+            nodeId: String?,
+            clockSeconds: Int?,
+            triggeredRoles: Set<CharacterRole>,
+            controlsTrustworthy: Boolean,
+            busy: Boolean,
+            desired: String,
+            safetyState: com.kokkoro.clanbattle.control.ControlSafetyState,
+            pauseFrameRole: CharacterRole?
+        ): List<Any?> = listOf(
+            frameId,
+            wallMs,
+            axisName,
+            nodeId,
+            clockSeconds,
+            triggeredRoles.sortedBy { it.ordinal }.joinToString("|"),
+            controlsTrustworthy,
+            busy,
+            desired,
+            safetyState,
+            pauseFrameRole
+        )
 
         fun controlValues(
             frameId: Long,

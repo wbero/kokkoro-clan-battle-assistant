@@ -11,6 +11,8 @@ import com.kokkoro.clanbattle.control.BattleControlObservation
 import com.kokkoro.clanbattle.control.ControlCrops
 import com.kokkoro.clanbattle.control.ControlStep
 import com.kokkoro.clanbattle.control.VisualToggleState
+import com.kokkoro.clanbattle.control.ControlSafetyState
+import com.kokkoro.clanbattle.recognition.CharacterRole
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
@@ -86,6 +88,40 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
         if (!accepted) dropped.incrementAndGet()
     }
 
+    fun recordSwitch(
+        frameId: Long,
+        wallMs: Long,
+        axisName: String,
+        nodeId: String?,
+        clockSeconds: Int?,
+        triggeredRoles: Set<CharacterRole>,
+        controlsTrustworthy: Boolean,
+        busy: Boolean,
+        desired: String,
+        safetyState: ControlSafetyState,
+        pauseFrameRole: CharacterRole?
+    ) {
+        val accepted = synchronized(lifecycleLock) { !closed && queue.submit {
+            val current = sessions.current() ?: return@submit
+            current.switches.write(
+                ClockDebugCsv.switchValues(
+                    frameId,
+                    wallMs,
+                    axisName,
+                    nodeId,
+                    clockSeconds,
+                    triggeredRoles,
+                    controlsTrustworthy,
+                    busy,
+                    desired,
+                    safetyState,
+                    pauseFrameRole
+                )
+            )
+        } }
+        if (!accepted) dropped.incrementAndGet()
+    }
+
     override fun close() {
         synchronized(lifecycleLock) {
             if (closed) return
@@ -121,6 +157,7 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
         val digits = ClockDebugCsv(BufferedWriter(FileWriter(File(dir, "digits.csv"))), ClockDebugCsv.DIGIT_HEADER)
         val energy = ClockDebugCsv(BufferedWriter(FileWriter(File(dir, "energy.csv"))), ClockDebugCsv.ENERGY_HEADER)
         val controls = ClockDebugCsv(BufferedWriter(FileWriter(File(dir, "controls.csv"))), ClockDebugCsv.CONTROL_HEADER)
+        val switches = ClockDebugCsv(BufferedWriter(FileWriter(File(dir, "switch.csv"))), ClockDebugCsv.SWITCH_HEADER)
         val sampler = ClockDebugFrameSampler()
         val controlSampler = ControlCropSampler()
 
@@ -129,6 +166,7 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
             runCatching { digits.close() }.onFailure { Log.e(TAG, "Failed closing digits.csv", it) }
             runCatching { energy.close() }.onFailure { Log.e(TAG, "Failed closing energy.csv", it) }
             runCatching { controls.close() }.onFailure { Log.e(TAG, "Failed closing controls.csv", it) }
+            runCatching { switches.close() }.onFailure { Log.e(TAG, "Failed closing switch.csv", it) }
         }
     }
 

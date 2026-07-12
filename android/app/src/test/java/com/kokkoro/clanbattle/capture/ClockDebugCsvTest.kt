@@ -22,6 +22,29 @@ import org.junit.Test
 import java.io.StringWriter
 
 class ClockDebugCsvTest {
+    @Test fun `switch diagnostic row matches stable header contract`() {
+        val values = ClockDebugCsv.switchValues(
+            frameId = 12,
+            wallMs = 34,
+            axisName = "E5刀1",
+            nodeId = "line-4",
+            clockSeconds = 26,
+            triggeredRoles = setOf(CharacterRole.ROLE_2, CharacterRole.ROLE_4),
+            controlsTrustworthy = false,
+            busy = true,
+            desired = "auto=ON;roles=XOXOX",
+            safetyState = ControlSafetyState.RUNNING,
+            pauseFrameRole = CharacterRole.ROLE_3
+        )
+        val columns = ClockDebugCsv.SWITCH_HEADER.split(',')
+        val row = columns.zip(values.map(Any?::toString)).toMap()
+
+        assertEquals(columns.size, values.size)
+        assertEquals("E5刀1", row.getValue("axisName"))
+        assertEquals("ROLE_2|ROLE_4", row.getValue("triggeredRoles"))
+        assertEquals("ROLE_3", row.getValue("pauseFrameRole"))
+    }
+
     @Test fun `control diagnostic row matches header`() {
         val roles = CharacterRole.entries.associateWith { VisualToggleState.ON }
         val observation = BattleControlObservation(
