@@ -17,6 +17,7 @@ import com.kokkoro.clanbattle.control.ControlCrops
 import com.kokkoro.clanbattle.control.ControlSafetyState
 import com.kokkoro.clanbattle.control.ControlStep
 import com.kokkoro.clanbattle.control.OpeningControlTarget
+import com.kokkoro.clanbattle.control.VerifiedActionCoordinator
 import com.kokkoro.clanbattle.recognition.AndroidTemplateLoader
 import com.kokkoro.clanbattle.recognition.ClockRecognizer
 import com.kokkoro.clanbattle.recognition.EnergyDetector
@@ -46,6 +47,7 @@ class FrameProcessor(
     private val controlTemplates = AndroidControlTemplateLoader.load(appContext)
     private val controlRecognizer = BattleControlRecognizer(controlTemplates.controls)
     private val controlStateMachine = BattleControlStateMachine()
+    private val actionCoordinator = VerifiedActionCoordinator(controlStateMachine)
     private val filter = RecognitionFilter(minConfidence = 0.8, minAlternativeScore = 0.55, maxFailedReads = 999)
     private var energyDetector: EnergyDetector? = null
     private var energyHudSize: Pair<Int, Int>? = null
@@ -76,6 +78,7 @@ class FrameProcessor(
         energyDetector?.reset()
         gameStateDetector.reset()
         controlStateMachine.reset()
+        actionCoordinator.reset()
         controlStateMachine.setDesired(openingControlTarget)
         openingControlsConfirmed = openingControlTarget == null
         scheduler.reset()
@@ -147,14 +150,25 @@ class FrameProcessor(
                 openingControlsConfirmed = true
                 controlStateMachine.setDesired(null)
             }
-            val controlsAllowSchedule = openingControlsConfirmed &&
-                controlStep.safety == ControlSafetyState.RUNNING &&
-                controlStep.action == ControlAction.None
-            if (controlsAllowSchedule) {
-                gameState = gameStateDetector.update(filtered.timeSeconds, null)
-                val schedule = scheduler.update(gameState, filtered.timeSeconds)
-                scheduleReason = schedule.reason
-                executor.execute(schedule.events, image.width, image.height, axis.clickIntervalMs)
+            if (openingControlsConfirmed && controlStep.safety == ControlSafetyState.RUNNING) {
+                var coordinated = actionCoordinator.update(controlStep, start)
+                executeControlAction(coordinated.newControlAction, image.width, image.height)
+                executor.execute(coordinated.immediateEvents, image.width, image.height, axis.clickIntervalMs)
+                controlStep = coordinated.controlStep
+
+                if (!coordinated.busy) {
+                    gameState = gameStateDetector.update(filtered.timeSeconds, null)
+                    val schedule = scheduler.update(gameState, filtered.timeSeconds)
+                    scheduleReason = schedule.reason
+                    actionCoordinator.enqueue(schedule.events)
+                    coordinated = actionCoordinator.update(controlStep, start)
+                    executeControlAction(coordinated.newControlAction, image.width, image.height)
+                    executor.execute(coordinated.immediateEvents, image.width, image.height, axis.clickIntervalMs)
+                    controlStep = coordinated.controlStep
+                    if (coordinated.busy) scheduleReason = "verified-control-action"
+                } else {
+                    scheduleReason = "verified-control-action"
+                }
             } else {
                 scheduleReason = "control-state-gate"
             }
