@@ -1,6 +1,7 @@
 package com.kokkoro.clanbattle.control
 
 import com.kokkoro.clanbattle.axis.ActionType
+import com.kokkoro.clanbattle.axis.AxisAction
 import com.kokkoro.clanbattle.axis.AxisDocument
 import com.kokkoro.clanbattle.recognition.CharacterRole
 
@@ -24,6 +25,19 @@ data class OpeningControlTarget(
                 CharacterRole.entries.zip(values.map(::parseChineseState)).toMap()
             }
             return if (auto == null && roles == null) null else OpeningControlTarget(auto, roles)
+        }
+
+        fun fromAction(action: AxisAction): OpeningControlTarget? = when (action.type) {
+            ActionType.TOGGLE_AUTO -> OpeningControlTarget(
+                auto = action.value?.let(::parseState)
+            )
+            ActionType.SET_ROLES -> {
+                require(action.values.size == CharacterRole.entries.size) { "SET 必须包含五个角色状态" }
+                OpeningControlTarget(
+                    roles = CharacterRole.entries.zip(action.values.map(::parseChineseState)).toMap()
+                )
+            }
+            else -> null
         }
 
         private fun parseState(value: String): VisualToggleState = when (value) {

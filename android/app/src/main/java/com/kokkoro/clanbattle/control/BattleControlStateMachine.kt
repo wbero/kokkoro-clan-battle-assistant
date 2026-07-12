@@ -18,6 +18,27 @@ class BattleControlStateMachine {
         desired = target
     }
 
+    fun clearDesired() {
+        desired = null
+    }
+
+    fun requestToggle(action: ControlAction, nowMs: Long): ControlStep {
+        require(action == ControlAction.TapAuto || action is ControlAction.TapRole) {
+            "只支持需要图像确认的单项切换"
+        }
+        if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, "safety-paused")
+        if (pendingAction != null) return step(ControlAction.None, "control-action-busy")
+        val current = observed ?: return step(ControlAction.None, "waiting-trustworthy-state")
+        if (action == ControlAction.TapAuto && current.auto == VisualToggleState.UNKNOWN) {
+            return step(ControlAction.None, "waiting-trustworthy-state")
+        }
+        if (action is ControlAction.TapRole && current.roles.getValue(action.role) == VisualToggleState.UNKNOWN) {
+            return step(ControlAction.None, "waiting-trustworthy-state")
+        }
+        desired = null
+        return begin(action, current, nowMs)
+    }
+
     fun update(observation: BattleControlObservation, nowMs: Long): ControlStep {
         if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, pauseReason ?: "safety-paused")
         if (!observation.consistent) {

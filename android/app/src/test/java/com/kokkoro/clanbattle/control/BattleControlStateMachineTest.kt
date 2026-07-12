@@ -114,6 +114,39 @@ class BattleControlStateMachineTest {
         assertEquals(0, running.retryCount)
     }
 
+    @Test fun `unconditional role toggle records expected state and confirms from image`() {
+        val machine = BattleControlStateMachine()
+        val initial = observation(global = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
+        machine.update(initial, 0)
+
+        val click = machine.requestToggle(TapRole(CharacterRole.ROLE_3), 10)
+
+        assertEquals(TapRole(CharacterRole.ROLE_3), click.action)
+        assertEquals(VisualToggleState.ON, click.expected?.roles?.getValue(CharacterRole.ROLE_3))
+        val changed = observation(
+            global = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF
+            )
+        )
+        assertEquals(false, machine.update(changed, 20).confirmed)
+        assertEquals(true, machine.update(changed, 30).confirmed)
+    }
+
+    @Test fun `clearing desired target prevents a confirmed opening state from being restored`() {
+        val machine = machine(auto = VisualToggleState.ON)
+        val current = observation(auto = VisualToggleState.ON)
+        assertEquals(true, machine.update(current, 0).confirmed)
+
+        machine.clearDesired()
+
+        assertNull(machine.snapshot().desired)
+    }
+
     private fun machine(
         auto: VisualToggleState? = null,
         roles: Map<CharacterRole, VisualToggleState>? = null
