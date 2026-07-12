@@ -6,7 +6,17 @@ import android.os.SystemClock
 import com.kokkoro.clanbattle.automation.ActionExecutor
 import com.kokkoro.clanbattle.axis.AxisDocument
 import com.kokkoro.clanbattle.axis.AxisParser
+import com.kokkoro.clanbattle.axis.ActionType
 import com.kokkoro.clanbattle.config.AppPreferences
+import com.kokkoro.clanbattle.control.AndroidControlTemplateLoader
+import com.kokkoro.clanbattle.control.BattleControlObservation
+import com.kokkoro.clanbattle.control.BattleControlRecognizer
+import com.kokkoro.clanbattle.control.BattleControlStateMachine
+import com.kokkoro.clanbattle.control.ControlAction
+import com.kokkoro.clanbattle.control.ControlCrops
+import com.kokkoro.clanbattle.control.ControlSafetyState
+import com.kokkoro.clanbattle.control.ControlStep
+import com.kokkoro.clanbattle.control.OpeningControlTarget
 import com.kokkoro.clanbattle.recognition.AndroidTemplateLoader
 import com.kokkoro.clanbattle.recognition.ClockRecognizer
 import com.kokkoro.clanbattle.recognition.EnergyDetector
@@ -33,12 +43,21 @@ class FrameProcessor(
     private val appContext = context.applicationContext
     private val recognizer = ClockRecognizer(AndroidTemplateLoader.load(appContext))
     private val battleTemplates = BattleTemplateLoader.load(appContext)
+    private val controlTemplates = AndroidControlTemplateLoader.load(appContext)
+    private val controlRecognizer = BattleControlRecognizer(controlTemplates.controls)
+    private val controlStateMachine = BattleControlStateMachine()
     private val filter = RecognitionFilter(minConfidence = 0.8, minAlternativeScore = 0.55, maxFailedReads = 999)
     private var energyDetector: EnergyDetector? = null
     private var energyHudSize: Pair<Int, Int>? = null
     private val axis: AxisDocument = runCatching { AxisParser.parse(AppPreferences.axisText(appContext)) }
         .getOrElse { AxisDocument(com.kokkoro.clanbattle.axis.AxisType.SEQUENCE, 100, emptyMap(), emptyList()) }
-    private val scheduler = Scheduler(axis.events)
+    private val openingControlTarget = OpeningControlTarget.from(axis)
+    private val scheduler = Scheduler(axis.events.mapNotNull { event ->
+        val actions = if (event.timeSeconds == 90) event.actions.filterNot {
+            it.type == ActionType.TOGGLE_AUTO || it.type == ActionType.SET_ROLES
+        } else event.actions
+        if (actions.isEmpty()) null else event.copy(actions = actions)
+    })
     private val gameStateDetector = GameStateDetector()
     private val executor = ActionExecutor(appContext)
     private val sessionGate = BattleSessionGate()
@@ -46,11 +65,19 @@ class FrameProcessor(
     private var frameId = 0L
     private var debugEnabled = false
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
+    private var openingControlsConfirmed = openingControlTarget == null
+
+    init {
+        controlStateMachine.setDesired(openingControlTarget)
+    }
 
     fun prepareNewBattle() {
         filter.reset()
         energyDetector?.reset()
         gameStateDetector.reset()
+        controlStateMachine.reset()
+        controlStateMachine.setDesired(openingControlTarget)
+        openingControlsConfirmed = openingControlTarget == null
         scheduler.reset()
         sessionGate.prepare()
         val wasDebugEnabled = debugEnabled
@@ -88,6 +115,8 @@ class FrameProcessor(
         val roi = ImageRoiExtractor.extract(image, region)
         val recognition = recognizer.recognize(roi, includeDiagnostics = debugEnabled)
         val energy = detectEnergy(image)
+        val controls = detectControls(image)
+        val menuScore = matchRegion(image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu)
         gameStateDetector.observeEnergy(energy)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
             if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null, energy)
@@ -111,18 +140,32 @@ class FrameProcessor(
 
         var gameState: GameState? = null
         var scheduleReason: String? = null
+        var controlStep: ControlStep = controlStateMachine.snapshot()
         if (sessionReady) {
-            gameState = gameStateDetector.update(filtered.timeSeconds, null)
-            val schedule = scheduler.update(gameState, filtered.timeSeconds)
-            scheduleReason = schedule.reason
-            executor.execute(schedule.events, image.width, image.height, axis.clickIntervalMs)
+            controlStep = updateControls(controls, menuScore, start, image)
+            if (controlStep.confirmed && !openingControlsConfirmed) {
+                openingControlsConfirmed = true
+                controlStateMachine.setDesired(null)
+            }
+            val controlsAllowSchedule = openingControlsConfirmed &&
+                controlStep.safety == ControlSafetyState.RUNNING &&
+                controlStep.action == ControlAction.None
+            if (controlsAllowSchedule) {
+                gameState = gameStateDetector.update(filtered.timeSeconds, null)
+                val schedule = scheduler.update(gameState, filtered.timeSeconds)
+                scheduleReason = schedule.reason
+                executor.execute(schedule.events, image.width, image.height, axis.clickIntervalMs)
+            } else {
+                scheduleReason = "control-state-gate"
+            }
         }
 
         val elapsed = SystemClock.elapsedRealtime() - start
         val source = filtered.source?.name?.lowercase() ?: "-"
         val energyText = EnergyStatusFormatter.format(energy, gameState, scheduleReason)
+        val controlText = ControlStatusFormatter.format(controlStep)
         val text = if (sessionReady) {
-            "${filtered.rawText}  $source  ${elapsed}ms  $energyText"
+            "${filtered.rawText}  $source  ${elapsed}ms  $energyText\n$controlText"
         } else if (sessionGate.isWaiting()) {
             "等待开场 1:30  ${recognition.rawText ?: "--:--"}  ${elapsed}ms  $energyText"
         } else {
@@ -187,6 +230,58 @@ class FrameProcessor(
         }
         energyDetector!!.detect(hud)
     }.getOrNull()
+
+    private fun detectControls(image: Image): BattleControlObservation? = runCatching {
+        controlRecognizer.recognize(
+            ControlCrops(
+                auto = extractRegion(image, BattleReferenceRegions.AUTO_BUTTON),
+                globalSet = extractRegion(image, BattleReferenceRegions.GLOBAL_SET_BUTTON),
+                roles = BattleReferenceRegions.ROLE_SET_BADGES.mapValues { (_, region) ->
+                    extractRegion(image, region)
+                }
+            )
+        )
+    }.getOrNull()
+
+    private fun updateControls(
+        controls: BattleControlObservation?,
+        menuScore: Double,
+        nowMs: Long,
+        image: Image
+    ): ControlStep {
+        val before = controlStateMachine.snapshot()
+        val step = when (before.safety) {
+            ControlSafetyState.SAFETY_PAUSING -> controlStateMachine.updateMenu(menuScore)
+            ControlSafetyState.SAFETY_PAUSED -> if (controls == null) before else {
+                controlStateMachine.updateRecovery(menuScore, controls, nowMs)
+            }
+            ControlSafetyState.RUNNING -> if (controls == null) {
+                controlStateMachine.forceSafety("control-recognition-failed")
+                controlStateMachine.snapshot()
+            } else {
+                controlStateMachine.update(controls, nowMs)
+            }
+        }
+        executeControlAction(step.action, image.width, image.height)
+        return step
+    }
+
+    private fun executeControlAction(action: ControlAction, width: Int, height: Int) {
+        when (action) {
+            ControlAction.TapAuto -> executor.tapAuto(width, height)
+            ControlAction.TapGlobalSet -> executor.tapGlobalSet(width, height)
+            is ControlAction.TapRole -> executor.tapRole(action.role, width, height)
+            ControlAction.TapMenu -> executor.tapMenu(width, height)
+            ControlAction.None -> Unit
+        }
+    }
+
+    private fun extractRegion(image: Image, region: ReferenceRegion) = ImageRoiExtractor.extract(
+        image,
+        ImageRoiExtractor.scaleRegion(
+            image.width, image.height, region.x, region.y, region.width, region.height
+        )
+    )
 
     private fun publishWaitingStatus(label: String, score: Double, start: Long, image: Image) {
         val elapsed = SystemClock.elapsedRealtime() - start
