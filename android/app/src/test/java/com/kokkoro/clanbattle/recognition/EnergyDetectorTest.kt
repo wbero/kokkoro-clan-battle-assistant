@@ -29,8 +29,8 @@ class EnergyDetectorTest {
             loadPngResource("energy/one_full.png")
         )
 
-        assertEquals(1f, result.characters.getValue(CharacterRole.ROLE_4).blueRatio, 0.02f)
-        assertTrue(result.characters.getValue(CharacterRole.ROLE_4).isFull)
+        assertEquals(1f, result.characters.getValue(CharacterRole.ROLE_2).blueRatio, 0.02f)
+        assertTrue(result.characters.getValue(CharacterRole.ROLE_2).isFull)
     }
 
     @Test
@@ -42,7 +42,7 @@ class EnergyDetectorTest {
         rolesLeftToRight.take(4).forEach { role ->
             assertEquals(0f, result.characters.getValue(role).blueRatio, 0.02f)
         }
-        val lastBar = result.characters.getValue(CharacterRole.ROLE_1)
+        val lastBar = result.characters.getValue(CharacterRole.ROLE_5)
         assertTrue(lastBar.blueRatio > 0.94f)
         assertTrue(lastBar.isFull)
     }
@@ -151,11 +151,11 @@ class EnergyDetectorTest {
         }
 
     private fun realEnergyRegions(): Map<CharacterRole, EnergyRegion> = mapOf(
-        CharacterRole.ROLE_5 to EnergyRegion(x = 8, y = 6, width = 176, height = 13),
-        CharacterRole.ROLE_4 to EnergyRegion(x = 248, y = 6, width = 176, height = 13),
+        CharacterRole.ROLE_1 to EnergyRegion(x = 8, y = 6, width = 176, height = 13),
+        CharacterRole.ROLE_2 to EnergyRegion(x = 248, y = 6, width = 176, height = 13),
         CharacterRole.ROLE_3 to EnergyRegion(x = 488, y = 6, width = 176, height = 13),
-        CharacterRole.ROLE_2 to EnergyRegion(x = 728, y = 6, width = 176, height = 13),
-        CharacterRole.ROLE_1 to EnergyRegion(x = 968, y = 6, width = 176, height = 13)
+        CharacterRole.ROLE_4 to EnergyRegion(x = 728, y = 6, width = 176, height = 13),
+        CharacterRole.ROLE_5 to EnergyRegion(x = 968, y = 6, width = 176, height = 13)
     )
 
     private fun solidRolePixels(blueRoles: Set<CharacterRole>): PixelImage = PixelImage(
@@ -177,11 +177,11 @@ class EnergyDetectorTest {
 
     private companion object {
         val rolesLeftToRight = listOf(
-            CharacterRole.ROLE_5,
-            CharacterRole.ROLE_4,
-            CharacterRole.ROLE_3,
+            CharacterRole.ROLE_1,
             CharacterRole.ROLE_2,
-            CharacterRole.ROLE_1
+            CharacterRole.ROLE_3,
+            CharacterRole.ROLE_4,
+            CharacterRole.ROLE_5
         )
     }
 }

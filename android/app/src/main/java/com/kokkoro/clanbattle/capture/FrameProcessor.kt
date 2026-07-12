@@ -116,12 +116,13 @@ class FrameProcessor(
 
         val elapsed = SystemClock.elapsedRealtime() - start
         val source = filtered.source?.name?.lowercase() ?: "-"
+        val energyText = EnergyStatusFormatter.format(energy)
         val text = if (sessionReady) {
-            "${filtered.rawText}  $source  ${elapsed}ms"
+            "${filtered.rawText}  $source  ${elapsed}ms  $energyText"
         } else if (sessionGate.isWaiting()) {
-            "等待开场 1:30  ${recognition.rawText ?: "--:--"}  ${elapsed}ms"
+            "等待开场 1:30  ${recognition.rawText ?: "--:--"}  ${elapsed}ms  $energyText"
         } else {
-            "FAIL ${filtered.reason ?: recognition.reason}  ${recognition.rawText ?: "--:--"}  ${elapsed}ms"
+            "FAIL ${filtered.reason ?: recognition.reason}  ${recognition.rawText ?: "--:--"}  ${elapsed}ms  $energyText"
         }
         statusCallback(FrameStatus(text, sessionReady, elapsed, image.width, image.height))
     }
