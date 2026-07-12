@@ -31,6 +31,15 @@ sealed interface SwitchRuntimeCommand {
     ) : SwitchRuntimeCommand
 }
 
+data class SwitchRuntimeSnapshot(
+    val nodeId: String? = null,
+    val sourceLine: Int? = null,
+    val triggerType: String? = null,
+    val runtimeState: String? = null,
+    val eligibleWallMs: Long? = null,
+    val deadlineWallMs: Long? = null
+)
+
 class SwitchAxisRuntime(
     private val opening: SwitchAxisOpening?,
     nodes: List<SwitchAxisNode>
@@ -95,6 +104,40 @@ class SwitchAxisRuntime(
         openingConverging -> OPENING_NODE_ID
         active != null -> active?.node?.id
         else -> null
+    }
+
+    fun snapshot(): SwitchRuntimeSnapshot {
+        if (openingConverging) {
+            return SwitchRuntimeSnapshot(
+                nodeId = OPENING_NODE_ID,
+                sourceLine = opening?.sourceLine,
+                triggerType = "OPENING",
+                runtimeState = "Converging"
+            )
+        }
+        val current = active ?: return SwitchRuntimeSnapshot()
+        val trigger = current.node.trigger
+        return SwitchRuntimeSnapshot(
+            nodeId = current.node.id,
+            sourceLine = current.node.sourceLine,
+            triggerType = when (trigger) {
+                TimedTrigger -> "TIMED"
+                is CharacterUbTrigger -> "CHARACTER_UB"
+                is BossDelayTrigger -> "BOSS_DELAY"
+                is PauseFrameTrigger -> "PAUSE_FRAME"
+                else -> "INVALID"
+            },
+            runtimeState = when (current.state) {
+                ActiveState.Armed -> "Armed"
+                ActiveState.PauseFrameEntered -> "PauseFrameEntered"
+                ActiveState.PauseFrameConfirmed -> "PauseFrameConfirmed"
+                ActiveState.Converging -> "Converging"
+            },
+            eligibleWallMs = current.armedAtWallMs,
+            deadlineWallMs = (trigger as? BossDelayTrigger)?.minimumDelayMs?.let {
+                current.armedAtWallMs + it
+            }
+        )
     }
 
     private fun updateOpening(frame: SwitchFrameInput): SwitchRuntimeCommand {

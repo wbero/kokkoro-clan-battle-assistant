@@ -36,32 +36,58 @@ class ClockDebugCsv(private val writer: Writer, header: String) : Closeable {
         const val DIGIT_HEADER = "frameId,wallMs,slot,scoreKind,rawTop1,rawTop2,rawMargin,chosen,chosenScore,decisionMargin,decisionRule,decision0,decision1,decision2,decision3,decision4,decision5,decision6,decision7,decision8,decision9,ncc0,ncc1,ncc2,ncc3,ncc4,ncc5,ncc6,ncc7,ncc8,ncc9,cropFile"
         const val ENERGY_HEADER = "frameId,wallMs,energyDelta,triggeredRoles,role1Ratio,role1Full,role1Delta,role1Triggered,role2Ratio,role2Full,role2Delta,role2Triggered,role3Ratio,role3Full,role3Delta,role3Triggered,role4Ratio,role4Full,role4Delta,role4Triggered,role5Ratio,role5Full,role5Delta,role5Triggered"
         const val CONTROL_HEADER = "frameId,wallMs,autoState,autoOnScore,autoOffScore,autoMargin,globalState,globalOnScore,globalOffScore,globalMargin,role1State,role1OnScore,role1OffScore,role1Margin,role2State,role2OnScore,role2OffScore,role2Margin,role3State,role3OnScore,role3OffScore,role3Margin,role4State,role4OnScore,role4OffScore,role4Margin,role5State,role5OnScore,role5OffScore,role5Margin,consistent,observationReason,observed,desired,expected,action,retryCount,confirmed,safetyState,stepReason,menuScore,cropPrefix"
-        const val SWITCH_HEADER = "frameId,wallMs,axisName,nodeId,clockSeconds,triggeredRoles,controlsTrustworthy,busy,desired,safetyState,pauseFrameRole"
+        const val SWITCH_HEADER = "frameId,wallMs,axisId,axisName,axisType,nodeId,nodeSourceLine,triggerType,runtimeState,eligibleWallMs,deadlineWallMs,clockSeconds,triggeredRoles,controlsTrustworthy,busy,focusAction,focusResult,pauseFrameAction,targetRole,desired,observed,expected,safetyState,safetyReason"
 
         fun switchValues(
             frameId: Long,
             wallMs: Long,
+            axisId: String,
             axisName: String,
+            axisType: String,
             nodeId: String?,
+            nodeSourceLine: Int?,
+            triggerType: String?,
+            runtimeState: String?,
+            eligibleWallMs: Long?,
+            deadlineWallMs: Long?,
             clockSeconds: Int?,
             triggeredRoles: Set<CharacterRole>,
             controlsTrustworthy: Boolean,
             busy: Boolean,
+            focusAction: String,
+            focusResult: String,
+            pauseFrameAction: String,
+            targetRole: CharacterRole?,
             desired: String,
+            observed: String,
+            expected: String,
             safetyState: com.kokkoro.clanbattle.control.ControlSafetyState,
-            pauseFrameRole: CharacterRole?
+            safetyReason: String
         ): List<Any?> = listOf(
             frameId,
             wallMs,
+            axisId,
             axisName,
+            axisType,
             nodeId,
+            nodeSourceLine,
+            triggerType,
+            runtimeState,
+            eligibleWallMs,
+            deadlineWallMs,
             clockSeconds,
             triggeredRoles.sortedBy { it.ordinal }.joinToString("|"),
             controlsTrustworthy,
             busy,
+            focusAction,
+            focusResult,
+            pauseFrameAction,
+            targetRole,
             desired,
+            observed,
+            expected,
             safetyState,
-            pauseFrameRole
+            safetyReason
         )
 
         fun controlValues(

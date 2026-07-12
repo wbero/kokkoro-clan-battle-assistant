@@ -10,7 +10,8 @@ import com.kokkoro.clanbattle.recognition.CharacterRole
 class AndroidOverlayFocusPort(
     context: Context,
     private val overlay: OverlayController,
-    private val dimensions: () -> Pair<Int, Int>
+    private val dimensions: () -> Pair<Int, Int>,
+    private val roleTapSafe: () -> Boolean
 ) : OverlayFocusPort {
     private val appContext = context.applicationContext
 
@@ -22,6 +23,7 @@ class AndroidOverlayFocusPort(
 
     override fun tapRole(role: CharacterRole): Boolean {
         if (AppPreferences.dryRun(appContext)) return false
+        if (!roleTapSafe()) return false
         val service = KokkoroAccessibilityService.instance ?: return false
         val (width, height) = dimensions()
         if (width <= 0 || height <= 0) return false

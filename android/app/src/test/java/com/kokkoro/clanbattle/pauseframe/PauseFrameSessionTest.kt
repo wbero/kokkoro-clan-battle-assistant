@@ -26,8 +26,9 @@ class PauseFrameSessionTest {
 
     @Test fun `confirm taps exactly the selected role and becomes ready for convergence`() {
         val log = mutableListOf<String>()
+        val diagnostics = mutableListOf<PauseFrameDiagnosticEvent>()
         val scheduler = FakeScheduler(log)
-        val session = PauseFrameSession(FakePort(log), scheduler, 40, 1_000)
+        val session = PauseFrameSession(FakePort(log), scheduler, 40, 1_000, diagnostics::add)
         session.enter("node-1", CharacterRole.ROLE_3)
         var completed: PauseFrameResult? = null
 
@@ -43,6 +44,8 @@ class PauseFrameSessionTest {
             listOf("focus:on", "focus:off", "delay:1000", "back", "tap:ROLE_3"),
             log
         )
+        assertTrue(diagnostics.any { it.action == "confirm" && it.result == "requested" })
+        assertTrue(diagnostics.any { it.action == "tap-role" && it.result == "success" })
     }
 
     @Test fun `focus acquisition failure enters failed state without role tap`() {
@@ -58,6 +61,25 @@ class PauseFrameSessionTest {
 
         assertEquals(PauseFrameState.FAILED, result.state)
         assertFalse(log.any { it.startsWith("tap:") })
+    }
+
+    @Test fun `unsafe role tap fails confirmation without releasing scheduler`() {
+        val log = mutableListOf<String>()
+        val scheduler = FakeScheduler(log)
+        val session = PauseFrameSession(
+            FakePort(log, tapResult = false),
+            scheduler,
+            40,
+            1_000
+        )
+        session.enter("node-1", CharacterRole.ROLE_3)
+        var completed: PauseFrameResult? = null
+
+        session.confirm { completed = it }
+        scheduler.runNext()
+
+        assertEquals(PauseFrameState.FAILED, completed?.state)
+        assertFalse(completed?.readyForConvergence == true)
     }
 
     @Test fun `reentrant advance is rejected until focus is reacquired`() {
@@ -85,7 +107,8 @@ class PauseFrameSessionTest {
 
     private class FakePort(
         private val log: MutableList<String>,
-        private val acquireResult: Boolean = true
+        private val acquireResult: Boolean = true,
+        private val tapResult: Boolean = true
     ) : OverlayFocusPort {
         override fun acquireFocus(): Boolean {
             log += "focus:on"
@@ -104,7 +127,7 @@ class PauseFrameSessionTest {
 
         override fun tapRole(role: CharacterRole): Boolean {
             log += "tap:${role.name}"
-            return true
+            return tapResult
         }
     }
 

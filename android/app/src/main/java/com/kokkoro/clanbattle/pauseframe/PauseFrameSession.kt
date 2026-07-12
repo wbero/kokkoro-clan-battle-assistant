@@ -19,11 +19,19 @@ data class PauseFrameResult(
     val readyForConvergence: Boolean = false
 )
 
+data class PauseFrameDiagnosticEvent(
+    val nodeId: String?,
+    val role: CharacterRole?,
+    val action: String,
+    val result: String
+)
+
 class PauseFrameSession(
     private val focusPort: OverlayFocusPort,
     private val scheduler: PauseFrameScheduler,
     private val frameIntervalMs: Long = 40,
-    private val focusTransitionMs: Long = 1_000
+    private val focusTransitionMs: Long = 1_000,
+    private val diagnosticCallback: (PauseFrameDiagnosticEvent) -> Unit = {}
 ) {
     private var state = PauseFrameState.IDLE
     private var nodeId: String? = null
@@ -35,24 +43,34 @@ class PauseFrameSession(
         generation++
         this.nodeId = nodeId
         this.role = role
-        state = if (focusPort.acquireFocus()) PauseFrameState.SOFT_PAUSED else PauseFrameState.FAILED
+        diagnose("enter", "requested")
+        val acquired = focusPort.acquireFocus()
+        diagnose("focus-acquire", if (acquired) "success" else "failed")
+        state = if (acquired) PauseFrameState.SOFT_PAUSED else PauseFrameState.FAILED
         return result(accepted = state == PauseFrameState.SOFT_PAUSED)
     }
 
     fun advance(): PauseFrameResult {
         if (state != PauseFrameState.SOFT_PAUSED) return result(accepted = false)
+        diagnose("advance", "requested")
         state = PauseFrameState.ADVANCING
-        if (!focusPort.releaseFocus()) return fail()
+        val released = focusPort.releaseFocus()
+        diagnose("focus-release", if (released) "success" else "failed")
+        if (!released) return fail()
         val advanceGeneration = generation
         scheduler.schedule(focusTransitionMs) outer@{
             if (generation != advanceGeneration || state != PauseFrameState.ADVANCING) return@outer
-            if (!focusPort.sendBack()) {
+            val back = focusPort.sendBack()
+            diagnose("back", if (back) "success" else "failed")
+            if (!back) {
                 fail()
                 return@outer
             }
             scheduler.schedule(frameIntervalMs) inner@{
                 if (generation != advanceGeneration || state != PauseFrameState.ADVANCING) return@inner
-                state = if (focusPort.acquireFocus()) {
+                val acquired = focusPort.acquireFocus()
+                diagnose("focus-acquire", if (acquired) "success" else "failed")
+                state = if (acquired) {
                     PauseFrameState.SOFT_PAUSED
                 } else {
                     PauseFrameState.FAILED
@@ -66,12 +84,23 @@ class PauseFrameSession(
         if (state != PauseFrameState.SOFT_PAUSED) return result(accepted = false)
         val confirmedNode = nodeId
         val confirmedRole = role ?: return fail()
+        diagnose("confirm", "requested")
         state = PauseFrameState.CONFIRMING
-        if (!focusPort.releaseFocus()) return fail()
+        val released = focusPort.releaseFocus()
+        diagnose("focus-release", if (released) "success" else "failed")
+        if (!released) return fail()
         val confirmGeneration = generation
         scheduler.schedule(focusTransitionMs) confirmation@{
             if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@confirmation
-            if (!focusPort.sendBack() || !focusPort.tapRole(confirmedRole)) {
+            val back = focusPort.sendBack()
+            diagnose("back", if (back) "success" else "failed")
+            if (!back) {
+                onComplete(fail())
+                return@confirmation
+            }
+            val tapped = focusPort.tapRole(confirmedRole)
+            diagnose("tap-role", if (tapped) "success" else "failed")
+            if (!tapped) {
                 onComplete(fail())
                 return@confirmation
             }
@@ -93,7 +122,11 @@ class PauseFrameSession(
 
     fun reset() {
         generation++
-        if (state != PauseFrameState.IDLE) focusPort.releaseFocus()
+        if (state != PauseFrameState.IDLE) {
+            diagnose("reset", "requested")
+            val released = focusPort.releaseFocus()
+            diagnose("focus-release", if (released) "success" else "failed")
+        }
         state = PauseFrameState.IDLE
         nodeId = null
         role = null
@@ -116,4 +149,8 @@ class PauseFrameSession(
         state = state,
         nodeId = nodeId
     )
+
+    private fun diagnose(action: String, result: String) {
+        diagnosticCallback(PauseFrameDiagnosticEvent(nodeId, role, action, result))
+    }
 }
