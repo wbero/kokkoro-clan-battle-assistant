@@ -76,7 +76,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                 selectAxis = { id -> captureHandler.post { selectAxis(id) } },
                 nextFrame = ::requestNextFrame,
                 confirm = ::confirmPauseFrame,
-                safetyMenu = { captureHandler.post { frameProcessor?.requestSafetyPause() } },
+                safetyMenu = ::requestSafetyMenu,
                 reset = { captureHandler.post { prepareNewBattle() } }
             )
         )
@@ -249,14 +249,26 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         renderOverlay()
     }
 
-    private fun confirmPauseFrame() {
-        val result = pauseFrameSession.confirm()
-        if (!result.readyForConvergence || result.nodeId == null) {
-            renderOverlay()
-            return
-        }
+    private fun requestSafetyMenu() {
+        pauseFrameSession.reset()
         pauseFrameRole = null
-        captureHandler.post { frameProcessor?.confirmPauseFrame(result.nodeId) }
+        captureHandler.post { frameProcessor?.requestSafetyPause() }
+        renderOverlay()
+    }
+
+    private fun confirmPauseFrame() {
+        val accepted = pauseFrameSession.confirm { result ->
+            if (result.readyForConvergence && result.nodeId != null) {
+                pauseFrameRole = null
+                captureHandler.post { frameProcessor?.confirmPauseFrame(result.nodeId) }
+            } else {
+                pauseFrameRole = null
+                captureHandler.post { frameProcessor?.requestSafetyPause("pause-frame-confirm-failed") }
+            }
+            renderOverlay()
+        }
+        if (!accepted.accepted) return
+        pauseFrameRole = null
         renderOverlay()
     }
 

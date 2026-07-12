@@ -26,16 +26,23 @@ class PauseFrameSessionTest {
 
     @Test fun `confirm taps exactly the selected role and becomes ready for convergence`() {
         val log = mutableListOf<String>()
-        val session = PauseFrameSession(FakePort(log), FakeScheduler(log), 40, 1_000)
+        val scheduler = FakeScheduler(log)
+        val session = PauseFrameSession(FakePort(log), scheduler, 40, 1_000)
         session.enter("node-1", CharacterRole.ROLE_3)
+        var completed: PauseFrameResult? = null
 
-        val result = session.confirm()
+        val accepted = session.confirm { completed = it }
+        scheduler.runNext()
 
-        assertTrue(result.accepted)
-        assertEquals(CharacterRole.ROLE_3, result.confirmedRole)
-        assertTrue(result.readyForConvergence)
+        assertTrue(accepted.accepted)
+        assertFalse(accepted.readyForConvergence)
+        assertEquals(CharacterRole.ROLE_3, completed?.confirmedRole)
+        assertTrue(completed?.readyForConvergence == true)
         assertEquals(1, log.count { it == "tap:ROLE_3" })
-        assertEquals("focus:off", log.last())
+        assertEquals(
+            listOf("focus:on", "focus:off", "delay:1000", "back", "tap:ROLE_3"),
+            log
+        )
     }
 
     @Test fun `focus acquisition failure enters failed state without role tap`() {

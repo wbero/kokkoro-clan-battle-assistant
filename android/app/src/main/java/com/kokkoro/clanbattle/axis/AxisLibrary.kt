@@ -24,12 +24,13 @@ interface AxisStorage {
     fun remove(id: String): Boolean
     fun selectedId(): String?
     fun setSelectedId(id: String?)
+    fun selectionLocked(): Boolean
+    fun setSelectionLocked(locked: Boolean)
 }
 
 class AxisLibrary(
     private val storage: AxisStorage
 ) {
-    private var locked = false
 
     fun import(sourceName: String, text: String): StoredAxis {
         val normalized = normalize(text)
@@ -45,7 +46,7 @@ class AxisLibrary(
     fun list(): List<StoredAxis> = storage.list().map(::describe)
 
     fun select(id: String): Boolean {
-        if (locked) return false
+        if (storage.selectionLocked()) return false
         val selected = list().firstOrNull { it.id == id && it.valid } ?: return false
         storage.setSelectedId(selected.id)
         return true
@@ -68,21 +69,21 @@ class AxisLibrary(
     }
 
     fun remove(id: String): Boolean {
-        if (locked) return false
+        if (storage.selectionLocked()) return false
         val removed = storage.remove(id)
         if (removed && storage.selectedId() == id) storage.setSelectedId(null)
         return removed
     }
 
     fun lock() {
-        locked = true
+        storage.setSelectionLocked(true)
     }
 
     fun unlock() {
-        locked = false
+        storage.setSelectionLocked(false)
     }
 
-    fun isLocked(): Boolean = locked
+    fun isLocked(): Boolean = storage.selectionLocked()
 
     private fun describe(entry: StoredAxisText): StoredAxis {
         val result = runCatching {

@@ -122,6 +122,14 @@ class OverlayController(
     }
 
     private fun applyState(state: OverlayUiState) {
+        rootView?.setBackgroundColor(
+            when (state.panelColor) {
+                OverlayPanelColor.GRAY -> 0xdd3c4043.toInt()
+                OverlayPanelColor.GREEN -> 0xdd1b5e20.toInt()
+                OverlayPanelColor.AMBER -> 0xdd8d5a00.toInt()
+                OverlayPanelColor.RED -> 0xdd8e0000.toInt()
+            }
+        )
         apply(selectAxisButton, state.selectAxis)
         apply(nextFrameButton, state.nextFrame)
         apply(confirmButton, state.confirm)

@@ -14,6 +14,7 @@ class OverlayUiStateTest {
         assertFalse(state.nextFrame.enabled)
         assertFalse(state.confirm.enabled)
         assertTrue(state.reset.enabled)
+        assertEquals(OverlayPanelColor.GRAY, state.panelColor)
     }
 
     @Test fun `running locks axis selection and enables safety menu`() {
@@ -23,6 +24,7 @@ class OverlayUiStateTest {
         assertFalse(state.nextFrame.enabled)
         assertFalse(state.confirm.enabled)
         assertTrue(state.safetyMenu.enabled)
+        assertEquals(OverlayPanelColor.GREEN, state.panelColor)
     }
 
     @Test fun `pause frame enables manual advance and confirmation`() {
@@ -33,6 +35,7 @@ class OverlayUiStateTest {
         assertEquals("确定：角色3", state.confirm.label)
         assertTrue(state.confirm.enabled)
         assertFalse(state.selectAxis.enabled)
+        assertEquals(OverlayPanelColor.AMBER, state.panelColor)
     }
 
     @Test fun `safety paused disables actions until manual recovery or reset`() {
@@ -43,5 +46,6 @@ class OverlayUiStateTest {
         assertFalse(state.confirm.enabled)
         assertFalse(state.safetyMenu.enabled)
         assertTrue(state.reset.enabled)
+        assertEquals(OverlayPanelColor.RED, state.panelColor)
     }
 }
