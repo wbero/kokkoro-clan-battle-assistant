@@ -1,6 +1,8 @@
 package com.kokkoro.clanbattle.control
 
 import com.kokkoro.clanbattle.axis.AxisParser
+import com.kokkoro.clanbattle.axis.ActionType
+import com.kokkoro.clanbattle.axis.AxisAction
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -54,5 +56,22 @@ class OpeningControlTargetTest {
         )
 
         OpeningControlTarget.from(axis)
+    }
+
+    @Test fun `converts a scheduled SET action into a role target`() {
+        val target = OpeningControlTarget.fromAction(
+            AxisAction(ActionType.SET_ROLES, values = listOf("关", "开", "关", "开", "关"))
+        )
+
+        assertEquals(
+            listOf(
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.OFF
+            ),
+            CharacterRole.entries.map { target?.roles?.getValue(it) }
+        )
     }
 }
