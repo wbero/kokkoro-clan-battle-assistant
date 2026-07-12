@@ -26,23 +26,37 @@ class ClockDebugCsvTest {
         val values = ClockDebugCsv.switchValues(
             frameId = 12,
             wallMs = 34,
+            axisId = "axis-1",
             axisName = "E5刀1",
+            axisType = "SWITCH",
             nodeId = "line-4",
+            nodeSourceLine = 4,
+            triggerType = "BOSS_DELAY",
+            runtimeState = "Armed",
+            eligibleWallMs = 1_000,
+            deadlineWallMs = 2_200,
             clockSeconds = 26,
             triggeredRoles = setOf(CharacterRole.ROLE_2, CharacterRole.ROLE_4),
             controlsTrustworthy = false,
             busy = true,
+            focusAction = "release",
+            focusResult = "success",
+            pauseFrameAction = "confirm",
+            targetRole = CharacterRole.ROLE_3,
             desired = "auto=ON;roles=XOXOX",
+            observed = "auto=OFF;roles=XXXXX",
+            expected = "auto=ON;roles=XOXOX",
             safetyState = ControlSafetyState.RUNNING,
-            pauseFrameRole = CharacterRole.ROLE_3
+            safetyReason = "waiting-deadline"
         )
         val columns = ClockDebugCsv.SWITCH_HEADER.split(',')
         val row = columns.zip(values.map(Any?::toString)).toMap()
 
         assertEquals(columns.size, values.size)
         assertEquals("E5刀1", row.getValue("axisName"))
+        assertEquals("2200", row.getValue("deadlineWallMs"))
         assertEquals("ROLE_2|ROLE_4", row.getValue("triggeredRoles"))
-        assertEquals("ROLE_3", row.getValue("pauseFrameRole"))
+        assertEquals("ROLE_3", row.getValue("targetRole"))
     }
 
     @Test fun `control diagnostic row matches header`() {

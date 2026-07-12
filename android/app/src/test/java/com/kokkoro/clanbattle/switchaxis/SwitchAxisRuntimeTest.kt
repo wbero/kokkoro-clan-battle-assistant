@@ -92,6 +92,20 @@ class SwitchAxisRuntimeTest {
         )
     }
 
+    @Test fun `boss snapshot exposes source trigger state and hard deadline`() {
+        val runtime = runtime(node("boss", 26, BossDelayTrigger(1_200, "1.20"))).openedAt(90)
+
+        runtime.update(frame(clock = 26, wallMs = 10_000))
+        val snapshot = runtime.snapshot()
+
+        assertEquals("boss", snapshot.nodeId)
+        assertEquals(2, snapshot.sourceLine)
+        assertEquals("BOSS_DELAY", snapshot.triggerType)
+        assertEquals("Armed", snapshot.runtimeState)
+        assertEquals(10_000L, snapshot.eligibleWallMs)
+        assertEquals(11_200L, snapshot.deadlineWallMs)
+    }
+
     @Test fun `pause frame blocks later nodes until manual confirmation and convergence`() {
         val pause = node("pause", 18, PauseFrameTrigger(CharacterRole.ROLE_3, "角色3"))
         val later = node("later", 17, TimedTrigger)

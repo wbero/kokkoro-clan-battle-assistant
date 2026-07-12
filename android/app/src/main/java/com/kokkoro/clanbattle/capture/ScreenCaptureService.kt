@@ -81,8 +81,16 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             )
         )
         pauseFrameSession = PauseFrameSession(
-            focusPort = AndroidOverlayFocusPort(this, overlay) { captureWidth to captureHeight },
-            scheduler = PauseFrameScheduler { delayMs, action -> mainHandler.postDelayed(action, delayMs) }
+            focusPort = AndroidOverlayFocusPort(
+                context = this,
+                overlay = overlay,
+                dimensions = { captureWidth to captureHeight },
+                roleTapSafe = { frameProcessor?.isRoleTapSafe() == true }
+            ),
+            scheduler = PauseFrameScheduler { delayMs, action -> mainHandler.postDelayed(action, delayMs) },
+            diagnosticCallback = { event ->
+                captureHandler.post { frameProcessor?.recordPauseFrameDiagnostic(event) }
+            }
         )
         frameProcessor = FrameProcessor(
             context = this,

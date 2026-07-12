@@ -31,6 +31,7 @@ import com.kokkoro.clanbattle.recognition.RecognitionResult
 import com.kokkoro.clanbattle.scheduler.GameStateDetector
 import com.kokkoro.clanbattle.scheduler.GameState
 import com.kokkoro.clanbattle.scheduler.Scheduler
+import com.kokkoro.clanbattle.pauseframe.PauseFrameDiagnosticEvent
 import com.kokkoro.clanbattle.switchaxis.SwitchControlCoordinator
 import com.kokkoro.clanbattle.switchaxis.SwitchFrameInput
 import java.util.Locale
@@ -47,6 +48,13 @@ data class FrameStatus(
 private data class ControlDetection(
     val observation: BattleControlObservation,
     val crops: ControlCrops
+)
+
+private data class SwitchDiagnosticContext(
+    val clockSeconds: Int?,
+    val triggeredRoles: Set<com.kokkoro.clanbattle.recognition.CharacterRole>,
+    val controlsTrustworthy: Boolean,
+    val coordinated: com.kokkoro.clanbattle.switchaxis.SwitchCoordinatorResult
 )
 
 class FrameProcessor(
@@ -66,6 +74,7 @@ class FrameProcessor(
     private var energyDetector: EnergyDetector? = null
     private var energyHudSize: Pair<Int, Int>? = null
     private var axis: AxisDocument = emptyAxis()
+    private var activeAxisId: String = ""
     private var openingControlTarget: OpeningControlTarget? = null
     private var scheduler = Scheduler(emptyList())
     private var switchCoordinator: SwitchControlCoordinator? = null
@@ -79,6 +88,8 @@ class FrameProcessor(
     private var openingControlsConfirmed = true
     private var lastPauseFrameNodeId: String? = null
     private var lastSwitchDebugKey: String? = null
+    private var lastSwitchDiagnosticContext: SwitchDiagnosticContext? = null
+    @Volatile private var roleTapSafe = false
 
     init {
         installAxis(loadSelectedAxis())
@@ -86,6 +97,7 @@ class FrameProcessor(
         openingControlsConfirmed = openingControlTarget == null
         lastPauseFrameNodeId = null
         lastSwitchDebugKey = null
+        lastSwitchDiagnosticContext = null
     }
 
     fun prepareNewBattle(document: AxisDocument = loadSelectedAxis()) {
@@ -109,12 +121,14 @@ class FrameProcessor(
         refreshDebugPreference(start)
         val currentFrameId = ++frameId
         if (image.width <= image.height) {
+            roleTapSafe = false
             if (debugEnabled) recordEarlyFailure(currentFrameId, "portrait-frame")
             statusCallback(FrameStatus("等待游戏横屏 ${image.width}×${image.height}", false, 0, image.width, image.height))
             return
         }
 
         if (sessionGate.isWaitingForStart()) {
+            roleTapSafe = false
             val score = matchRegion(image, BattleReferenceRegions.START_BUTTON, battleTemplates.startBattle)
             if (score >= TEMPLATE_THRESHOLD) {
                 sessionGate.onStartMatched()
@@ -126,6 +140,7 @@ class FrameProcessor(
         }
 
         if (sessionGate.isWaitingForLoading()) {
+            roleTapSafe = false
             val score = matchRegion(image, BattleReferenceRegions.LOADING, battleTemplates.loading)
             if (score >= TEMPLATE_THRESHOLD) sessionGate.onLoadingMatched()
             if (debugEnabled) recordEarlyFailure(currentFrameId, "waiting-loading-template score=${"%.4f".format(Locale.US, score)}")
@@ -140,6 +155,7 @@ class FrameProcessor(
         val controlDetection = detectControls(image)
         val controls = controlDetection?.observation
         val menuScore = matchRegion(image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu)
+        roleTapSafe = controls.isTrustworthy() && menuScore >= MENU_TRUST_THRESHOLD
         gameStateDetector.observeEnergy(energy)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
             if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null, energy)
@@ -167,7 +183,7 @@ class FrameProcessor(
         if (sessionReady) {
             controlStep = updateControls(controls, menuScore, start, image)
             if (axis.type == AxisType.SWITCH) {
-                val controlsTrustworthy = controls.isTrustworthy() &&
+                val controlsTrustworthy = roleTapSafe &&
                     controlStep.safety == ControlSafetyState.RUNNING
                 val coordinated = requireNotNull(switchCoordinator).update(
                     SwitchFrameInput(
@@ -271,6 +287,26 @@ class FrameProcessor(
         switchCoordinator?.confirmPauseFrame(nodeId)
     }
 
+    fun recordPauseFrameDiagnostic(event: PauseFrameDiagnosticEvent) {
+        if (!debugEnabled) return
+        val context = lastSwitchDiagnosticContext ?: return
+        writeSwitchDiagnostic(
+            currentFrameId = frameId,
+            wallMs = System.currentTimeMillis(),
+            context = context,
+            focusAction = event.action.takeIf {
+                it == "focus-acquire" || it == "focus-release" || it == "back"
+            }.orEmpty(),
+            focusResult = event.result,
+            pauseFrameAction = event.action.takeIf {
+                it != "focus-acquire" && it != "focus-release" && it != "back"
+            }.orEmpty(),
+            targetRole = event.role
+        )
+    }
+
+    fun isRoleTapSafe(): Boolean = roleTapSafe
+
     fun close() {
         executor.close()
         recorder?.close()
@@ -285,6 +321,7 @@ class FrameProcessor(
 
     private fun installAxis(document: AxisDocument) {
         axis = document
+        activeAxisId = AppPreferences.selectedAxisId(appContext).orEmpty()
         openingControlTarget = if (document.type == AxisType.SEQUENCE) {
             OpeningControlTarget.from(document)
         } else {
@@ -402,42 +439,96 @@ class FrameProcessor(
         controlsTrustworthy: Boolean,
         coordinated: com.kokkoro.clanbattle.switchaxis.SwitchCoordinatorResult
     ) {
-        val desired = coordinated.controlStep.desired?.let { target ->
-            val roles = com.kokkoro.clanbattle.recognition.CharacterRole.entries.joinToString("") { role ->
-                when (target.roles?.get(role)) {
-                    VisualToggleState.ON -> "O"
-                    VisualToggleState.OFF -> "X"
-                    VisualToggleState.UNKNOWN -> "?"
-                    null -> "-"
-                }
-            }
-            "auto=${target.auto ?: "-"};roles=$roles"
-        }.orEmpty()
+        val context = SwitchDiagnosticContext(
+            clockSeconds,
+            triggeredRoles,
+            controlsTrustworthy,
+            coordinated
+        )
+        lastSwitchDiagnosticContext = context
+        val desired = encodeTarget(coordinated.controlStep.desired)
+        val observed = encodeControlState(coordinated.controlStep.observed)
+        val expected = encodeControlState(coordinated.controlStep.expected)
+        val runtime = coordinated.runtime
         val key = listOf(
             coordinated.activeNodeId,
             coordinated.pauseFrame?.role,
             coordinated.busy,
+            runtime.runtimeState,
+            runtime.deadlineWallMs,
             desired,
+            observed,
+            expected,
             coordinated.controlStep.safety,
             controlsTrustworthy,
             triggeredRoles.sortedBy { it.ordinal }.joinToString("|")
         ).joinToString("|")
         if (key == lastSwitchDebugKey) return
         lastSwitchDebugKey = key
+        writeSwitchDiagnostic(currentFrameId, wallMs, context)
+    }
+
+    private fun writeSwitchDiagnostic(
+        currentFrameId: Long,
+        wallMs: Long,
+        context: SwitchDiagnosticContext,
+        focusAction: String = "",
+        focusResult: String = "",
+        pauseFrameAction: String = "",
+        targetRole: com.kokkoro.clanbattle.recognition.CharacterRole? =
+            context.coordinated.pauseFrame?.role
+    ) {
+        val coordinated = context.coordinated
+        val runtime = coordinated.runtime
+        val desired = encodeTarget(coordinated.controlStep.desired)
+        val observed = encodeControlState(coordinated.controlStep.observed)
+        val expected = encodeControlState(coordinated.controlStep.expected)
         recorder().recordSwitch(
             frameId = currentFrameId,
             wallMs = wallMs,
+            axisId = activeAxisId,
             axisName = axis.header["轴名称"].orEmpty(),
+            axisType = axis.type.name,
             nodeId = coordinated.activeNodeId,
-            clockSeconds = clockSeconds,
-            triggeredRoles = triggeredRoles,
-            controlsTrustworthy = controlsTrustworthy,
+            nodeSourceLine = runtime.sourceLine,
+            triggerType = runtime.triggerType,
+            runtimeState = runtime.runtimeState,
+            eligibleWallMs = runtime.eligibleWallMs,
+            deadlineWallMs = runtime.deadlineWallMs,
+            clockSeconds = context.clockSeconds,
+            triggeredRoles = context.triggeredRoles,
+            controlsTrustworthy = context.controlsTrustworthy,
             busy = coordinated.busy,
+            focusAction = focusAction,
+            focusResult = focusResult,
+            pauseFrameAction = pauseFrameAction,
             desired = desired,
+            observed = observed,
+            expected = expected,
             safetyState = coordinated.controlStep.safety,
-            pauseFrameRole = coordinated.pauseFrame?.role
+            safetyReason = coordinated.controlStep.reason,
+            targetRole = targetRole
         )
     }
+
+    private fun encodeTarget(target: OpeningControlTarget?): String = target?.let {
+        "auto=${it.auto ?: "-"};roles=${encodeRoles(it.roles)}"
+    }.orEmpty()
+
+    private fun encodeControlState(state: com.kokkoro.clanbattle.control.BattleControlState?): String =
+        state?.let {
+            "auto=${it.auto};global=${it.globalSet};roles=${encodeRoles(it.roles)}"
+        }.orEmpty()
+
+    private fun encodeRoles(roles: Map<com.kokkoro.clanbattle.recognition.CharacterRole, VisualToggleState>?): String =
+        com.kokkoro.clanbattle.recognition.CharacterRole.entries.joinToString("") { role ->
+            when (roles?.get(role)) {
+                VisualToggleState.ON -> "O"
+                VisualToggleState.OFF -> "X"
+                VisualToggleState.UNKNOWN -> "?"
+                null -> "-"
+            }
+        }
 
     private fun executeControlAction(action: ControlAction, width: Int, height: Int) {
         when (action) {
@@ -478,6 +569,7 @@ class FrameProcessor(
     private companion object {
         const val TEMPLATE_THRESHOLD = 0.72
         const val DEBUG_PREFERENCE_POLL_MS = 1_000L
+        const val MENU_TRUST_THRESHOLD = 0.70
 
         fun emptyAxis() = AxisDocument(AxisType.SEQUENCE, 100, emptyMap(), emptyList())
     }

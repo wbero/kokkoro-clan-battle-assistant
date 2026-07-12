@@ -13,7 +13,8 @@ data class SwitchCoordinatorResult(
     val controlStep: ControlStep,
     val activeNodeId: String?,
     val pauseFrame: SwitchRuntimeCommand.EnterPauseFrame?,
-    val busy: Boolean
+    val busy: Boolean,
+    val runtime: SwitchRuntimeSnapshot
 )
 
 class SwitchControlCoordinator(
@@ -64,7 +65,8 @@ class SwitchControlCoordinator(
         controlStep = stateMachine.snapshot(),
         activeNodeId = convergingNodeId ?: pauseFrame?.nodeId ?: runtime.pendingNodeId(),
         pauseFrame = pauseFrame,
-        busy = convergingNodeId != null || pauseFrame != null || runtime.pendingNodeId() != null
+        busy = convergingNodeId != null || pauseFrame != null || runtime.pendingNodeId() != null,
+        runtime = runtime.snapshot()
     )
 
     private fun SwitchControlTarget.toControlTarget() = OpeningControlTarget(

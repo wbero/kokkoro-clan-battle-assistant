@@ -91,15 +91,28 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
     fun recordSwitch(
         frameId: Long,
         wallMs: Long,
+        axisId: String,
         axisName: String,
+        axisType: String,
         nodeId: String?,
+        nodeSourceLine: Int?,
+        triggerType: String?,
+        runtimeState: String?,
+        eligibleWallMs: Long?,
+        deadlineWallMs: Long?,
         clockSeconds: Int?,
         triggeredRoles: Set<CharacterRole>,
         controlsTrustworthy: Boolean,
         busy: Boolean,
+        focusAction: String = "",
+        focusResult: String = "",
+        pauseFrameAction: String = "",
+        targetRole: CharacterRole? = null,
         desired: String,
+        observed: String,
+        expected: String,
         safetyState: ControlSafetyState,
-        pauseFrameRole: CharacterRole?
+        safetyReason: String
     ) {
         val accepted = synchronized(lifecycleLock) { !closed && queue.submit {
             val current = sessions.current() ?: return@submit
@@ -107,15 +120,28 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
                 ClockDebugCsv.switchValues(
                     frameId,
                     wallMs,
+                    axisId,
                     axisName,
+                    axisType,
                     nodeId,
+                    nodeSourceLine,
+                    triggerType,
+                    runtimeState,
+                    eligibleWallMs,
+                    deadlineWallMs,
                     clockSeconds,
                     triggeredRoles,
                     controlsTrustworthy,
                     busy,
+                    focusAction,
+                    focusResult,
+                    pauseFrameAction,
+                    targetRole,
                     desired,
+                    observed,
+                    expected,
                     safetyState,
-                    pauseFrameRole
+                    safetyReason
                 )
             )
         } }
