@@ -40,6 +40,20 @@ class BattleControlStateMachine {
         return begin(action, current, nowMs)
     }
 
+    fun requestRoleSet(role: CharacterRole, nowMs: Long): ControlStep {
+        if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, "safety-paused")
+        if (pendingAction != null) return step(ControlAction.None, "control-action-busy")
+        val current = observed ?: return step(ControlAction.None, "waiting-trustworthy-state")
+        return when (current.roles.getValue(role)) {
+            VisualToggleState.UNKNOWN -> step(ControlAction.None, "waiting-trustworthy-state")
+            VisualToggleState.ON -> step(ControlAction.None, "role-set-already-on", confirmed = true)
+            VisualToggleState.OFF -> {
+                desired = null
+                begin(ControlAction.TapRole(role), current, nowMs)
+            }
+        }
+    }
+
     fun update(observation: BattleControlObservation, nowMs: Long): ControlStep {
         if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, pauseReason ?: "safety-paused")
         if (!observation.consistent) {
@@ -54,7 +68,7 @@ class BattleControlStateMachine {
         val current = observation.toState()
         val pending = pendingAction
         if (pending != null) {
-            if (current == expected) {
+            if (matchesExpected(current, pending, requireNotNull(expected))) {
                 confirmationFrames++
                 if (confirmationFrames < CONFIRM_FRAMES) {
                     return step(ControlAction.None, "confirming-click")
@@ -210,6 +224,18 @@ class BattleControlStateMachine {
         ControlAction.None, ControlAction.TapMenu -> current
     }
 
+    private fun matchesExpected(
+        current: BattleControlState,
+        action: ControlAction,
+        target: BattleControlState
+    ): Boolean = when (action) {
+        ControlAction.TapAuto -> current.auto == target.auto
+        ControlAction.TapGlobalSet ->
+            current.globalSet == target.globalSet && current.roles == target.roles
+        is ControlAction.TapRole -> current.roles.getValue(action.role) == target.roles.getValue(action.role)
+        ControlAction.None, ControlAction.TapMenu -> false
+    }
+
     private fun clearPending() {
         expected = null
         pendingAction = null
@@ -247,7 +273,7 @@ class BattleControlStateMachine {
 
     private companion object {
         const val CONFIRM_FRAMES = 2
-        const val CONFIRM_TIMEOUT_MS = 500L
+        const val CONFIRM_TIMEOUT_MS = 1_000L
         const val MAX_RETRIES = 1
         const val MENU_MIN_SCORE = 0.70
         const val RECOVERY_FRAMES = 2
