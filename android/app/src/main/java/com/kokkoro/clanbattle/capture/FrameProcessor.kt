@@ -14,6 +14,7 @@ import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
 import com.kokkoro.clanbattle.recognition.RecognitionFilter
 import com.kokkoro.clanbattle.recognition.RecognitionResult
 import com.kokkoro.clanbattle.scheduler.GameStateDetector
+import com.kokkoro.clanbattle.scheduler.GameState
 import com.kokkoro.clanbattle.scheduler.Scheduler
 import java.util.Locale
 
@@ -108,15 +109,18 @@ class FrameProcessor(
         val usable = filtered.accepted || filtered.reason == "same-time"
         val sessionReady = usable && sessionGate.onAccepted(filtered.timeSeconds)
 
+        var gameState: GameState? = null
+        var scheduleReason: String? = null
         if (sessionReady) {
-            val gameState = gameStateDetector.update(filtered.timeSeconds, null)
+            gameState = gameStateDetector.update(filtered.timeSeconds, null)
             val schedule = scheduler.update(gameState, filtered.timeSeconds)
+            scheduleReason = schedule.reason
             executor.execute(schedule.events, image.width, image.height, axis.clickIntervalMs)
         }
 
         val elapsed = SystemClock.elapsedRealtime() - start
         val source = filtered.source?.name?.lowercase() ?: "-"
-        val energyText = EnergyStatusFormatter.format(energy)
+        val energyText = EnergyStatusFormatter.format(energy, gameState, scheduleReason)
         val text = if (sessionReady) {
             "${filtered.rawText}  $source  ${elapsed}ms  $energyText"
         } else if (sessionGate.isWaiting()) {
