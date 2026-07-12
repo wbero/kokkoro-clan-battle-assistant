@@ -8,14 +8,14 @@ import org.junit.Test
 
 class BattleStartRegionTest {
     @Test fun `energy HUD tightly contains all five relative energy regions`() {
-        assertEquals(ReferenceRegion(385, 1027, 1152, 25), BattleReferenceRegions.ENERGY_HUD)
+        assertEquals(ReferenceRegion(384, 1034, 1160, 25), BattleReferenceRegions.ENERGY_HUD)
         assertEquals(
             mapOf(
-                com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_5 to com.kokkoro.clanbattle.recognition.EnergyRegion(8, 6, 176, 13),
-                com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_4 to com.kokkoro.clanbattle.recognition.EnergyRegion(248, 6, 176, 13),
+                com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_1 to com.kokkoro.clanbattle.recognition.EnergyRegion(8, 6, 176, 13),
+                com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_2 to com.kokkoro.clanbattle.recognition.EnergyRegion(248, 6, 176, 13),
                 com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_3 to com.kokkoro.clanbattle.recognition.EnergyRegion(488, 6, 176, 13),
-                com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_2 to com.kokkoro.clanbattle.recognition.EnergyRegion(728, 6, 176, 13),
-                com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_1 to com.kokkoro.clanbattle.recognition.EnergyRegion(968, 6, 176, 13)
+                com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_4 to com.kokkoro.clanbattle.recognition.EnergyRegion(728, 6, 176, 13),
+                com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_5 to com.kokkoro.clanbattle.recognition.EnergyRegion(968, 6, 176, 13)
             ),
             BattleReferenceRegions.ENERGY_REGIONS
         )
@@ -27,10 +27,10 @@ class BattleStartRegionTest {
     }
 
     @Test fun `energy regions scale with extracted HUD dimensions and remain in bounds`() {
-        val scaled = BattleReferenceRegions.energyRegionsForHud(576, 13)
-        assertEquals(com.kokkoro.clanbattle.recognition.EnergyRegion(4, 3, 88, 6), scaled.getValue(com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_5))
+        val scaled = BattleReferenceRegions.energyRegionsForHud(580, 13)
+        assertEquals(com.kokkoro.clanbattle.recognition.EnergyRegion(4, 3, 88, 6), scaled.getValue(com.kokkoro.clanbattle.recognition.CharacterRole.ROLE_1))
         scaled.values.forEach { region ->
-            assertTrue(region.x + region.width <= 576)
+            assertTrue(region.x + region.width <= 580)
             assertTrue(region.y + region.height <= 13)
         }
     }

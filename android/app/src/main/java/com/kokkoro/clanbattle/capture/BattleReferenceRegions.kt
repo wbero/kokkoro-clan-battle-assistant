@@ -8,13 +8,13 @@ data class ReferenceRegion(val x: Int, val y: Int, val width: Int, val height: I
 object BattleReferenceRegions {
     val START_BUTTON = ReferenceRegion(1565, 850, 275, 115)
     val LOADING = ReferenceRegion(1545, 955, 190, 60)
-    val ENERGY_HUD = ReferenceRegion(385, 1027, 1152, 25)
+    val ENERGY_HUD = ReferenceRegion(384, 1034, 1160, 25)
     val ENERGY_REGIONS = mapOf(
-        CharacterRole.ROLE_5 to EnergyRegion(8, 6, 176, 13),
-        CharacterRole.ROLE_4 to EnergyRegion(248, 6, 176, 13),
+        CharacterRole.ROLE_1 to EnergyRegion(8, 6, 176, 13),
+        CharacterRole.ROLE_2 to EnergyRegion(248, 6, 176, 13),
         CharacterRole.ROLE_3 to EnergyRegion(488, 6, 176, 13),
-        CharacterRole.ROLE_2 to EnergyRegion(728, 6, 176, 13),
-        CharacterRole.ROLE_1 to EnergyRegion(968, 6, 176, 13)
+        CharacterRole.ROLE_4 to EnergyRegion(728, 6, 176, 13),
+        CharacterRole.ROLE_5 to EnergyRegion(968, 6, 176, 13)
     )
 
     fun energyRegionsForHud(width: Int, height: Int): Map<CharacterRole, EnergyRegion> {
