@@ -9,8 +9,8 @@ class ControlRegionTest {
     @Test
     fun `control regions match the 1920 by 1080 reference layout`() {
         assertEquals(ReferenceRegion(1740, 20, 170, 65), BattleReferenceRegions.MENU_BUTTON)
-        assertEquals(ReferenceRegion(1760, 620, 140, 130), BattleReferenceRegions.GLOBAL_SET_BUTTON)
-        assertEquals(ReferenceRegion(1760, 770, 140, 130), BattleReferenceRegions.AUTO_BUTTON)
+        assertEquals(ReferenceRegion(1788, 644, 87, 86), BattleReferenceRegions.GLOBAL_SET_BUTTON)
+        assertEquals(ReferenceRegion(1783, 795, 95, 78), BattleReferenceRegions.AUTO_BUTTON)
         assertEquals(CharacterRole.entries.toSet(), BattleReferenceRegions.ROLE_SET_BADGES.keys)
         CharacterRole.entries.forEach { role ->
             assertEquals(
