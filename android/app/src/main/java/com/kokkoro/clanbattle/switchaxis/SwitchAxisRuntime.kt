@@ -91,6 +91,12 @@ class SwitchAxisRuntime(
         }
     }
 
+    fun pendingNodeId(): String? = when {
+        openingConverging -> OPENING_NODE_ID
+        active != null -> active?.node?.id
+        else -> null
+    }
+
     private fun updateOpening(frame: SwitchFrameInput): SwitchRuntimeCommand {
         val target = opening?.target ?: return SwitchRuntimeCommand.None
         if (openingConverging) {
