@@ -19,6 +19,7 @@ android/clock-debug-baseline-output/
 android/energy-debug-*/
 android/energy-*-live.png
 .idea/
+.worktrees/
 *.iml
 
 # Signing material must never be committed.
