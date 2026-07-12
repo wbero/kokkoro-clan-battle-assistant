@@ -22,6 +22,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.kokkoro.clanbattle.capture.ScreenCaptureService
+import com.kokkoro.clanbattle.axis.AndroidAxisRepository
+import com.kokkoro.clanbattle.axis.AxisLibrary
 import com.kokkoro.clanbattle.config.AppPreferences
 
 class MainActivity : Activity() {
@@ -29,6 +31,8 @@ class MainActivity : Activity() {
     private lateinit var axisView: TextView
     private lateinit var dryRunCheckBox: CheckBox
     private lateinit var projectionManager: MediaProjectionManager
+    private lateinit var axisLibrary: AxisLibrary
+    private lateinit var axisList: LinearLayout
     private var receiverRegistered = false
 
     private val statusReceiver = object : BroadcastReceiver() {
@@ -43,6 +47,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         projectionManager = getSystemService(MediaProjectionManager::class.java)
+        axisLibrary = AxisLibrary(AndroidAxisRepository(this))
+        migrateLegacyAxis()
         setContentView(buildContent())
         refreshAxisLabel()
     }
@@ -119,7 +125,7 @@ class MainActivity : Activity() {
         }
         content.addView(axisView)
 
-        content.addView(button("选择轴文件") {
+        content.addView(button("导入轴文件") {
             startActivityForResult(
                 Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
@@ -128,6 +134,9 @@ class MainActivity : Activity() {
                 REQUEST_AXIS
             )
         })
+
+        axisList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(axisList, matchWidth())
 
         dryRunCheckBox = CheckBox(this).apply {
             text = "只识别，不执行点击"
@@ -187,12 +196,62 @@ class MainActivity : Activity() {
         val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) cursor.getString(0) else uri.lastPathSegment
         } ?: uri.lastPathSegment.orEmpty()
-        AppPreferences.saveAxis(this, name, text)
+        val imported = axisLibrary.import(name, text)
+        if (imported.valid) {
+            axisLibrary.select(imported.id)
+            syncLegacySelectedAxis()
+        }
         refreshAxisLabel()
     }
 
     private fun refreshAxisLabel() {
-        axisView.text = "轴文件：${AppPreferences.axisName(this)}"
+        val selected = axisLibrary.selected()
+        axisView.text = selected?.let { "当前轴：${it.name}（${it.type}，${it.eventCount}节点）" }
+            ?: "当前轴：未选择"
+        if (!::axisList.isInitialized) return
+        axisList.removeAllViews()
+        axisLibrary.list().forEach { axis ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(Button(this).apply {
+                isAllCaps = false
+                isEnabled = axis.valid
+                text = buildString {
+                    if (selected?.id == axis.id) append("✓ ")
+                    append(axis.name).append(" [").append(axis.type).append("]")
+                    if (!axis.valid) append(" 无效：").append(axis.validationMessage)
+                }
+                setOnClickListener {
+                    if (axisLibrary.select(axis.id)) {
+                        syncLegacySelectedAxis()
+                        refreshAxisLabel()
+                    }
+                }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(Button(this).apply {
+                text = "删除"
+                isAllCaps = false
+                setOnClickListener {
+                    axisLibrary.remove(axis.id)
+                    syncLegacySelectedAxis()
+                    refreshAxisLabel()
+                }
+            })
+            axisList.addView(row, matchWidth())
+        }
+    }
+
+    private fun migrateLegacyAxis() {
+        if (axisLibrary.list().isNotEmpty()) return
+        val text = AppPreferences.axisText(this)
+        if (text.isBlank()) return
+        val imported = axisLibrary.import(AppPreferences.axisName(this), text)
+        if (imported.valid) axisLibrary.select(imported.id)
+    }
+
+    private fun syncLegacySelectedAxis() {
+        val selected = axisLibrary.selected()
+        val text = axisLibrary.selectedText()
+        if (selected != null && text != null) AppPreferences.saveAxis(this, selected.name, text)
     }
 
     private fun button(text: String, onClick: () -> Unit) = Button(this).apply {
