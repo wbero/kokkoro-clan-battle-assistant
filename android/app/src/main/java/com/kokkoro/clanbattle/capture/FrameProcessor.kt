@@ -78,12 +78,14 @@ class FrameProcessor(
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
     private var openingControlsConfirmed = true
     private var lastPauseFrameNodeId: String? = null
+    private var lastSwitchDebugKey: String? = null
 
     init {
         installAxis(loadSelectedAxis())
         controlStateMachine.setDesired(openingControlTarget)
         openingControlsConfirmed = openingControlTarget == null
         lastPauseFrameNodeId = null
+        lastSwitchDebugKey = null
     }
 
     fun prepareNewBattle(document: AxisDocument = loadSelectedAxis()) {
@@ -165,12 +167,13 @@ class FrameProcessor(
         if (sessionReady) {
             controlStep = updateControls(controls, menuScore, start, image)
             if (axis.type == AxisType.SWITCH) {
+                val controlsTrustworthy = controls.isTrustworthy() &&
+                    controlStep.safety == ControlSafetyState.RUNNING
                 val coordinated = requireNotNull(switchCoordinator).update(
                     SwitchFrameInput(
                         clockSeconds = filtered.timeSeconds,
                         triggeredRoles = energy?.triggeredRoles.orEmpty(),
-                        controlsTrustworthy = controls.isTrustworthy() &&
-                            controlStep.safety == ControlSafetyState.RUNNING,
+                        controlsTrustworthy = controlsTrustworthy,
                         wallMs = start
                     ),
                     controlStep
@@ -181,6 +184,16 @@ class FrameProcessor(
                         lastPauseFrameNodeId = request.nodeId
                         pauseFrameCallback(request.nodeId, request.role)
                     }
+                }
+                if (debugEnabled) {
+                    recordSwitchTransition(
+                        currentFrameId,
+                        System.currentTimeMillis(),
+                        filtered.timeSeconds,
+                        energy?.triggeredRoles.orEmpty(),
+                        controlsTrustworthy,
+                        coordinated
+                    )
                 }
                 scheduleReason = when {
                     coordinated.pauseFrame != null -> "pause-frame:${coordinated.pauseFrame.role.name}"
@@ -379,6 +392,51 @@ class FrameProcessor(
         }
         executeControlAction(step.action, image.width, image.height)
         return step
+    }
+
+    private fun recordSwitchTransition(
+        currentFrameId: Long,
+        wallMs: Long,
+        clockSeconds: Int?,
+        triggeredRoles: Set<com.kokkoro.clanbattle.recognition.CharacterRole>,
+        controlsTrustworthy: Boolean,
+        coordinated: com.kokkoro.clanbattle.switchaxis.SwitchCoordinatorResult
+    ) {
+        val desired = coordinated.controlStep.desired?.let { target ->
+            val roles = com.kokkoro.clanbattle.recognition.CharacterRole.entries.joinToString("") { role ->
+                when (target.roles?.get(role)) {
+                    VisualToggleState.ON -> "O"
+                    VisualToggleState.OFF -> "X"
+                    VisualToggleState.UNKNOWN -> "?"
+                    null -> "-"
+                }
+            }
+            "auto=${target.auto ?: "-"};roles=$roles"
+        }.orEmpty()
+        val key = listOf(
+            coordinated.activeNodeId,
+            coordinated.pauseFrame?.role,
+            coordinated.busy,
+            desired,
+            coordinated.controlStep.safety,
+            controlsTrustworthy,
+            triggeredRoles.sortedBy { it.ordinal }.joinToString("|")
+        ).joinToString("|")
+        if (key == lastSwitchDebugKey) return
+        lastSwitchDebugKey = key
+        recorder().recordSwitch(
+            frameId = currentFrameId,
+            wallMs = wallMs,
+            axisName = axis.header["轴名称"].orEmpty(),
+            nodeId = coordinated.activeNodeId,
+            clockSeconds = clockSeconds,
+            triggeredRoles = triggeredRoles,
+            controlsTrustworthy = controlsTrustworthy,
+            busy = coordinated.busy,
+            desired = desired,
+            safetyState = coordinated.controlStep.safety,
+            pauseFrameRole = coordinated.pauseFrame?.role
+        )
     }
 
     private fun executeControlAction(action: ControlAction, width: Int, height: Int) {
