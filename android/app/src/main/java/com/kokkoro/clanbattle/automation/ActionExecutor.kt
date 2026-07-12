@@ -38,13 +38,17 @@ class ActionExecutor(private val context: Context) {
         thread.quitSafely()
     }
 
-    fun tapAuto(width: Int, height: Int) = tap(ActionCoordinates.autoButton, width, height)
+    fun tapAuto(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.autoButton, width, height)
 
-    fun tapGlobalSet(width: Int, height: Int) = tap(ActionCoordinates.globalSet, width, height)
+    fun tapGlobalSet(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.globalSet, width, height)
 
-    fun tapRole(role: CharacterRole, width: Int, height: Int) = tap(ActionCoordinates.role(role), width, height)
+    fun tapRole(role: CharacterRole, width: Int, height: Int) = tapIfEnabled(ActionCoordinates.role(role), width, height)
 
-    fun tapMenu(width: Int, height: Int) = tap(ActionCoordinates.menu, width, height)
+    fun tapMenu(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.menu, width, height)
+
+    private fun tapIfEnabled(point: ReferencePoint, width: Int, height: Int) {
+        if (!AppPreferences.dryRun(context)) tap(point, width, height)
+    }
 
     private fun tap(point: ReferencePoint, width: Int, height: Int) =
         tapScaled(point.x, point.y, width, height)
