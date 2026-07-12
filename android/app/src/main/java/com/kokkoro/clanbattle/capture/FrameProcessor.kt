@@ -4,8 +4,11 @@ import android.content.Context
 import android.media.Image
 import android.os.SystemClock
 import com.kokkoro.clanbattle.automation.ActionExecutor
+import com.kokkoro.clanbattle.axis.AndroidAxisRepository
 import com.kokkoro.clanbattle.axis.AxisDocument
+import com.kokkoro.clanbattle.axis.AxisLibrary
 import com.kokkoro.clanbattle.axis.AxisParser
+import com.kokkoro.clanbattle.axis.AxisType
 import com.kokkoro.clanbattle.axis.ActionType
 import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.control.AndroidControlTemplateLoader
@@ -18,6 +21,7 @@ import com.kokkoro.clanbattle.control.ControlSafetyState
 import com.kokkoro.clanbattle.control.ControlStep
 import com.kokkoro.clanbattle.control.OpeningControlTarget
 import com.kokkoro.clanbattle.control.VerifiedActionCoordinator
+import com.kokkoro.clanbattle.control.VisualToggleState
 import com.kokkoro.clanbattle.recognition.AndroidTemplateLoader
 import com.kokkoro.clanbattle.recognition.ClockRecognizer
 import com.kokkoro.clanbattle.recognition.EnergyDetector
@@ -27,6 +31,8 @@ import com.kokkoro.clanbattle.recognition.RecognitionResult
 import com.kokkoro.clanbattle.scheduler.GameStateDetector
 import com.kokkoro.clanbattle.scheduler.GameState
 import com.kokkoro.clanbattle.scheduler.Scheduler
+import com.kokkoro.clanbattle.switchaxis.SwitchControlCoordinator
+import com.kokkoro.clanbattle.switchaxis.SwitchFrameInput
 import java.util.Locale
 
 data class FrameStatus(
@@ -56,15 +62,10 @@ class FrameProcessor(
     private val filter = RecognitionFilter(minConfidence = 0.8, minAlternativeScore = 0.55, maxFailedReads = 999)
     private var energyDetector: EnergyDetector? = null
     private var energyHudSize: Pair<Int, Int>? = null
-    private val axis: AxisDocument = runCatching { AxisParser.parse(AppPreferences.axisText(appContext)) }
-        .getOrElse { AxisDocument(com.kokkoro.clanbattle.axis.AxisType.SEQUENCE, 100, emptyMap(), emptyList()) }
-    private val openingControlTarget = OpeningControlTarget.from(axis)
-    private val scheduler = Scheduler(axis.events.mapNotNull { event ->
-        val actions = if (event.timeSeconds == 90) event.actions.filterNot {
-            it.type == ActionType.TOGGLE_AUTO || it.type == ActionType.SET_ROLES
-        } else event.actions
-        if (actions.isEmpty()) null else event.copy(actions = actions)
-    })
+    private var axis: AxisDocument = emptyAxis()
+    private var openingControlTarget: OpeningControlTarget? = null
+    private var scheduler = Scheduler(emptyList())
+    private var switchCoordinator: SwitchControlCoordinator? = null
     private val gameStateDetector = GameStateDetector()
     private val executor = ActionExecutor(appContext)
     private val sessionGate = BattleSessionGate()
@@ -72,18 +73,21 @@ class FrameProcessor(
     private var frameId = 0L
     private var debugEnabled = false
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
-    private var openingControlsConfirmed = openingControlTarget == null
+    private var openingControlsConfirmed = true
 
     init {
+        installAxis(loadSelectedAxis())
         controlStateMachine.setDesired(openingControlTarget)
+        openingControlsConfirmed = openingControlTarget == null
     }
 
-    fun prepareNewBattle() {
+    fun prepareNewBattle(document: AxisDocument = loadSelectedAxis()) {
         filter.reset()
         energyDetector?.reset()
         gameStateDetector.reset()
         controlStateMachine.reset()
         actionCoordinator.reset()
+        installAxis(document)
         controlStateMachine.setDesired(openingControlTarget)
         openingControlsConfirmed = openingControlTarget == null
         scheduler.reset()
@@ -152,31 +156,50 @@ class FrameProcessor(
         var controlStep: ControlStep = controlStateMachine.snapshot()
         if (sessionReady) {
             controlStep = updateControls(controls, menuScore, start, image)
-            if (controlStep.confirmed && !openingControlsConfirmed) {
-                openingControlsConfirmed = true
-                controlStateMachine.setDesired(null)
-            }
-            if (openingControlsConfirmed && controlStep.safety == ControlSafetyState.RUNNING) {
-                var coordinated = actionCoordinator.update(controlStep, start)
-                executeControlAction(coordinated.newControlAction, image.width, image.height)
-                executor.execute(coordinated.immediateEvents, image.width, image.height, axis.clickIntervalMs)
+            if (axis.type == AxisType.SWITCH) {
+                val coordinated = requireNotNull(switchCoordinator).update(
+                    SwitchFrameInput(
+                        clockSeconds = filtered.timeSeconds,
+                        triggeredRoles = energy?.triggeredRoles.orEmpty(),
+                        controlsTrustworthy = controls.isTrustworthy() &&
+                            controlStep.safety == ControlSafetyState.RUNNING,
+                        wallMs = start
+                    ),
+                    controlStep
+                )
                 controlStep = coordinated.controlStep
-
-                if (!coordinated.busy) {
-                    gameState = gameStateDetector.update(filtered.timeSeconds, null)
-                    val schedule = scheduler.update(gameState, filtered.timeSeconds)
-                    scheduleReason = schedule.reason
-                    actionCoordinator.enqueue(schedule.events)
-                    coordinated = actionCoordinator.update(controlStep, start)
+                scheduleReason = when {
+                    coordinated.pauseFrame != null -> "pause-frame:${coordinated.pauseFrame.role.name}"
+                    coordinated.activeNodeId != null -> "switch-node:${coordinated.activeNodeId}"
+                    else -> "switch-waiting"
+                }
+            } else {
+                if (controlStep.confirmed && !openingControlsConfirmed) {
+                    openingControlsConfirmed = true
+                    controlStateMachine.setDesired(null)
+                }
+                if (openingControlsConfirmed && controlStep.safety == ControlSafetyState.RUNNING) {
+                    var coordinated = actionCoordinator.update(controlStep, start)
                     executeControlAction(coordinated.newControlAction, image.width, image.height)
                     executor.execute(coordinated.immediateEvents, image.width, image.height, axis.clickIntervalMs)
                     controlStep = coordinated.controlStep
-                    if (coordinated.busy) scheduleReason = "verified-control-action"
+
+                    if (!coordinated.busy) {
+                        gameState = gameStateDetector.update(filtered.timeSeconds, null)
+                        val schedule = scheduler.update(gameState, filtered.timeSeconds)
+                        scheduleReason = schedule.reason
+                        actionCoordinator.enqueue(schedule.events)
+                        coordinated = actionCoordinator.update(controlStep, start)
+                        executeControlAction(coordinated.newControlAction, image.width, image.height)
+                        executor.execute(coordinated.immediateEvents, image.width, image.height, axis.clickIntervalMs)
+                        controlStep = coordinated.controlStep
+                        if (coordinated.busy) scheduleReason = "verified-control-action"
+                    } else {
+                        scheduleReason = "verified-control-action"
+                    }
                 } else {
-                    scheduleReason = "verified-control-action"
+                    scheduleReason = "control-state-gate"
                 }
-            } else {
-                scheduleReason = "control-state-gate"
             }
         }
 
@@ -211,6 +234,38 @@ class FrameProcessor(
     }
 
     private fun recorder(): ClockDebugRecorder = recorder ?: ClockDebugRecorder(appContext).also { recorder = it }
+
+    private fun loadSelectedAxis(): AxisDocument =
+        AxisLibrary(AndroidAxisRepository(appContext)).selectedDocument()
+            ?: runCatching { AxisParser.parse(AppPreferences.axisText(appContext)) }.getOrElse { emptyAxis() }
+
+    private fun installAxis(document: AxisDocument) {
+        axis = document
+        openingControlTarget = if (document.type == AxisType.SEQUENCE) {
+            OpeningControlTarget.from(document)
+        } else {
+            null
+        }
+        scheduler = Scheduler(if (document.type == AxisType.SEQUENCE) sequenceEvents(document) else emptyList())
+        switchCoordinator = if (document.type == AxisType.SWITCH) {
+            SwitchControlCoordinator(
+                stateMachine = controlStateMachine,
+                opening = document.switchOpenings.singleOrNull(),
+                nodes = document.switchNodes
+            )
+        } else {
+            null
+        }
+    }
+
+    private fun sequenceEvents(document: AxisDocument) = document.events.mapNotNull { event ->
+        val actions = if (event.timeSeconds == 90) event.actions.filterNot {
+            it.type == ActionType.TOGGLE_AUTO || it.type == ActionType.SET_ROLES
+        } else {
+            event.actions
+        }
+        if (actions.isEmpty()) null else event.copy(actions = actions)
+    }
 
     private fun refreshDebugPreference(nowMs: Long, force: Boolean = false) {
         if (!force && lastDebugPreferenceCheckMs != Long.MIN_VALUE && nowMs - lastDebugPreferenceCheckMs < DEBUG_PREFERENCE_POLL_MS) return
@@ -312,6 +367,12 @@ class FrameProcessor(
         )
     )
 
+    private fun BattleControlObservation?.isTrustworthy(): Boolean = this != null &&
+        consistent &&
+        auto.state != VisualToggleState.UNKNOWN &&
+        globalSet.state != VisualToggleState.UNKNOWN &&
+        roles.values.none { it.state == VisualToggleState.UNKNOWN }
+
     private fun publishWaitingStatus(label: String, score: Double, start: Long, image: Image) {
         val elapsed = SystemClock.elapsedRealtime() - start
         statusCallback(
@@ -328,5 +389,7 @@ class FrameProcessor(
     private companion object {
         const val TEMPLATE_THRESHOLD = 0.72
         const val DEBUG_PREFERENCE_POLL_MS = 1_000L
+
+        fun emptyAxis() = AxisDocument(AxisType.SEQUENCE, 100, emptyMap(), emptyList())
     }
 }
