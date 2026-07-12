@@ -212,9 +212,6 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     }
 
     private fun publishStatus(status: FrameStatus) {
-        if (status.success && !battleLocked) {
-            lockBattle()
-        }
         renderOverlay(status.controlSafety)
         sendBroadcast(
             Intent(ACTION_STATUS)
