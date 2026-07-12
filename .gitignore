@@ -16,6 +16,8 @@ android/**/build/
 android/local.properties
 android/clock-debug-pull-*/
 android/clock-debug-baseline-output/
+android/energy-debug-*/
+android/energy-*-live.png
 .idea/
 *.iml
 
