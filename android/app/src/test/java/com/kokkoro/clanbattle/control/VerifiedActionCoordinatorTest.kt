@@ -105,6 +105,27 @@ class VerifiedActionCoordinatorTest {
         assertTrue(retry.busy)
     }
 
+    @Test fun `scheduled role set already on releases the following action without a tap`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = VerifiedActionCoordinator(machine)
+        val role2On = observation(role2 = VisualToggleState.ON)
+        machine.update(role2On, 0)
+        coordinator.enqueue(
+            listOf(event(
+                AxisAction(ActionType.CLICK_ROLE, role = "角色2"),
+                AxisAction(ActionType.NOTIFY, message = "after")
+            ))
+        )
+
+        val roleSet = coordinator.update(machine.snapshot(), 10)
+        val completed = coordinator.update(roleSet.controlStep, 20)
+        val after = coordinator.update(completed.controlStep, 30)
+
+        assertEquals(ControlAction.None, roleSet.newControlAction)
+        assertEquals(ActionType.NOTIFY, after.immediateEvents.single().actions.single().type)
+        assertEquals(false, after.busy)
+    }
+
     private fun event(vararg actions: AxisAction) = AxisEvent("event", 1, 60, actions.toList())
 
     private fun observation(

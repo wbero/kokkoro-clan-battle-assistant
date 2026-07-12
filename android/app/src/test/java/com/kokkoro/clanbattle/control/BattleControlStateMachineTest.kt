@@ -84,11 +84,12 @@ class BattleControlStateMachineTest {
         assertEquals(TapRole(CharacterRole.ROLE_1), machine.update(autoOn, 150).action)
     }
 
-    @Test fun `unconfirmed click retries once after five hundred milliseconds`() {
+    @Test fun `unconfirmed click waits one second before retry`() {
         val machine = machine(auto = VisualToggleState.ON)
         val unchanged = observation(auto = VisualToggleState.OFF)
         assertEquals(TapAuto, machine.update(unchanged, 0).action)
-        val retry = machine.update(unchanged, 501)
+        assertEquals(None, machine.update(unchanged, 999).action)
+        val retry = machine.update(unchanged, 1001)
         assertEquals(TapAuto, retry.action)
         assertEquals(1, retry.retryCount)
     }
@@ -97,8 +98,8 @@ class BattleControlStateMachineTest {
         val machine = machine(auto = VisualToggleState.ON)
         val unchanged = observation(auto = VisualToggleState.OFF)
         machine.update(unchanged, 0)
-        machine.update(unchanged, 501)
-        val failed = machine.update(unchanged, 1002)
+        machine.update(unchanged, 1001)
+        val failed = machine.update(unchanged, 2002)
         assertEquals(SAFETY_PAUSING, failed.safety)
         assertEquals(None, failed.action)
     }
@@ -174,6 +175,72 @@ class BattleControlStateMachineTest {
         )
         assertEquals(false, machine.update(changed, 20).confirmed)
         assertEquals(true, machine.update(changed, 30).confirmed)
+    }
+
+    @Test fun `setting an already enabled role completes without clicking`() {
+        val machine = BattleControlStateMachine()
+        machine.update(
+            observation(
+                global = VisualToggleState.OFF,
+                roles = roles(
+                    VisualToggleState.OFF,
+                    VisualToggleState.ON,
+                    VisualToggleState.OFF,
+                    VisualToggleState.OFF,
+                    VisualToggleState.OFF
+                )
+            ),
+            0
+        )
+
+        val step = machine.requestRoleSet(CharacterRole.ROLE_2, 10)
+
+        assertEquals(None, step.action)
+        assertEquals(true, step.confirmed)
+    }
+
+    @Test fun `role set confirmation ignores unrelated role flicker`() {
+        val machine = BattleControlStateMachine()
+        val initial = observation(global = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
+        machine.update(initial, 0)
+        assertEquals(TapRole(CharacterRole.ROLE_3), machine.requestRoleSet(CharacterRole.ROLE_3, 10).action)
+
+        val first = observation(
+            global = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF
+            )
+        )
+        val second = observation(
+            global = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.ON
+            )
+        )
+
+        assertEquals(false, machine.update(first, 100).confirmed)
+        assertEquals(true, machine.update(second, 220).confirmed)
+    }
+
+    @Test fun `auto confirmation ignores role badge flicker`() {
+        val machine = BattleControlStateMachine()
+        val initial = observation(auto = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
+        machine.update(initial, 0)
+        assertEquals(TapAuto, machine.requestToggle(TapAuto, 10).action)
+
+        val first = observation(auto = VisualToggleState.ON, roles = all(VisualToggleState.OFF))
+        val second = observation(auto = VisualToggleState.ON, roles = all(VisualToggleState.ON))
+
+        assertEquals(false, machine.update(first, 130).confirmed)
+        assertEquals(true, machine.update(second, 250).confirmed)
     }
 
     @Test fun `clearing desired target prevents a confirmed opening state from being restored`() {

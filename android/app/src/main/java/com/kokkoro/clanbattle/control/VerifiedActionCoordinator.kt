@@ -76,8 +76,8 @@ class VerifiedActionCoordinator(
         val action = event.actions.single()
         val step = when (action.type) {
             ActionType.CLICK_AUTO -> stateMachine.requestToggle(ControlAction.TapAuto, nowMs)
-            ActionType.CLICK_ROLE -> stateMachine.requestToggle(
-                ControlAction.TapRole(requireNotNull(roleFromName(action.role)) { "非法角色：${action.role}" }),
+            ActionType.CLICK_ROLE -> stateMachine.requestRoleSet(
+                requireNotNull(roleFromName(action.role)) { "非法角色：${action.role}" },
                 nowMs
             )
             ActionType.TOGGLE_AUTO, ActionType.SET_ROLES -> {
@@ -87,7 +87,7 @@ class VerifiedActionCoordinator(
             }
             else -> latest
         }
-        if (step.action != ControlAction.None) activeStarted = true
+        if (step.action != ControlAction.None || step.confirmed) activeStarted = true
         return CoordinatedActionStep(
             controlStep = step,
             immediateEvents = immediate,
