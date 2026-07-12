@@ -11,15 +11,17 @@ class BattleControlStateMachine {
     private var confirmationFrames = 0
     private var retryCount = 0
     private var safety = ControlSafetyState.RUNNING
+    private var pauseReason: String? = null
+    private var recoveryFrames = 0
 
     fun setDesired(target: OpeningControlTarget?) {
         desired = target
     }
 
     fun update(observation: BattleControlObservation, nowMs: Long): ControlStep {
-        if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, "safety-paused")
+        if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, pauseReason ?: "safety-paused")
         if (!observation.consistent) {
-            safety = ControlSafetyState.SAFETY_PAUSING
+            forceSafety(observation.reason ?: "inconsistent-control-state")
             return step(ControlAction.None, observation.reason ?: "inconsistent-control-state")
         }
         val current = observation.toState()
@@ -41,7 +43,7 @@ class BattleControlStateMachine {
                     actionStartedMs = nowMs
                     return step(pending, "retry-click")
                 }
-                safety = ControlSafetyState.SAFETY_PAUSING
+                forceSafety("click-confirmation-failed")
                 return step(ControlAction.None, "click-confirmation-failed")
             }
             return step(ControlAction.None, "waiting-click-confirmation")
@@ -53,6 +55,52 @@ class BattleControlStateMachine {
 
     fun snapshot(): ControlStep = step(ControlAction.None, "snapshot")
 
+    fun forceSafety(reason: String) {
+        safety = ControlSafetyState.SAFETY_PAUSING
+        pauseReason = reason
+        recoveryFrames = 0
+    }
+
+    fun updateMenu(menuScore: Double): ControlStep {
+        if (safety == ControlSafetyState.SAFETY_PAUSED) {
+            return step(ControlAction.None, pauseReason ?: "safety-paused")
+        }
+        if (safety != ControlSafetyState.SAFETY_PAUSING) {
+            return step(ControlAction.None, "safety-not-requested")
+        }
+        if (menuScore < MENU_MIN_SCORE) {
+            return step(ControlAction.None, "menu-button-untrusted")
+        }
+        safety = ControlSafetyState.SAFETY_PAUSED
+        return step(ControlAction.TapMenu, pauseReason ?: "safety-pause")
+    }
+
+    fun updateRecovery(
+        menuButtonScore: Double,
+        observation: BattleControlObservation,
+        nowMs: Long
+    ): ControlStep {
+        if (safety != ControlSafetyState.SAFETY_PAUSED) {
+            return step(ControlAction.None, "not-safety-paused")
+        }
+        if (menuButtonScore < MENU_MIN_SCORE || !observation.isTrustworthy()) {
+            recoveryFrames = 0
+            return step(ControlAction.None, pauseReason ?: "waiting-manual-recovery")
+        }
+        recoveryFrames++
+        if (recoveryFrames < RECOVERY_FRAMES) {
+            return step(ControlAction.None, "confirming-manual-recovery")
+        }
+
+        safety = ControlSafetyState.RUNNING
+        pauseReason = null
+        recoveryFrames = 0
+        clearPending()
+        val current = observation.toState()
+        observed = current
+        return plan(current, nowMs)
+    }
+
     fun reset() {
         observed = null
         desired = null
@@ -62,6 +110,8 @@ class BattleControlStateMachine {
         confirmationFrames = 0
         retryCount = 0
         safety = ControlSafetyState.RUNNING
+        pauseReason = null
+        recoveryFrames = 0
     }
 
     private fun plan(current: BattleControlState, nowMs: Long): ControlStep {
@@ -155,6 +205,11 @@ class BattleControlStateMachine {
         roles = roles.mapValues { it.value.state }
     )
 
+    private fun BattleControlObservation.isTrustworthy(): Boolean =
+        consistent && auto.state != VisualToggleState.UNKNOWN &&
+            globalSet.state != VisualToggleState.UNKNOWN &&
+            roles.values.none { it.state == VisualToggleState.UNKNOWN }
+
     private fun VisualToggleState.toggled(): VisualToggleState = when (this) {
         VisualToggleState.ON -> VisualToggleState.OFF
         VisualToggleState.OFF -> VisualToggleState.ON
@@ -165,5 +220,7 @@ class BattleControlStateMachine {
         const val CONFIRM_FRAMES = 2
         const val CONFIRM_TIMEOUT_MS = 500L
         const val MAX_RETRIES = 1
+        const val MENU_MIN_SCORE = 0.70
+        const val RECOVERY_FRAMES = 2
     }
 }

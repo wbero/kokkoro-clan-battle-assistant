@@ -4,8 +4,10 @@ import com.kokkoro.clanbattle.control.ControlAction.None
 import com.kokkoro.clanbattle.control.ControlAction.TapAuto
 import com.kokkoro.clanbattle.control.ControlAction.TapGlobalSet
 import com.kokkoro.clanbattle.control.ControlAction.TapRole
+import com.kokkoro.clanbattle.control.ControlAction.TapMenu
 import com.kokkoro.clanbattle.control.ControlSafetyState.RUNNING
 import com.kokkoro.clanbattle.control.ControlSafetyState.SAFETY_PAUSING
+import com.kokkoro.clanbattle.control.ControlSafetyState.SAFETY_PAUSED
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -72,6 +74,44 @@ class BattleControlStateMachineTest {
         assertNull(snapshot.expected)
         assertEquals(0, snapshot.retryCount)
         assertEquals(RUNNING, snapshot.safety)
+    }
+
+    @Test fun `safety pausing clicks menu once only when menu is trustworthy`() {
+        val machine = machine(auto = VisualToggleState.ON)
+        machine.forceSafety("state-mismatch")
+
+        val paused = machine.updateMenu(0.82)
+
+        assertEquals(TapMenu, paused.action)
+        assertEquals(SAFETY_PAUSED, paused.safety)
+        assertEquals(None, machine.updateMenu(0.90).action)
+    }
+
+    @Test fun `untrusted menu freezes without guessing a click`() {
+        val machine = machine(auto = VisualToggleState.ON)
+        machine.forceSafety("state-mismatch")
+
+        val step = machine.updateMenu(0.40)
+
+        assertEquals(None, step.action)
+        assertEquals(SAFETY_PAUSING, step.safety)
+        assertEquals("menu-button-untrusted", step.reason)
+    }
+
+    @Test fun `manual recovery discards expected state and requires two trustworthy frames`() {
+        val machine = machine(auto = VisualToggleState.ON)
+        machine.update(observation(auto = VisualToggleState.OFF), 0)
+        machine.forceSafety("state-mismatch")
+        machine.updateMenu(0.82)
+        val recovered = observation(auto = VisualToggleState.OFF)
+
+        assertEquals(SAFETY_PAUSED, machine.updateRecovery(0.82, recovered, 1000).safety)
+        val running = machine.updateRecovery(0.84, recovered, 1050)
+
+        assertEquals(RUNNING, running.safety)
+        assertEquals(TapAuto, running.action)
+        assertEquals(VisualToggleState.ON, running.expected?.auto)
+        assertEquals(0, running.retryCount)
     }
 
     private fun machine(
