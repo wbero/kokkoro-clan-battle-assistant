@@ -1,7 +1,7 @@
 package com.kokkoro.clanbattle.capture
 
 class BattleSessionGate(
-    private val openingSeconds: IntRange = 84..90
+    private val openingSeconds: IntRange = 88..90
 ) {
     private var stage = Stage.RUNNING
 
