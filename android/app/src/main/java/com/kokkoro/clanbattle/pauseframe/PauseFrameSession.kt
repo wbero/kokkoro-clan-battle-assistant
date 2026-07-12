@@ -28,9 +28,11 @@ class PauseFrameSession(
     private var state = PauseFrameState.IDLE
     private var nodeId: String? = null
     private var role: CharacterRole? = null
+    private var generation = 0L
 
     fun enter(nodeId: String, role: CharacterRole): PauseFrameResult {
         if (state != PauseFrameState.IDLE) return result(accepted = false)
+        generation++
         this.nodeId = nodeId
         this.role = role
         state = if (focusPort.acquireFocus()) PauseFrameState.SOFT_PAUSED else PauseFrameState.FAILED
@@ -41,12 +43,15 @@ class PauseFrameSession(
         if (state != PauseFrameState.SOFT_PAUSED) return result(accepted = false)
         state = PauseFrameState.ADVANCING
         if (!focusPort.releaseFocus()) return fail()
-        scheduler.schedule(focusTransitionMs) {
+        val advanceGeneration = generation
+        scheduler.schedule(focusTransitionMs) outer@{
+            if (generation != advanceGeneration || state != PauseFrameState.ADVANCING) return@outer
             if (!focusPort.sendBack()) {
                 fail()
-                return@schedule
+                return@outer
             }
-            scheduler.schedule(frameIntervalMs) {
+            scheduler.schedule(frameIntervalMs) inner@{
+                if (generation != advanceGeneration || state != PauseFrameState.ADVANCING) return@inner
                 state = if (focusPort.acquireFocus()) {
                     PauseFrameState.SOFT_PAUSED
                 } else {
@@ -77,6 +82,7 @@ class PauseFrameSession(
     }
 
     fun reset() {
+        generation++
         if (state != PauseFrameState.IDLE) focusPort.releaseFocus()
         state = PauseFrameState.IDLE
         nodeId = null

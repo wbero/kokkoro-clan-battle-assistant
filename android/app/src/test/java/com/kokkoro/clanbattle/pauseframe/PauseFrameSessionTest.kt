@@ -62,6 +62,20 @@ class PauseFrameSessionTest {
         assertFalse(session.advance().accepted)
     }
 
+    @Test fun `reset invalidates delayed advance callbacks`() {
+        val log = mutableListOf<String>()
+        val scheduler = FakeScheduler(log)
+        val session = PauseFrameSession(FakePort(log), scheduler, 40, 1_000)
+        session.enter("node-1", CharacterRole.ROLE_3)
+        session.advance()
+
+        session.reset()
+        scheduler.runNext()
+
+        assertFalse(log.contains("back"))
+        assertEquals(PauseFrameState.IDLE, session.snapshot().state)
+    }
+
     private class FakePort(
         private val log: MutableList<String>,
         private val acquireResult: Boolean = true

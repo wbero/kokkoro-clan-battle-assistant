@@ -139,6 +139,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         frameProcessor?.close()
         frameProcessor = null
         axisLibrary.unlock()
+        pauseFrameSession.reset()
         overlay.hide()
         captureThread.quitSafely()
         super.onDestroy()
