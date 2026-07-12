@@ -34,7 +34,7 @@ class EnergyDetectorTest {
     }
 
     @Test
-    fun `real frame with four empty bars reports only the last bar near full`() {
+    fun `real frame with four empty bars reports last bar near full but not ready`() {
         val result = EnergyDetector(realEnergyRegions()).detect(
             loadPngResource("energy/four_empty.png")
         )
@@ -44,7 +44,7 @@ class EnergyDetectorTest {
         }
         val lastBar = result.characters.getValue(CharacterRole.ROLE_5)
         assertTrue(lastBar.blueRatio > 0.94f)
-        assertTrue(lastBar.isFull)
+        assertFalse(lastBar.isFull)
     }
 
     @Test
@@ -120,7 +120,7 @@ class EnergyDetectorTest {
         }
         val detector = EnergyDetector(regions)
 
-        val full = detector.detect(roleOneRatio(9))
+        val full = detector.detect(roleOneRatio(10))
         val dropped = detector.detect(roleOneRatio(2))
         val remainsLow = detector.detect(roleOneRatio(1))
 
@@ -130,6 +130,20 @@ class EnergyDetectorTest {
         assertTrue(dropped.characters.getValue(CharacterRole.ROLE_1).triggered)
         assertTrue(remainsLow.triggeredRoles.isEmpty())
         assertFalse(remainsLow.characters.getValue(CharacterRole.ROLE_1).triggered)
+    }
+
+    @Test
+    fun `ninety percent energy is not ready and does not arm a UB trigger`() {
+        val regions = CharacterRole.entries.associateWith { role ->
+            EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
+        }
+        val detector = EnergyDetector(regions)
+
+        val nearFull = detector.detect(roleOneWideRatio(90))
+        val dropped = detector.detect(roleOneWideRatio(20))
+
+        assertFalse(nearFull.characters.getValue(CharacterRole.ROLE_1).isFull)
+        assertTrue(dropped.triggeredRoles.isEmpty())
     }
 
     @Test
@@ -170,6 +184,12 @@ class EnergyDetectorTest {
         val pixels = IntArray(50) { rgb(100, 100, 100) }
         repeat(bluePixelCount) { pixels[it] = rgb(0, 0, 120) }
         return PixelImage(width = 50, height = 1, pixels = pixels)
+    }
+
+    private fun roleOneWideRatio(bluePixelCount: Int): PixelImage {
+        val pixels = IntArray(500) { rgb(100, 100, 100) }
+        repeat(bluePixelCount) { pixels[it] = rgb(0, 0, 120) }
+        return PixelImage(width = 500, height = 1, pixels = pixels)
     }
 
     private fun rgb(red: Int, green: Int, blue: Int): Int =

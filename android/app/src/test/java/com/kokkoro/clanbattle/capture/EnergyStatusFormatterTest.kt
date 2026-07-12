@@ -3,6 +3,7 @@ package com.kokkoro.clanbattle.capture
 import com.kokkoro.clanbattle.recognition.CharacterEnergyState
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
+import com.kokkoro.clanbattle.scheduler.GameState
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -21,5 +22,12 @@ class EnergyStatusFormatterTest {
 
     @Test fun `formats missing detection explicitly`() {
         assertEquals("TP --", EnergyStatusFormatter.format(null))
+    }
+
+    @Test fun `appends game state and scheduler reason when available`() {
+        assertEquals(
+            "TP --  STATE:UB_ANIMATION/ub-animation-frozen",
+            EnergyStatusFormatter.format(null, GameState.UB_ANIMATION, "ub-animation-frozen")
+        )
     }
 }

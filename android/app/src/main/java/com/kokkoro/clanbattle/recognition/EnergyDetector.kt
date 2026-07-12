@@ -37,7 +37,7 @@ data class EnergyDetectionResult(
 
 class EnergyDetector(
     private val regions: Map<CharacterRole, EnergyRegion>,
-    private val fullThreshold: Float = 0.85f,
+    private val fullThreshold: Float = 0.97f,
     private val triggeredBelowThreshold: Float = 0.3f
 ) {
     private var previousRatios: Map<CharacterRole, Float>? = null
