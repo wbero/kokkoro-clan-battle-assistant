@@ -37,6 +37,11 @@ data class FrameStatus(
     val frameHeight: Int
 )
 
+private data class ControlDetection(
+    val observation: BattleControlObservation,
+    val crops: ControlCrops
+)
+
 class FrameProcessor(
     context: Context,
     private val statusCallback: (FrameStatus) -> Unit
@@ -118,7 +123,8 @@ class FrameProcessor(
         val roi = ImageRoiExtractor.extract(image, region)
         val recognition = recognizer.recognize(roi, includeDiagnostics = debugEnabled)
         val energy = detectEnergy(image)
-        val controls = detectControls(image)
+        val controlDetection = detectControls(image)
+        val controls = controlDetection?.observation
         val menuScore = matchRegion(image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu)
         gameStateDetector.observeEnergy(energy)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
@@ -175,6 +181,16 @@ class FrameProcessor(
         }
 
         val elapsed = SystemClock.elapsedRealtime() - start
+        if (debugEnabled && sessionReady) {
+            recorder().recordControls(
+                currentFrameId,
+                System.currentTimeMillis(),
+                controls,
+                controlStep,
+                menuScore,
+                controlDetection?.crops
+            )
+        }
         val source = filtered.source?.name?.lowercase() ?: "-"
         val energyText = EnergyStatusFormatter.format(energy, gameState, scheduleReason)
         val controlText = ControlStatusFormatter.format(controlStep)
@@ -245,16 +261,15 @@ class FrameProcessor(
         energyDetector!!.detect(hud)
     }.getOrNull()
 
-    private fun detectControls(image: Image): BattleControlObservation? = runCatching {
-        controlRecognizer.recognize(
-            ControlCrops(
-                auto = extractRegion(image, BattleReferenceRegions.AUTO_BUTTON),
-                globalSet = extractRegion(image, BattleReferenceRegions.GLOBAL_SET_BUTTON),
-                roles = BattleReferenceRegions.ROLE_SET_BADGES.mapValues { (_, region) ->
-                    extractRegion(image, region)
-                }
-            )
+    private fun detectControls(image: Image): ControlDetection? = runCatching {
+        val crops = ControlCrops(
+            auto = extractRegion(image, BattleReferenceRegions.AUTO_BUTTON),
+            globalSet = extractRegion(image, BattleReferenceRegions.GLOBAL_SET_BUTTON),
+            roles = BattleReferenceRegions.ROLE_SET_BADGES.mapValues { (_, region) ->
+                extractRegion(image, region)
+            }
         )
+        ControlDetection(controlRecognizer.recognize(crops), crops)
     }.getOrNull()
 
     private fun updateControls(

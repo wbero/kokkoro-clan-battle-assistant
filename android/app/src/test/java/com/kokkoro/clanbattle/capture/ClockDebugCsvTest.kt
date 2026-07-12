@@ -7,6 +7,14 @@ import com.kokkoro.clanbattle.recognition.ScoreKind
 import com.kokkoro.clanbattle.recognition.CharacterEnergyState
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
+import com.kokkoro.clanbattle.control.BattleControlObservation
+import com.kokkoro.clanbattle.control.BattleControlState
+import com.kokkoro.clanbattle.control.ControlAction
+import com.kokkoro.clanbattle.control.ControlSafetyState
+import com.kokkoro.clanbattle.control.ControlStep
+import com.kokkoro.clanbattle.control.OpeningControlTarget
+import com.kokkoro.clanbattle.control.ToggleObservation
+import com.kokkoro.clanbattle.control.VisualToggleState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -14,6 +22,35 @@ import org.junit.Test
 import java.io.StringWriter
 
 class ClockDebugCsvTest {
+    @Test fun `control diagnostic row matches header`() {
+        val roles = CharacterRole.entries.associateWith { VisualToggleState.ON }
+        val observation = BattleControlObservation(
+            auto = ToggleObservation(VisualToggleState.ON, 0.91, 0.12, 0.79),
+            globalSet = ToggleObservation(VisualToggleState.OFF, 0.20, 0.88, 0.68),
+            roles = CharacterRole.entries.associateWith { ToggleObservation(VisualToggleState.ON, 0.9) },
+            consistent = true
+        )
+        val step = ControlStep(
+            action = ControlAction.TapRole(CharacterRole.ROLE_2),
+            reason = "test",
+            observed = BattleControlState(VisualToggleState.ON, VisualToggleState.OFF, roles),
+            desired = OpeningControlTarget(roles = roles),
+            expected = BattleControlState(VisualToggleState.ON, VisualToggleState.OFF, roles),
+            safety = ControlSafetyState.SAFETY_PAUSED,
+            retryCount = 1
+        )
+
+        val values = ClockDebugCsv.controlValues(12, 34, observation, step, 0.82, "controls-12")
+        val columns = ClockDebugCsv.CONTROL_HEADER.split(',')
+        val row = columns.zip(values.map(Any?::toString)).toMap()
+
+        assertEquals(columns.size, values.size)
+        assertEquals("ON", row.getValue("autoState"))
+        assertEquals("TapRole:ROLE_2", row.getValue("action"))
+        assertEquals("SAFETY_PAUSED", row.getValue("safetyState"))
+        assertEquals("controls-12", row.getValue("cropPrefix"))
+    }
+
     @Test fun `energy row exactly matches stable per-role column contract`() {
         val result = EnergyDetectionResult(
             characters = CharacterRole.entries.associateWith { role ->
