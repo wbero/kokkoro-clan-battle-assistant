@@ -65,6 +65,21 @@ class BattleControlRecognizerTest {
         assertEquals("global-set-on-but-role-off:ROLE_2,ROLE_4", result.reason)
     }
 
+    @Test
+    fun `live enabled button crops are recognized as on`() {
+        val onBadge = loadBmpResource("control/templates/set.bmp")
+        val crops = ControlCrops(
+            auto = loadPngResource("control/live_auto_on.png"),
+            globalSet = loadPngResource("control/live_global_on.png"),
+            roles = CharacterRole.entries.associateWith { onBadge }
+        )
+
+        val result = recognizer().recognize(crops)
+
+        assertEquals(result.describe(), VisualToggleState.ON, result.auto.state)
+        assertEquals(result.describe(), VisualToggleState.ON, result.globalSet.state)
+    }
+
     private fun recognizer() = BattleControlRecognizer(
         BattleControlTemplates(
             autoOn = loadBmpResource("control/templates/auto_on.bmp"),

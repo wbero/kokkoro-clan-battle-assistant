@@ -8,7 +8,7 @@ data class ReferenceRegion(val x: Int, val y: Int, val width: Int, val height: I
 object BattleReferenceRegions {
     val START_BUTTON = ReferenceRegion(1565, 850, 275, 115)
     val LOADING = ReferenceRegion(1545, 955, 190, 60)
-    val MENU_BUTTON = ReferenceRegion(1740, 20, 170, 65)
+    val MENU_BUTTON = ReferenceRegion(1761, 33, 87, 37)
     val GLOBAL_SET_BUTTON = ReferenceRegion(1788, 644, 87, 86)
     val AUTO_BUTTON = ReferenceRegion(1783, 795, 95, 78)
     val ROLE_SET_BADGES = CharacterRole.entries.associateWith { role ->
