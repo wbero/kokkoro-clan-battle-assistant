@@ -9,8 +9,8 @@ object BattleReferenceRegions {
     val START_BUTTON = ReferenceRegion(1565, 850, 275, 115)
     val LOADING = ReferenceRegion(1545, 955, 190, 60)
     val MENU_BUTTON = ReferenceRegion(1740, 20, 170, 65)
-    val GLOBAL_SET_BUTTON = ReferenceRegion(1760, 620, 140, 130)
-    val AUTO_BUTTON = ReferenceRegion(1760, 770, 140, 130)
+    val GLOBAL_SET_BUTTON = ReferenceRegion(1788, 644, 87, 86)
+    val AUTO_BUTTON = ReferenceRegion(1783, 795, 95, 78)
     val ROLE_SET_BADGES = CharacterRole.entries.associateWith { role ->
         ReferenceRegion(550 + role.ordinal * 240, 771, 54, 53)
     }
