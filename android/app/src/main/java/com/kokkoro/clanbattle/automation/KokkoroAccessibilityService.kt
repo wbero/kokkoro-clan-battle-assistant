@@ -26,6 +26,8 @@ class KokkoroAccessibilityService : AccessibilityService() {
         return dispatchGesture(gesture, null, null)
     }
 
+    fun sendBack(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
+
     companion object {
         @Volatile
         var instance: KokkoroAccessibilityService? = null
