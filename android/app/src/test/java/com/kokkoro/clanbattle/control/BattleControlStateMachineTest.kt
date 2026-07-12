@@ -33,6 +33,45 @@ class BattleControlStateMachineTest {
         assertEquals("waiting-trustworthy-state", step.reason)
     }
 
+    @Test fun `two transient inconsistent frames do not pause opening convergence`() {
+        val machine = machine(
+            roles = roles(
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.ON
+            )
+        )
+        val transient = observation(
+            global = VisualToggleState.ON,
+            roles = all(VisualToggleState.OFF),
+            consistent = false
+        )
+
+        assertEquals(RUNNING, machine.update(transient, 0).safety)
+        assertEquals(RUNNING, machine.update(transient, 50).safety)
+        val recovered = machine.update(
+            observation(global = VisualToggleState.ON, roles = all(VisualToggleState.ON)),
+            100
+        )
+
+        assertEquals(RUNNING, recovered.safety)
+        assertEquals(TapRole(CharacterRole.ROLE_2), recovered.action)
+    }
+
+    @Test fun `three consecutive inconsistent frames enter safety pausing`() {
+        val machine = machine(auto = VisualToggleState.ON)
+        val inconsistent = observation(consistent = false)
+
+        machine.update(inconsistent, 0)
+        machine.update(inconsistent, 50)
+        val failed = machine.update(inconsistent, 100)
+
+        assertEquals(SAFETY_PAUSING, failed.safety)
+        assertEquals("inconsistent", failed.reason)
+    }
+
     @Test fun `click needs two matching frames before next action`() {
         val machine = machine(
             auto = VisualToggleState.ON,

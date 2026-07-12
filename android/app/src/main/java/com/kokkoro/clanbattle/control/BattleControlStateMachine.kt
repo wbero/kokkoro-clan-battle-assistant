@@ -13,6 +13,7 @@ class BattleControlStateMachine {
     private var safety = ControlSafetyState.RUNNING
     private var pauseReason: String? = null
     private var recoveryFrames = 0
+    private var inconsistentFrames = 0
 
     fun setDesired(target: OpeningControlTarget?) {
         desired = target
@@ -42,9 +43,14 @@ class BattleControlStateMachine {
     fun update(observation: BattleControlObservation, nowMs: Long): ControlStep {
         if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, pauseReason ?: "safety-paused")
         if (!observation.consistent) {
+            inconsistentFrames++
+            if (inconsistentFrames < INCONSISTENT_CONFIRM_FRAMES) {
+                return step(ControlAction.None, "confirming-inconsistent-state")
+            }
             forceSafety(observation.reason ?: "inconsistent-control-state")
             return step(ControlAction.None, observation.reason ?: "inconsistent-control-state")
         }
+        inconsistentFrames = 0
         val current = observation.toState()
         val pending = pendingAction
         if (pending != null) {
@@ -116,6 +122,7 @@ class BattleControlStateMachine {
         safety = ControlSafetyState.RUNNING
         pauseReason = null
         recoveryFrames = 0
+        inconsistentFrames = 0
         clearPending()
         val current = observation.toState()
         observed = current
@@ -133,6 +140,7 @@ class BattleControlStateMachine {
         safety = ControlSafetyState.RUNNING
         pauseReason = null
         recoveryFrames = 0
+        inconsistentFrames = 0
     }
 
     private fun plan(current: BattleControlState, nowMs: Long): ControlStep {
@@ -243,5 +251,6 @@ class BattleControlStateMachine {
         const val MAX_RETRIES = 1
         const val MENU_MIN_SCORE = 0.70
         const val RECOVERY_FRAMES = 2
+        const val INCONSISTENT_CONFIRM_FRAMES = 3
     }
 }
