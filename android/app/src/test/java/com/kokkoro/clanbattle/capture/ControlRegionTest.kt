@@ -11,16 +11,13 @@ class ControlRegionTest {
         assertEquals(ReferenceRegion(1740, 20, 170, 65), BattleReferenceRegions.MENU_BUTTON)
         assertEquals(ReferenceRegion(1760, 620, 140, 130), BattleReferenceRegions.GLOBAL_SET_BUTTON)
         assertEquals(ReferenceRegion(1760, 770, 140, 130), BattleReferenceRegions.AUTO_BUTTON)
-        assertEquals(
-            mapOf(
-                CharacterRole.ROLE_1 to ReferenceRegion(550, 771, 54, 53),
-                CharacterRole.ROLE_2 to ReferenceRegion(790, 771, 54, 53),
-                CharacterRole.ROLE_3 to ReferenceRegion(1030, 771, 54, 53),
-                CharacterRole.ROLE_4 to ReferenceRegion(1270, 771, 54, 53),
-                CharacterRole.ROLE_5 to ReferenceRegion(1510, 771, 54, 53)
-            ),
-            BattleReferenceRegions.ROLE_SET_BADGES
-        )
+        assertEquals(CharacterRole.entries.toSet(), BattleReferenceRegions.ROLE_SET_BADGES.keys)
+        CharacterRole.entries.forEach { role ->
+            assertEquals(
+                ReferenceRegion(550 + role.ordinal * 240, 771, 54, 53),
+                BattleReferenceRegions.ROLE_SET_BADGES.getValue(role)
+            )
+        }
     }
 
     @Test
@@ -32,7 +29,29 @@ class ControlRegionTest {
         ) + BattleReferenceRegions.ROLE_SET_BADGES.values
 
         assertRegionsInBounds(regions, 1920, 1080)
-        assertRegionsInBounds(regions.map { it.scaledBy(1, 2) }, 960, 540)
+
+        val scaled = regions.map { region ->
+            ImageRoiExtractor.scaleRegion(
+                width = 960,
+                height = 540,
+                x = region.x,
+                y = region.y,
+                regionWidth = region.width,
+                regionHeight = region.height
+            )
+        }
+        with(scaled.first()) {
+            assertEquals(870, left)
+            assertEquals(10, top)
+            assertEquals(955, right)
+            assertEquals(42, bottom)
+        }
+        scaled.forEach { region ->
+            assertTrue(region.left >= 0 && region.top >= 0)
+            assertTrue(region.right - region.left > 0 && region.bottom - region.top > 0)
+            assertTrue(region.right <= 960)
+            assertTrue(region.bottom <= 540)
+        }
     }
 
     private fun assertRegionsInBounds(regions: Collection<ReferenceRegion>, width: Int, height: Int) {
@@ -44,10 +63,4 @@ class ControlRegionTest {
         }
     }
 
-    private fun ReferenceRegion.scaledBy(numerator: Int, denominator: Int) = ReferenceRegion(
-        x = x * numerator / denominator,
-        y = y * numerator / denominator,
-        width = width * numerator / denominator,
-        height = height * numerator / denominator
-    )
 }

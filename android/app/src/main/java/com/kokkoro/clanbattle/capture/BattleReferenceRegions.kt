@@ -11,13 +11,9 @@ object BattleReferenceRegions {
     val MENU_BUTTON = ReferenceRegion(1740, 20, 170, 65)
     val GLOBAL_SET_BUTTON = ReferenceRegion(1760, 620, 140, 130)
     val AUTO_BUTTON = ReferenceRegion(1760, 770, 140, 130)
-    val ROLE_SET_BADGES = mapOf(
-        CharacterRole.ROLE_1 to ReferenceRegion(550, 771, 54, 53),
-        CharacterRole.ROLE_2 to ReferenceRegion(790, 771, 54, 53),
-        CharacterRole.ROLE_3 to ReferenceRegion(1030, 771, 54, 53),
-        CharacterRole.ROLE_4 to ReferenceRegion(1270, 771, 54, 53),
-        CharacterRole.ROLE_5 to ReferenceRegion(1510, 771, 54, 53)
-    )
+    val ROLE_SET_BADGES = CharacterRole.entries.associateWith { role ->
+        ReferenceRegion(550 + role.ordinal * 240, 771, 54, 53)
+    }
     val ENERGY_HUD = ReferenceRegion(384, 1034, 1160, 25)
     val ENERGY_REGIONS = mapOf(
         CharacterRole.ROLE_1 to EnergyRegion(8, 6, 176, 13),
