@@ -19,19 +19,33 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.Display
 import android.view.WindowManager
 import com.kokkoro.clanbattle.MainActivity
 import com.kokkoro.clanbattle.R
+import com.kokkoro.clanbattle.axis.AndroidAxisRepository
+import com.kokkoro.clanbattle.axis.AxisLibrary
+import com.kokkoro.clanbattle.config.AppPreferences
+import com.kokkoro.clanbattle.control.ControlSafetyState
+import com.kokkoro.clanbattle.overlay.OverlayActions
 import com.kokkoro.clanbattle.overlay.OverlayController
+import com.kokkoro.clanbattle.overlay.OverlayUiState
+import com.kokkoro.clanbattle.pauseframe.AndroidOverlayFocusPort
+import com.kokkoro.clanbattle.pauseframe.PauseFrameScheduler
+import com.kokkoro.clanbattle.pauseframe.PauseFrameSession
+import com.kokkoro.clanbattle.recognition.CharacterRole
 
 class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private lateinit var captureThread: HandlerThread
     private lateinit var captureHandler: Handler
+    private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var displayManager: DisplayManager
     private lateinit var overlay: OverlayController
+    private lateinit var axisLibrary: AxisLibrary
+    private lateinit var pauseFrameSession: PauseFrameSession
     private var projection: MediaProjection? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -39,6 +53,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private var captureWidth = 0
     private var captureHeight = 0
     private var lastProcessedNanos = 0L
+    private var battleLocked = false
+    private var pauseFrameRole: CharacterRole? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -52,10 +68,28 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         captureHandler = Handler(captureThread.looper)
         displayManager = getSystemService(DisplayManager::class.java)
         displayManager.registerDisplayListener(this, captureHandler)
-        overlay = OverlayController(this) {
-            captureHandler.post { prepareNewBattle() }
-        }
-        frameProcessor = FrameProcessor(this, ::publishStatus)
+        axisLibrary = AxisLibrary(AndroidAxisRepository(this))
+        overlay = OverlayController(
+            context = this,
+            axesProvider = axisLibrary::list,
+            actions = OverlayActions(
+                selectAxis = { id -> captureHandler.post { selectAxis(id) } },
+                nextFrame = ::requestNextFrame,
+                confirm = ::confirmPauseFrame,
+                safetyMenu = { captureHandler.post { frameProcessor?.requestSafetyPause() } },
+                reset = { captureHandler.post { prepareNewBattle() } }
+            )
+        )
+        pauseFrameSession = PauseFrameSession(
+            focusPort = AndroidOverlayFocusPort(this, overlay) { captureWidth to captureHeight },
+            scheduler = PauseFrameScheduler { delayMs, action -> mainHandler.postDelayed(action, delayMs) }
+        )
+        frameProcessor = FrameProcessor(
+            context = this,
+            statusCallback = ::publishStatus,
+            pauseFrameCallback = ::onPauseFrameRequested,
+            battleLockCallback = ::lockBattle
+        )
         createNotificationChannel()
     }
 
@@ -89,6 +123,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             .getMediaProjection(resultCode, data)
             .also { it.registerCallback(projectionCallback, captureHandler) }
         overlay.show()
+        renderOverlay()
         captureHandler.post { recreateVirtualDisplay(force = true) }
         return START_NOT_STICKY
     }
@@ -103,6 +138,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         }
         frameProcessor?.close()
         frameProcessor = null
+        axisLibrary.unlock()
         overlay.hide()
         captureThread.quitSafely()
         super.onDestroy()
@@ -167,7 +203,10 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     }
 
     private fun publishStatus(status: FrameStatus) {
-        overlay.update(status.text, status.success)
+        if (status.success && !battleLocked) {
+            lockBattle()
+        }
+        renderOverlay(status.controlSafety)
         sendBroadcast(
             Intent(ACTION_STATUS)
                 .setPackage(packageName)
@@ -178,8 +217,71 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     }
 
     private fun prepareNewBattle() {
-        frameProcessor?.prepareNewBattle()
+        battleLocked = false
+        pauseFrameRole = null
+        mainHandler.post { pauseFrameSession.reset() }
+        axisLibrary.unlock()
+        val selected = axisLibrary.selectedDocument()
+        if (selected != null) frameProcessor?.prepareNewBattle(selected) else frameProcessor?.prepareNewBattle()
+        renderOverlay()
         publishStatus(FrameStatus("已重置，等待战斗开始按钮", false, 0, captureWidth, captureHeight))
+    }
+
+    private fun selectAxis(id: String) {
+        if (battleLocked || !axisLibrary.select(id)) return
+        val selected = axisLibrary.selected()
+        val text = axisLibrary.selectedText()
+        if (selected != null && text != null) AppPreferences.saveAxis(this, selected.name, text)
+        axisLibrary.selectedDocument()?.let { frameProcessor?.prepareNewBattle(it) }
+        renderOverlay()
+    }
+
+    private fun lockBattle() {
+        if (battleLocked) return
+        battleLocked = true
+        axisLibrary.lock()
+        renderOverlay()
+    }
+
+    private fun requestNextFrame() {
+        pauseFrameSession.advance()
+        renderOverlay()
+    }
+
+    private fun confirmPauseFrame() {
+        val result = pauseFrameSession.confirm()
+        if (!result.readyForConvergence || result.nodeId == null) {
+            renderOverlay()
+            return
+        }
+        pauseFrameRole = null
+        captureHandler.post { frameProcessor?.confirmPauseFrame(result.nodeId) }
+        renderOverlay()
+    }
+
+    private fun onPauseFrameRequested(nodeId: String, role: CharacterRole) {
+        mainHandler.post {
+            val entered = pauseFrameSession.enter(nodeId, role)
+            if (entered.accepted) {
+                pauseFrameRole = role
+            } else {
+                pauseFrameRole = null
+                captureHandler.post { frameProcessor?.requestSafetyPause("pause-frame-focus-failed") }
+            }
+            renderOverlay()
+        }
+    }
+
+    private fun renderOverlay(safety: ControlSafetyState? = null) {
+        val name = axisLibrary.selected()?.name
+        overlay.render(
+            when {
+                safety == ControlSafetyState.SAFETY_PAUSED -> OverlayUiState.safetyPaused(name)
+                pauseFrameRole != null -> OverlayUiState.pauseFrame(name, "角色${pauseFrameRole!!.ordinal + 1}")
+                battleLocked -> OverlayUiState.running(name)
+                else -> OverlayUiState.idle(name)
+            }
+        )
     }
 
     private fun startCaptureForeground() {

@@ -40,7 +40,8 @@ data class FrameStatus(
     val success: Boolean,
     val processingMs: Long,
     val frameWidth: Int,
-    val frameHeight: Int
+    val frameHeight: Int,
+    val controlSafety: ControlSafetyState? = null
 )
 
 private data class ControlDetection(
@@ -50,7 +51,9 @@ private data class ControlDetection(
 
 class FrameProcessor(
     context: Context,
-    private val statusCallback: (FrameStatus) -> Unit
+    private val statusCallback: (FrameStatus) -> Unit,
+    private val pauseFrameCallback: (String, com.kokkoro.clanbattle.recognition.CharacterRole) -> Unit = { _, _ -> },
+    private val battleLockCallback: () -> Unit = {}
 ) {
     private val appContext = context.applicationContext
     private val recognizer = ClockRecognizer(AndroidTemplateLoader.load(appContext))
@@ -74,11 +77,13 @@ class FrameProcessor(
     private var debugEnabled = false
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
     private var openingControlsConfirmed = true
+    private var lastPauseFrameNodeId: String? = null
 
     init {
         installAxis(loadSelectedAxis())
         controlStateMachine.setDesired(openingControlTarget)
         openingControlsConfirmed = openingControlTarget == null
+        lastPauseFrameNodeId = null
     }
 
     fun prepareNewBattle(document: AxisDocument = loadSelectedAxis()) {
@@ -109,7 +114,10 @@ class FrameProcessor(
 
         if (sessionGate.isWaitingForStart()) {
             val score = matchRegion(image, BattleReferenceRegions.START_BUTTON, battleTemplates.startBattle)
-            if (score >= TEMPLATE_THRESHOLD) sessionGate.onStartMatched()
+            if (score >= TEMPLATE_THRESHOLD) {
+                sessionGate.onStartMatched()
+                battleLockCallback()
+            }
             if (debugEnabled) recordEarlyFailure(currentFrameId, "waiting-start-template score=${"%.4f".format(Locale.US, score)}")
             publishWaitingStatus("等待战斗开始按钮", score, start, image)
             return
@@ -168,6 +176,12 @@ class FrameProcessor(
                     controlStep
                 )
                 controlStep = coordinated.controlStep
+                coordinated.pauseFrame?.let { request ->
+                    if (lastPauseFrameNodeId != request.nodeId) {
+                        lastPauseFrameNodeId = request.nodeId
+                        pauseFrameCallback(request.nodeId, request.role)
+                    }
+                }
                 scheduleReason = when {
                     coordinated.pauseFrame != null -> "pause-frame:${coordinated.pauseFrame.role.name}"
                     coordinated.activeNodeId != null -> "switch-node:${coordinated.activeNodeId}"
@@ -224,7 +238,24 @@ class FrameProcessor(
         } else {
             "FAIL ${filtered.reason ?: recognition.reason}  ${recognition.rawText ?: "--:--"}  ${elapsed}ms  $energyText"
         }
-        statusCallback(FrameStatus(text, sessionReady, elapsed, image.width, image.height))
+        statusCallback(
+            FrameStatus(
+                text,
+                sessionReady,
+                elapsed,
+                image.width,
+                image.height,
+                controlStep.safety.takeIf { sessionReady }
+            )
+        )
+    }
+
+    fun requestSafetyPause(reason: String = "manual-safety-menu") {
+        controlStateMachine.forceSafety(reason)
+    }
+
+    fun confirmPauseFrame(nodeId: String) {
+        switchCoordinator?.confirmPauseFrame(nodeId)
     }
 
     fun close() {
