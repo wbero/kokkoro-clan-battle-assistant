@@ -144,7 +144,11 @@ class SwitchAxisRuntime(
                     SwitchRuntimeCommand.None
                 }
             }
-            is PauseFrameTrigger -> pauseFrameCommand(active, trigger)
+            is PauseFrameTrigger -> if (frame.controlsTrustworthy) {
+                pauseFrameCommand(active, trigger)
+            } else {
+                SwitchRuntimeCommand.None
+            }
             else -> SwitchRuntimeCommand.None
         }
     }

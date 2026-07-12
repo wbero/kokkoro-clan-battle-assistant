@@ -62,23 +62,33 @@ class PauseFrameSession(
         return result(accepted = true)
     }
 
-    fun confirm(): PauseFrameResult {
+    fun confirm(onComplete: (PauseFrameResult) -> Unit): PauseFrameResult {
         if (state != PauseFrameState.SOFT_PAUSED) return result(accepted = false)
         val confirmedNode = nodeId
         val confirmedRole = role ?: return fail()
         state = PauseFrameState.CONFIRMING
-        if (!focusPort.tapRole(confirmedRole)) return fail()
         if (!focusPort.releaseFocus()) return fail()
-        state = PauseFrameState.IDLE
-        nodeId = null
-        role = null
-        return PauseFrameResult(
-            accepted = true,
-            state = state,
-            nodeId = confirmedNode,
-            confirmedRole = confirmedRole,
-            readyForConvergence = true
-        )
+        val confirmGeneration = generation
+        scheduler.schedule(focusTransitionMs) confirmation@{
+            if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@confirmation
+            if (!focusPort.sendBack() || !focusPort.tapRole(confirmedRole)) {
+                onComplete(fail())
+                return@confirmation
+            }
+            state = PauseFrameState.IDLE
+            nodeId = null
+            role = null
+            onComplete(
+                PauseFrameResult(
+                    accepted = true,
+                    state = state,
+                    nodeId = confirmedNode,
+                    confirmedRole = confirmedRole,
+                    readyForConvergence = true
+                )
+            )
+        }
+        return result(accepted = true)
     }
 
     fun reset() {

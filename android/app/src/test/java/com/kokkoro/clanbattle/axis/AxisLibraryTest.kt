@@ -30,17 +30,22 @@ class AxisLibraryTest {
     }
 
     @Test fun `active battle locks selection until reset`() {
-        val library = AxisLibrary(InMemoryAxisStorage())
+        val storage = InMemoryAxisStorage()
+        val library = AxisLibrary(storage)
+        val secondView = AxisLibrary(storage)
         val first = library.import("a.txt", validSwitch("E5刀1"))
         val second = library.import("b.txt", validSwitch("E5刀2"))
         library.select(first.id)
 
         library.lock()
-        assertFalse(library.select(second.id))
+        assertTrue(secondView.isLocked())
+        assertFalse(secondView.select(second.id))
+        assertFalse(secondView.remove(first.id))
         assertEquals(first.id, library.selected()?.id)
 
-        library.unlock()
-        assertTrue(library.select(second.id))
+        secondView.unlock()
+        assertFalse(library.isLocked())
+        assertTrue(secondView.select(second.id))
         assertEquals(second.id, library.selected()?.id)
     }
 
@@ -79,11 +84,14 @@ class AxisLibraryTest {
     private class InMemoryAxisStorage : AxisStorage {
         private val entries = linkedMapOf<String, StoredAxisText>()
         private var selectedId: String? = null
+        private var locked = false
 
         override fun list(): List<StoredAxisText> = entries.values.toList()
         override fun put(entry: StoredAxisText) { entries[entry.id] = entry }
         override fun remove(id: String): Boolean = entries.remove(id) != null
         override fun selectedId(): String? = selectedId
         override fun setSelectedId(id: String?) { selectedId = id }
+        override fun selectionLocked(): Boolean = locked
+        override fun setSelectionLocked(locked: Boolean) { this.locked = locked }
     }
 }

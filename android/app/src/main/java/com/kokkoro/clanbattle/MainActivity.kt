@@ -55,6 +55,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        refreshAxisLabel()
         if (!receiverRegistered) {
             val filter = IntentFilter(ScreenCaptureService.ACTION_STATUS)
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(statusReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -206,15 +207,16 @@ class MainActivity : Activity() {
 
     private fun refreshAxisLabel() {
         val selected = axisLibrary.selected()
-        axisView.text = selected?.let { "当前轴：${it.name}（${it.type}，${it.eventCount}节点）" }
-            ?: "当前轴：未选择"
+        val locked = axisLibrary.isLocked()
+        axisView.text = (selected?.let { "当前轴：${it.name}（${it.type}，${it.eventCount}节点）" }
+            ?: "当前轴：未选择") + if (locked) "；战斗中已锁定" else ""
         if (!::axisList.isInitialized) return
         axisList.removeAllViews()
         axisLibrary.list().forEach { axis ->
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             row.addView(Button(this).apply {
                 isAllCaps = false
-                isEnabled = axis.valid
+                isEnabled = axis.valid && !locked
                 text = buildString {
                     if (selected?.id == axis.id) append("✓ ")
                     append(axis.name).append(" [").append(axis.type).append("]")
@@ -230,6 +232,7 @@ class MainActivity : Activity() {
             row.addView(Button(this).apply {
                 text = "删除"
                 isAllCaps = false
+                isEnabled = !locked
                 setOnClickListener {
                     axisLibrary.remove(axis.id)
                     syncLegacySelectedAxis()

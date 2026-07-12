@@ -107,6 +107,20 @@ class SwitchAxisRuntimeTest {
         assertEquals("later", (runtime.update(frame(clock = 17)) as SwitchRuntimeCommand.Converge).nodeId)
     }
 
+    @Test fun `pause frame waits until controls are trustworthy`() {
+        val pause = node("pause", 18, PauseFrameTrigger(CharacterRole.ROLE_3, "角色3"))
+        val runtime = runtime(pause).openedAt(90)
+
+        assertEquals(
+            SwitchRuntimeCommand.None,
+            runtime.update(frame(clock = 18, trustworthy = false))
+        )
+        assertTrue(
+            runtime.update(frame(clock = 18, trustworthy = true))
+                is SwitchRuntimeCommand.EnterPauseFrame
+        )
+    }
+
     private fun runtime(vararg nodes: SwitchAxisNode) = SwitchAxisRuntime(
         opening = SwitchAxisOpening(1, target()),
         nodes = nodes.toList()

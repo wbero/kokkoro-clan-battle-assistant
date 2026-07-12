@@ -33,6 +33,11 @@ class AndroidAxisRepository(context: Context) : AxisStorage {
 
     override fun setSelectedId(id: String?) = AppPreferences.setSelectedAxisId(appContext, id)
 
+    override fun selectionLocked(): Boolean = AppPreferences.axisSelectionLocked(appContext)
+
+    override fun setSelectionLocked(locked: Boolean) =
+        AppPreferences.setAxisSelectionLocked(appContext, locked)
+
     private fun contentFile(id: String) = File(axesDir, "$id.txt")
 
     private fun readIndex(): LinkedHashMap<String, String> {
