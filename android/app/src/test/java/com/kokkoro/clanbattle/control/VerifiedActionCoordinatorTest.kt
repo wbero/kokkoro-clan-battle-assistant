@@ -10,7 +10,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VerifiedActionCoordinatorTest {
-    @Test fun `role click blocks following action until two visual confirmations`() {
+    @Test fun `role click waits for matching ub then turns set off before following action`() {
         val machine = BattleControlStateMachine()
         val coordinator = VerifiedActionCoordinator(machine)
         machine.update(observation(), 0)
@@ -29,11 +29,35 @@ class VerifiedActionCoordinatorTest {
 
         val changed = observation(role2 = VisualToggleState.ON)
         assertTrue(coordinator.update(machine.update(changed, 20), 20).busy)
-        val confirmed = coordinator.update(machine.update(changed, 30), 30)
-        assertTrue(confirmed.busy)
-        assertTrue(confirmed.immediateEvents.isEmpty())
+        val setOn = coordinator.update(machine.update(changed, 30), 30)
+        assertTrue(setOn.busy)
+        assertEquals("WAITING_ROLE_UB", setOn.phase)
 
-        val after = coordinator.update(machine.snapshot(), 40)
+        val noUb = coordinator.update(machine.snapshot(), 40)
+        assertTrue(noUb.busy)
+        assertTrue(noUb.immediateEvents.isEmpty())
+
+        val wrongUb = coordinator.update(
+            machine.snapshot(),
+            50,
+            triggeredRoles = setOf(CharacterRole.ROLE_3)
+        )
+        assertTrue(wrongUb.busy)
+
+        val clearSet = coordinator.update(
+            machine.snapshot(),
+            60,
+            triggeredRoles = setOf(CharacterRole.ROLE_2)
+        )
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_2), clearSet.newControlAction)
+        assertEquals("CONFIRMING_ROLE_OFF", clearSet.phase)
+
+        val changedOff = observation(role2 = VisualToggleState.OFF)
+        coordinator.update(machine.update(changedOff, 70), 70)
+        val cleared = coordinator.update(machine.update(changedOff, 80), 80)
+        assertTrue(cleared.busy)
+
+        val after = coordinator.update(machine.snapshot(), 90)
         assertEquals(ActionType.NOTIFY, after.immediateEvents.single().actions.single().type)
         assertFalse(after.busy)
     }
@@ -105,7 +129,7 @@ class VerifiedActionCoordinatorTest {
         assertTrue(retry.busy)
     }
 
-    @Test fun `scheduled role set already on releases the following action without a tap`() {
+    @Test fun `scheduled role already on still waits for ub and clears set`() {
         val machine = BattleControlStateMachine()
         val coordinator = VerifiedActionCoordinator(machine)
         val role2On = observation(role2 = VisualToggleState.ON)
@@ -118,12 +142,63 @@ class VerifiedActionCoordinatorTest {
         )
 
         val roleSet = coordinator.update(machine.snapshot(), 10)
-        val completed = coordinator.update(roleSet.controlStep, 20)
-        val after = coordinator.update(completed.controlStep, 30)
-
         assertEquals(ControlAction.None, roleSet.newControlAction)
-        assertEquals(ActionType.NOTIFY, after.immediateEvents.single().actions.single().type)
-        assertEquals(false, after.busy)
+        assertEquals("WAITING_ROLE_UB", roleSet.phase)
+
+        val clearing = coordinator.update(
+            roleSet.controlStep,
+            20,
+            triggeredRoles = setOf(CharacterRole.ROLE_2)
+        )
+
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_2), clearing.newControlAction)
+        assertTrue(clearing.busy)
+    }
+
+    @Test fun `same time role actions stay serialized in source order`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = VerifiedActionCoordinator(machine)
+        machine.update(observation(), 0)
+        coordinator.enqueue(
+            listOf(event(
+                AxisAction(ActionType.CLICK_ROLE, role = "角色2"),
+                AxisAction(ActionType.CLICK_ROLE, role = "角色3")
+            ))
+        )
+
+        assertEquals(
+            ControlAction.TapRole(CharacterRole.ROLE_2),
+            coordinator.update(machine.snapshot(), 10).newControlAction
+        )
+        val role2On = observation(role2 = VisualToggleState.ON)
+        coordinator.update(machine.update(role2On, 20), 20)
+        coordinator.update(machine.update(role2On, 30), 30)
+        assertEquals(
+            ControlAction.TapRole(CharacterRole.ROLE_2),
+            coordinator.update(
+                machine.snapshot(),
+                40,
+                triggeredRoles = setOf(CharacterRole.ROLE_2)
+            ).newControlAction
+        )
+        coordinator.update(machine.update(observation(), 50), 50)
+        coordinator.update(machine.update(observation(), 60), 60)
+
+        val role3 = coordinator.update(machine.snapshot(), 70)
+
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_3), role3.newControlAction)
+    }
+
+    @Test fun `configured sequence alias resolves to its role`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = VerifiedActionCoordinator(machine)
+        coordinator.configureRoleAliases(mapOf("角色3" to "原晶"))
+        machine.update(observation(), 0)
+        coordinator.enqueue(listOf(event(AxisAction(ActionType.CLICK_ROLE, role = "原晶"))))
+
+        val step = coordinator.update(machine.snapshot(), 10)
+
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_3), step.newControlAction)
     }
 
     private fun event(vararg actions: AxisAction) = AxisEvent("event", 1, 60, actions.toList())
