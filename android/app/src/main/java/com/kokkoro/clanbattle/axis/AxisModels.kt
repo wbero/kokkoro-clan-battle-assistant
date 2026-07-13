@@ -24,7 +24,8 @@ data class AxisEvent(
     val id: String,
     val sourceLine: Int,
     val timeSeconds: Int,
-    val actions: List<AxisAction>
+    val actions: List<AxisAction>,
+    val trigger: SwitchNodeTrigger = TimedTrigger
 )
 
 data class AxisDocument(
