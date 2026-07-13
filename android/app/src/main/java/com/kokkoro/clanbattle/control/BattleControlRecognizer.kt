@@ -43,7 +43,7 @@ class BattleControlRecognizer(
             roles = roles,
             consistent = !inconsistent,
             reason = if (inconsistent) {
-                "global-set-on-but-role-off:${explicitlyOffRoles.joinToString(",")}" 
+                "global-set-on-but-role-off:${explicitlyOffRoles.joinToString(",")}"
             } else {
                 null
             }

@@ -202,4 +202,3 @@ ROI saving remains bounded and event-driven.
 - advance repeatedly and observe bounded frame movement;
 - confirm a target frame and verify role click followed immediately by SET/AUTO convergence;
 - force focus/menu errors and verify no blind role click occurs.
-
