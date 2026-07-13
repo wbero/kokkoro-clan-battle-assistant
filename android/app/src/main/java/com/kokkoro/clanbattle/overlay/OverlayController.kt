@@ -7,12 +7,33 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.kokkoro.clanbattle.R
 import com.kokkoro.clanbattle.axis.StoredAxis
+import kotlin.math.abs
+
+data class OverlayPosition(val x: Int, val y: Int)
+
+fun boundedOverlayPosition(
+    startX: Int,
+    startY: Int,
+    deltaX: Int,
+    deltaY: Int,
+    screenWidth: Int,
+    screenHeight: Int,
+    iconSize: Int
+) = OverlayPosition(
+    x = (startX + deltaX).coerceIn(0, maxOf(0, screenWidth - iconSize)),
+    y = (startY + deltaY).coerceIn(0, maxOf(0, screenHeight - iconSize))
+)
 
 data class OverlayActions(
     val selectAxis: (String) -> Unit,
@@ -36,7 +57,11 @@ class OverlayController(
     private var nextFrameButton: Button? = null
     private var confirmButton: Button? = null
     private var safetyButton: Button? = null
+    private var minimizeButton: Button? = null
     private var resetButton: Button? = null
+    private var minimizedIcon: ImageButton? = null
+    private var minimizedX: Int? = null
+    private var minimizedY: Int? = null
     private var statusTextView: TextView? = null
     private var currentActionView: TextView? = null
     private var nextActionView: TextView? = null
@@ -53,6 +78,9 @@ class OverlayController(
                 }, weighted())
                 addView(button().also { safetyButton = it }.apply {
                     setOnClickListener { actions.safetyMenu() }
+                }, compact())
+                addView(button().also { minimizeButton = it }.apply {
+                    setOnClickListener { minimize() }
                 }, compact())
                 addView(button().also { resetButton = it }.apply {
                     setOnClickListener { actions.reset() }
@@ -93,6 +121,8 @@ class OverlayController(
     fun hide() {
         mainHandler.post {
             hideAxisPanel()
+            minimizedIcon?.let { runCatching { windowManager.removeView(it) } }
+            minimizedIcon = null
             rootView?.let { runCatching { windowManager.removeView(it) } }
             rootView = null
             rootParams = null
@@ -100,6 +130,7 @@ class OverlayController(
             nextFrameButton = null
             confirmButton = null
             safetyButton = null
+            minimizeButton = null
             resetButton = null
             statusTextView = null
             currentActionView = null
@@ -109,6 +140,7 @@ class OverlayController(
 
     fun acquireGamePauseFocus(): Boolean {
         hideAxisPanel()
+        restoreNow()
         val view = rootView ?: return false
         val params = rootParams ?: return false
         params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
@@ -144,6 +176,7 @@ class OverlayController(
         apply(nextFrameButton, state.nextFrame)
         apply(confirmButton, state.confirm)
         apply(safetyButton, state.safetyMenu)
+        apply(minimizeButton, state.minimize)
         apply(resetButton, state.reset)
         statusTextView?.text = state.statusText
         currentActionView?.text = state.currentAction
@@ -160,6 +193,84 @@ class OverlayController(
 
     private fun toggleAxisPanel() {
         if (axisPanel == null) showAxisPanel() else hideAxisPanel()
+    }
+
+    private fun minimize() {
+        mainHandler.post {
+            if (minimizedIcon != null) return@post
+            hideAxisPanel()
+            rootView?.visibility = View.GONE
+            val icon = ImageButton(context).apply {
+                setImageResource(R.drawable.overlay_icon)
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                setBackgroundColor(Color.TRANSPARENT)
+                contentDescription = "恢复可可萝控制面板"
+                setPadding(0, 0, 0, 0)
+            }
+            val iconSize = dp(60)
+            val params = overlayParams(minimizedX ?: dp(16), minimizedY ?: dp(100)).apply {
+                width = iconSize
+                height = iconSize
+            }
+            val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+            var downRawX = 0f
+            var downRawY = 0f
+            var startX = params.x
+            var startY = params.y
+            var dragged = false
+            icon.setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downRawX = event.rawX
+                        downRawY = event.rawY
+                        startX = params.x
+                        startY = params.y
+                        dragged = false
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val deltaX = (event.rawX - downRawX).toInt()
+                        val deltaY = (event.rawY - downRawY).toInt()
+                        if (abs(deltaX) > touchSlop || abs(deltaY) > touchSlop) dragged = true
+                        val metrics = context.resources.displayMetrics
+                        val position = boundedOverlayPosition(
+                            startX,
+                            startY,
+                            deltaX,
+                            deltaY,
+                            metrics.widthPixels,
+                            metrics.heightPixels,
+                            iconSize
+                        )
+                        params.x = position.x
+                        params.y = position.y
+                        minimizedX = position.x
+                        minimizedY = position.y
+                        runCatching { windowManager.updateViewLayout(icon, params) }
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (!dragged) restore()
+                        true
+                    }
+                    MotionEvent.ACTION_CANCEL -> true
+                    else -> false
+                }
+            }
+            windowManager.addView(icon, params)
+            minimizedIcon = icon
+        }
+    }
+
+    private fun restore() {
+        mainHandler.post { restoreNow() }
+    }
+
+    private fun restoreNow() {
+        minimizedIcon?.let { runCatching { windowManager.removeView(it) } }
+        minimizedIcon = null
+        rootView?.visibility = View.VISIBLE
+        applyState(currentState)
     }
 
     private fun showAxisPanel() {

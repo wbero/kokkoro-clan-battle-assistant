@@ -41,13 +41,26 @@ class BattleControlStateMachine {
     }
 
     fun requestRoleSet(role: CharacterRole, nowMs: Long): ControlStep {
+        return requestRoleState(role, VisualToggleState.ON, nowMs)
+    }
+
+    fun requestRoleState(
+        role: CharacterRole,
+        wanted: VisualToggleState,
+        nowMs: Long
+    ): ControlStep {
+        require(wanted != VisualToggleState.UNKNOWN) { "角色目标状态不能为未知" }
         if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, "safety-paused")
         if (pendingAction != null) return step(ControlAction.None, "control-action-busy")
         val current = observed ?: return step(ControlAction.None, "waiting-trustworthy-state")
         return when (current.roles.getValue(role)) {
             VisualToggleState.UNKNOWN -> step(ControlAction.None, "waiting-trustworthy-state")
-            VisualToggleState.ON -> step(ControlAction.None, "role-set-already-on", confirmed = true)
-            VisualToggleState.OFF -> {
+            wanted -> step(
+                ControlAction.None,
+                if (wanted == VisualToggleState.ON) "role-set-already-on" else "role-set-already-off",
+                confirmed = true
+            )
+            else -> {
                 desired = null
                 begin(ControlAction.TapRole(role), current, nowMs)
             }

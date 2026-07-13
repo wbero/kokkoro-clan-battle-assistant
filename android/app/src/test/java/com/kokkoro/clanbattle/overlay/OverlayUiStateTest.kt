@@ -1,8 +1,12 @@
 package com.kokkoro.clanbattle.overlay
 
 import com.kokkoro.clanbattle.axis.AxisParser
+import com.kokkoro.clanbattle.axis.ActionType
+import com.kokkoro.clanbattle.axis.AxisAction
+import com.kokkoro.clanbattle.axis.AxisEvent
 import com.kokkoro.clanbattle.capture.actionExecutionBlockReason
 import com.kokkoro.clanbattle.capture.buildActionPreview
+import com.kokkoro.clanbattle.capture.buildSequenceProgressPreview
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -33,6 +37,8 @@ class OverlayUiStateTest {
         assertFalse(state.nextFrame.enabled)
         assertFalse(state.confirm.enabled)
         assertTrue(state.safetyMenu.enabled)
+        assertEquals("最小化", state.minimize.label)
+        assertTrue(state.minimize.enabled)
         assertEquals("识别正常", state.statusText)
         assertEquals("当前：1:12 角色5 UB后 → AUTO开 SET:XXXXX", state.currentAction)
         assertEquals("下一：0:26 BOSS UB后+1.20s → AUTO开 SET:XOXXO", state.nextAction)
@@ -73,6 +79,37 @@ class OverlayUiStateTest {
         val openingPreview = buildActionPreview(document, activeNodeId = null, clockSeconds = 90)
         assertEquals("当前：等待触发", openingPreview.current)
         assertEquals("下一：开局 → AUTO开 SET:XXXXO", openingPreview.next)
+    }
+
+    @Test fun `sequence preview explains role ub lifecycle and next action`() {
+        val current = AxisEvent(
+            id = "line-1:0",
+            sourceLine = 1,
+            timeSeconds = 65,
+            actions = listOf(AxisAction(ActionType.CLICK_ROLE, role = "角色2"))
+        )
+        val next = AxisEvent(
+            id = "line-1:1",
+            sourceLine = 1,
+            timeSeconds = 65,
+            actions = listOf(AxisAction(ActionType.CLICK_AUTO))
+        )
+
+        val preview = buildSequenceProgressPreview(current, "WAITING_ROLE_UB", next)
+
+        assertEquals("当前：1:05 等待角色2 UB", preview.current)
+        assertEquals("下一：1:05 点击AUTO", preview.next)
+    }
+
+    @Test fun `minimized icon drag stays inside the screen`() {
+        assertEquals(
+            OverlayPosition(140, 70),
+            boundedOverlayPosition(100, 50, 40, 20, 1080, 1920, 60)
+        )
+        assertEquals(
+            OverlayPosition(0, 1860),
+            boundedOverlayPosition(10, 1800, -100, 200, 1080, 1920, 60)
+        )
     }
 
     @Test fun `pause frame enables manual advance and confirmation`() {

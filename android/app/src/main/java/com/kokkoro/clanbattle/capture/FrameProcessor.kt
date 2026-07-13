@@ -20,6 +20,7 @@ import com.kokkoro.clanbattle.control.ControlAction
 import com.kokkoro.clanbattle.control.ControlCrops
 import com.kokkoro.clanbattle.control.ControlSafetyState
 import com.kokkoro.clanbattle.control.ControlStep
+import com.kokkoro.clanbattle.control.CoordinatedActionStep
 import com.kokkoro.clanbattle.control.OpeningControlTarget
 import com.kokkoro.clanbattle.control.VerifiedActionCoordinator
 import com.kokkoro.clanbattle.control.VisualToggleState
@@ -109,6 +110,28 @@ fun buildActionPreview(
     }
     ActionPreview(
         current = currentEvent?.let { "当前：${formatSequenceEvent(it)}" } ?: "当前：等待触发",
+        next = nextEvent?.let { "下一：${formatSequenceEvent(it)}" } ?: "下一：无"
+    )
+}
+
+fun buildSequenceProgressPreview(
+    activeEvent: com.kokkoro.clanbattle.axis.AxisEvent?,
+    phase: String?,
+    nextEvent: com.kokkoro.clanbattle.axis.AxisEvent?
+): ActionPreview {
+    val action = activeEvent?.actions?.singleOrNull()
+    val current = when {
+        activeEvent == null -> "当前：等待触发"
+        action?.type == ActionType.CLICK_ROLE && phase in setOf("STARTING", "CONFIRMING_ROLE_ON") ->
+            "当前：${formatTime(activeEvent.timeSeconds)} 开启${action.role} SET"
+        action?.type == ActionType.CLICK_ROLE && phase == "WAITING_ROLE_UB" ->
+            "当前：${formatTime(activeEvent.timeSeconds)} 等待${action.role} UB"
+        action?.type == ActionType.CLICK_ROLE && phase == "CONFIRMING_ROLE_OFF" ->
+            "当前：${formatTime(activeEvent.timeSeconds)} ${action.role} UB后关闭SET"
+        else -> "当前：${formatSequenceEvent(activeEvent)}"
+    }
+    return ActionPreview(
+        current = current,
         next = nextEvent?.let { "下一：${formatSequenceEvent(it)}" } ?: "下一：无"
     )
 }
@@ -272,6 +295,7 @@ class FrameProcessor(
         var scheduleReason: String? = null
         var controlStep: ControlStep = controlStateMachine.snapshot()
         var activeNodeId: String? = null
+        var sequenceProgress: CoordinatedActionStep? = null
         val executionWarning = actionExecutionBlockReason(
             dryRun = AppPreferences.dryRun(appContext),
             accessibilityConnected = KokkoroAccessibilityService.instance != null
@@ -319,17 +343,27 @@ class FrameProcessor(
                     controlStateMachine.setDesired(null)
                 }
                 if (openingControlsConfirmed && controlStep.safety == ControlSafetyState.RUNNING) {
-                    var coordinated = actionCoordinator.update(controlStep, start)
+                    gameState = gameStateDetector.update(filtered.timeSeconds, null)
+                    var coordinated = actionCoordinator.update(
+                        controlStep,
+                        start,
+                        energy?.triggeredRoles.orEmpty()
+                    )
+                    sequenceProgress = coordinated
                     executeControlAction(coordinated.newControlAction, image.width, image.height)
                     executor.execute(coordinated.immediateEvents, image.width, image.height, axis.clickIntervalMs)
                     controlStep = coordinated.controlStep
 
                     if (!coordinated.busy) {
-                        gameState = gameStateDetector.update(filtered.timeSeconds, null)
                         val schedule = scheduler.update(gameState, filtered.timeSeconds)
                         scheduleReason = schedule.reason
                         actionCoordinator.enqueue(schedule.events)
-                        coordinated = actionCoordinator.update(controlStep, start)
+                        coordinated = actionCoordinator.update(
+                            controlStep,
+                            start,
+                            energy?.triggeredRoles.orEmpty()
+                        )
+                        sequenceProgress = coordinated
                         executeControlAction(coordinated.newControlAction, image.width, image.height)
                         executor.execute(coordinated.immediateEvents, image.width, image.height, axis.clickIntervalMs)
                         controlStep = coordinated.controlStep
@@ -359,7 +393,9 @@ class FrameProcessor(
         val source = filtered.source?.name?.lowercase() ?: "-"
         val energyText = EnergyStatusFormatter.format(energy, gameState, scheduleReason)
         val controlText = ControlStatusFormatter.format(controlStep)
-        val actionPreview = buildActionPreview(axis, activeNodeId, filtered.timeSeconds)
+        val actionPreview = sequenceProgress?.let {
+            buildSequenceProgressPreview(it.activeEvent, it.phase, it.nextEvent)
+        } ?: buildActionPreview(axis, activeNodeId, filtered.timeSeconds)
         val text = if (sessionReady) {
             "${filtered.rawText}  $source  ${elapsed}ms  $energyText\n$controlText"
         } else if (sessionGate.isWaiting()) {
@@ -424,6 +460,7 @@ class FrameProcessor(
 
     private fun installAxis(document: AxisDocument) {
         axis = document
+        actionCoordinator.configureRoleAliases(document.header)
         activeAxisId = AppPreferences.selectedAxisId(appContext).orEmpty()
         openingControlTarget = if (document.type == AxisType.SEQUENCE) {
             OpeningControlTarget.from(document)
