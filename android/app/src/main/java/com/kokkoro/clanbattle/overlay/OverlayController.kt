@@ -11,6 +11,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.TextView
 import com.kokkoro.clanbattle.axis.StoredAxis
 
 data class OverlayActions(
@@ -36,6 +37,9 @@ class OverlayController(
     private var confirmButton: Button? = null
     private var safetyButton: Button? = null
     private var resetButton: Button? = null
+    private var statusTextView: TextView? = null
+    private var currentActionView: TextView? = null
+    private var nextActionView: TextView? = null
     private var currentState = OverlayUiState.idle(null)
 
     fun show() {
@@ -67,6 +71,9 @@ class OverlayController(
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(4), dp(4), dp(4), dp(4))
                 setBackgroundColor(0xdd202124.toInt())
+                addView(label().also { statusTextView = it }, matchWidth())
+                addView(label().also { currentActionView = it }, matchWidth())
+                addView(label(0xffb3e5fc.toInt()).also { nextActionView = it }, matchWidth())
                 addView(firstRow, matchWidth())
                 addView(secondRow, matchWidth())
             }
@@ -94,6 +101,9 @@ class OverlayController(
             confirmButton = null
             safetyButton = null
             resetButton = null
+            statusTextView = null
+            currentActionView = null
+            nextActionView = null
         }
     }
 
@@ -135,6 +145,9 @@ class OverlayController(
         apply(confirmButton, state.confirm)
         apply(safetyButton, state.safetyMenu)
         apply(resetButton, state.reset)
+        statusTextView?.text = state.statusText
+        currentActionView?.text = state.currentAction
+        nextActionView?.text = state.nextAction
         if (!state.selectAxis.enabled) hideAxisPanel()
     }
 
@@ -186,6 +199,12 @@ class OverlayController(
         minimumWidth = 0
         setTextColor(Color.WHITE)
         setPadding(dp(6), 0, dp(6), 0)
+    }
+
+    private fun label(color: Int = Color.WHITE) = TextView(context).apply {
+        setTextColor(color)
+        textSize = 12f
+        setPadding(dp(6), dp(2), dp(6), dp(2))
     }
 
     private fun overlayParams(x: Int, y: Int) = WindowManager.LayoutParams(
