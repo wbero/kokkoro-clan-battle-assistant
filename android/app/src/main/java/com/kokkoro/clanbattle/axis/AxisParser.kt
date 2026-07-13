@@ -46,19 +46,27 @@ object AxisParser {
                     id = "switch-line-$lineNumber",
                     sourceLine = lineNumber,
                     timeSeconds = parseTime(parts.first()),
-                    trigger = parseSwitchTrigger(fields),
+                    trigger = parseNodeTrigger(fields),
                     target = parseSwitchTarget(fields)
                 )
                 return@forEachIndexed
             }
 
             val parts = line.split('|').map(String::trim)
-            val actions = parts.drop(1).flatMap { parseAction(it, lineNumber) }
+            val sequenceFields = parts.drop(1).map { parseKeyValue(it, lineNumber) }
+            val triggerFields = linkedMapOf<String, String>()
+            sequenceFields.filter { (key, _) -> key in triggerKeys }.forEach { (key, value) ->
+                require(triggerFields.put(key, value) == null) { "第${lineNumber}行字段重复：$key" }
+            }
+            val actions = sequenceFields
+                .filterNot { (key, _) -> key in triggerKeys }
+                .flatMap { (key, value) -> parseAction("$key=$value", lineNumber) }
             events += AxisEvent(
                 id = "line-$lineNumber",
                 sourceLine = lineNumber,
                 timeSeconds = parseTime(parts.first()),
-                actions = actions
+                actions = actions,
+                trigger = parseNodeTrigger(triggerFields)
             )
         }
 
@@ -140,7 +148,7 @@ object AxisParser {
         )
     }
 
-    private fun parseSwitchTrigger(fields: Map<String, String>): SwitchNodeTrigger {
+    private fun parseNodeTrigger(fields: Map<String, String>): SwitchNodeTrigger {
         val ubAfter = fields["UB后"]
         val pauseFrame = fields["卡帧"]
         if (ubAfter != null && pauseFrame != null) {
@@ -174,4 +182,6 @@ object AxisParser {
         "角色5" -> CharacterRole.ROLE_5
         else -> null
     }
+
+    private val triggerKeys = setOf("UB后", "延迟", "卡帧")
 }

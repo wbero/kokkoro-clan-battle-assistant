@@ -32,8 +32,10 @@ import com.kokkoro.clanbattle.recognition.RecognitionFilter
 import com.kokkoro.clanbattle.recognition.RecognitionResult
 import com.kokkoro.clanbattle.scheduler.GameStateDetector
 import com.kokkoro.clanbattle.scheduler.GameState
-import com.kokkoro.clanbattle.scheduler.Scheduler
 import com.kokkoro.clanbattle.pauseframe.PauseFrameDiagnosticEvent
+import com.kokkoro.clanbattle.sequenceaxis.SequenceAxisRuntime
+import com.kokkoro.clanbattle.sequenceaxis.SequenceFrameInput
+import com.kokkoro.clanbattle.sequenceaxis.SequenceRuntimeCommand
 import com.kokkoro.clanbattle.switchaxis.SwitchControlCoordinator
 import com.kokkoro.clanbattle.switchaxis.SwitchFrameInput
 import java.util.Locale
@@ -104,9 +106,15 @@ fun buildActionPreview(
         )
     }
 } else {
-    val currentEvent = clockSeconds?.let { time -> document.events.firstOrNull { it.timeSeconds == time } }
-    val nextEvent = document.events.firstOrNull { event ->
-        clockSeconds == null || event.timeSeconds < clockSeconds
+    val activeIndex = document.events.indexOfFirst { it.id == activeNodeId }
+    val activeEvent = document.events.getOrNull(activeIndex)
+    val currentEvent = activeEvent ?: clockSeconds?.let { time ->
+        document.events.firstOrNull { it.timeSeconds == time }
+    }
+    val nextEvent = if (activeIndex >= 0) {
+        document.events.getOrNull(activeIndex + 1)
+    } else {
+        document.events.firstOrNull { event -> clockSeconds == null || event.timeSeconds < clockSeconds }
     }
     ActionPreview(
         current = currentEvent?.let { "当前：${formatSequenceEvent(it)}" } ?: "当前：等待触发",
@@ -147,8 +155,18 @@ private fun formatTarget(auto: String?, roles: List<String>): String =
 
 private fun formatTime(seconds: Int): String = "%d:%02d".format(seconds / 60, seconds % 60)
 
-private fun formatSequenceEvent(event: com.kokkoro.clanbattle.axis.AxisEvent): String =
-    "${formatTime(event.timeSeconds)} " + event.actions.joinToString(" + ") { action ->
+private fun formatSequenceEvent(event: com.kokkoro.clanbattle.axis.AxisEvent): String {
+    val trigger = when (val value = event.trigger) {
+        com.kokkoro.clanbattle.axis.TimedTrigger -> null
+        is com.kokkoro.clanbattle.axis.CharacterUbTrigger -> "${value.rawRole} UB后"
+        is com.kokkoro.clanbattle.axis.BossDelayTrigger -> {
+            val delay = value.rawDelay?.let { "+${it}s" }.orEmpty()
+            "BOSS UB后$delay"
+        }
+        is com.kokkoro.clanbattle.axis.PauseFrameTrigger -> "${value.rawRole} 卡帧"
+        else -> "无效触发"
+    }
+    val actions = event.actions.joinToString(" + ") { action ->
         when (action.type) {
             ActionType.CLICK_ROLE -> "点击${action.role}"
             ActionType.CLICK_AUTO -> "点击AUTO"
@@ -158,6 +176,9 @@ private fun formatSequenceEvent(event: com.kokkoro.clanbattle.axis.AxisEvent): S
             ActionType.BOSS -> "BOSS"
         }
     }
+    return "${formatTime(event.timeSeconds)} " + listOfNotNull(trigger, actions.takeIf(String::isNotEmpty))
+        .joinToString(" → ")
+}
 
 private data class ControlDetection(
     val observation: BattleControlObservation,
@@ -190,7 +211,7 @@ class FrameProcessor(
     private var axis: AxisDocument = emptyAxis()
     private var activeAxisId: String = ""
     private var openingControlTarget: OpeningControlTarget? = null
-    private var scheduler = Scheduler(emptyList())
+    private var sequenceRuntime: SequenceAxisRuntime? = null
     private var switchCoordinator: SwitchControlCoordinator? = null
     private val gameStateDetector = GameStateDetector()
     private val executor = ActionExecutor(appContext)
@@ -223,7 +244,7 @@ class FrameProcessor(
         installAxis(document)
         controlStateMachine.setDesired(openingControlTarget)
         openingControlsConfirmed = openingControlTarget == null
-        scheduler.reset()
+        lastPauseFrameNodeId = null
         sessionGate.prepare()
         val wasDebugEnabled = debugEnabled
         refreshDebugPreference(SystemClock.elapsedRealtime(), force = true)
@@ -344,10 +365,11 @@ class FrameProcessor(
                 }
                 if (openingControlsConfirmed && controlStep.safety == ControlSafetyState.RUNNING) {
                     gameState = gameStateDetector.update(filtered.timeSeconds, null)
+                    val triggeredRoles = energy?.triggeredRoles.orEmpty()
                     var coordinated = actionCoordinator.update(
                         controlStep,
                         start,
-                        energy?.triggeredRoles.orEmpty()
+                        triggeredRoles
                     )
                     sequenceProgress = coordinated
                     executeControlAction(coordinated.newControlAction, image.width, image.height)
@@ -355,19 +377,57 @@ class FrameProcessor(
                     controlStep = coordinated.controlStep
 
                     if (!coordinated.busy) {
-                        val schedule = scheduler.update(gameState, filtered.timeSeconds)
-                        scheduleReason = schedule.reason
-                        actionCoordinator.enqueue(schedule.events)
-                        coordinated = actionCoordinator.update(
-                            controlStep,
-                            start,
-                            energy?.triggeredRoles.orEmpty()
+                        val runtime = requireNotNull(sequenceRuntime)
+                        val command = runtime.update(
+                            SequenceFrameInput(
+                                clockSeconds = filtered.timeSeconds,
+                                triggeredRoles = triggeredRoles,
+                                controlsTrustworthy = roleTapSafe,
+                                wallMs = start,
+                                schedulingAllowed = gameState != GameState.CHARACTER_UB &&
+                                    gameState != GameState.UB_ANIMATION
+                            )
                         )
-                        sequenceProgress = coordinated
-                        executeControlAction(coordinated.newControlAction, image.width, image.height)
-                        executor.execute(coordinated.immediateEvents, image.width, image.height, axis.clickIntervalMs)
-                        controlStep = coordinated.controlStep
-                        if (coordinated.busy) scheduleReason = "verified-control-action"
+                        activeNodeId = runtime.snapshot().activeEvent?.id
+                        when (command) {
+                            SequenceRuntimeCommand.None -> {
+                                scheduleReason = if (activeNodeId != null) {
+                                    "sequence-trigger:$activeNodeId"
+                                } else {
+                                    "sequence-waiting"
+                                }
+                            }
+                            is SequenceRuntimeCommand.EnterPauseFrame -> {
+                                activeNodeId = command.nodeId
+                                if (lastPauseFrameNodeId != command.nodeId) {
+                                    lastPauseFrameNodeId = command.nodeId
+                                    pauseFrameCallback(command.nodeId, command.role)
+                                }
+                                scheduleReason = "pause-frame:${command.role.name}"
+                            }
+                            is SequenceRuntimeCommand.Dispatch -> {
+                                actionCoordinator.enqueue(listOf(command.event))
+                                coordinated = actionCoordinator.update(
+                                    controlStep,
+                                    start,
+                                    triggeredRoles
+                                )
+                                sequenceProgress = coordinated
+                                executeControlAction(coordinated.newControlAction, image.width, image.height)
+                                executor.execute(
+                                    coordinated.immediateEvents,
+                                    image.width,
+                                    image.height,
+                                    axis.clickIntervalMs
+                                )
+                                controlStep = coordinated.controlStep
+                                scheduleReason = if (coordinated.busy) {
+                                    "verified-control-action"
+                                } else {
+                                    "sequence-dispatched:${command.event.id}"
+                                }
+                            }
+                        }
                     } else {
                         scheduleReason = "verified-control-action"
                     }
@@ -393,9 +453,27 @@ class FrameProcessor(
         val source = filtered.source?.name?.lowercase() ?: "-"
         val energyText = EnergyStatusFormatter.format(energy, gameState, scheduleReason)
         val controlText = ControlStatusFormatter.format(controlStep)
-        val actionPreview = sequenceProgress?.let {
-            buildSequenceProgressPreview(it.activeEvent, it.phase, it.nextEvent)
-        } ?: buildActionPreview(axis, activeNodeId, filtered.timeSeconds)
+        val actionPreview = if (axis.type == AxisType.SEQUENCE) {
+            val runtime = sequenceRuntime?.snapshot()
+            val progress = sequenceProgress
+            when {
+                progress?.activeEvent != null -> buildSequenceProgressPreview(
+                    progress.activeEvent,
+                    progress.phase,
+                    progress.nextEvent ?: runtime?.activeEvent ?: runtime?.nextEvent
+                )
+                runtime?.activeEvent != null -> ActionPreview(
+                    current = "当前：${formatSequenceEvent(runtime.activeEvent)}",
+                    next = runtime.nextEvent?.let { "下一：${formatSequenceEvent(it)}" } ?: "下一：无"
+                )
+                else -> ActionPreview(
+                    current = "当前：等待触发",
+                    next = runtime?.nextEvent?.let { "下一：${formatSequenceEvent(it)}" } ?: "下一：无"
+                )
+            }
+        } else {
+            buildActionPreview(axis, activeNodeId, filtered.timeSeconds)
+        }
         val text = if (sessionReady) {
             "${filtered.rawText}  $source  ${elapsed}ms  $energyText\n$controlText"
         } else if (sessionGate.isWaiting()) {
@@ -424,6 +502,7 @@ class FrameProcessor(
 
     fun confirmPauseFrame(nodeId: String) {
         switchCoordinator?.confirmPauseFrame(nodeId)
+        sequenceRuntime?.confirmPauseFrame(nodeId)
     }
 
     fun recordPauseFrameDiagnostic(event: PauseFrameDiagnosticEvent) {
@@ -467,7 +546,11 @@ class FrameProcessor(
         } else {
             null
         }
-        scheduler = Scheduler(if (document.type == AxisType.SEQUENCE) sequenceEvents(document) else emptyList())
+        sequenceRuntime = if (document.type == AxisType.SEQUENCE) {
+            SequenceAxisRuntime(sequenceEvents(document))
+        } else {
+            null
+        }
         switchCoordinator = if (document.type == AxisType.SWITCH) {
             SwitchControlCoordinator(
                 stateMachine = controlStateMachine,
@@ -485,7 +568,11 @@ class FrameProcessor(
         } else {
             event.actions
         }
-        if (actions.isEmpty()) null else event.copy(actions = actions)
+        if (actions.isEmpty() && event.trigger !is com.kokkoro.clanbattle.axis.PauseFrameTrigger) {
+            null
+        } else {
+            event.copy(actions = actions)
+        }
     }
 
     private fun refreshDebugPreference(nowMs: Long, force: Boolean = false) {

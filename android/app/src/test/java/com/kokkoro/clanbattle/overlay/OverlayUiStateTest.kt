@@ -101,6 +101,22 @@ class OverlayUiStateTest {
         assertEquals("下一：1:05 点击AUTO", preview.next)
     }
 
+    @Test fun `sequence preview shows ub after and pause frame triggers`() {
+        val document = AxisParser.parse(
+            """
+            轴类型=顺序
+            [轴]
+            1:20 | UB后=角色3 | 点击=角色2
+            1:10 | 卡帧=角色4
+            """.trimIndent()
+        )
+
+        val preview = buildActionPreview(document, document.events.first().id, 80)
+
+        assertEquals("当前：1:20 角色3 UB后 → 点击角色2", preview.current)
+        assertEquals("下一：1:10 角色4 卡帧", preview.next)
+    }
+
     @Test fun `minimized icon drag stays inside the screen`() {
         assertEquals(
             OverlayPosition(140, 70),

@@ -51,9 +51,11 @@ object AxisValidator {
             if (event.timeSeconds !in 0..90) {
                 issues += issue(event.sourceLine, "time-out-of-range", "时间必须在 0:00..1:30")
             }
-            if (event.actions.isEmpty()) {
+            if (event.actions.isEmpty() && event.trigger !is PauseFrameTrigger) {
                 issues += issue(event.sourceLine, "empty-actions", "事件没有动作")
             }
+
+            validateSequenceTrigger(event, issues)
 
             event.actions.forEach { action ->
                 when (action.type) {
@@ -73,6 +75,38 @@ object AxisValidator {
             }
         }
 
+    }
+
+    private fun validateSequenceTrigger(
+        event: AxisEvent,
+        issues: MutableList<AxisValidationIssue>
+    ) {
+        when (val trigger = event.trigger) {
+            is CharacterUbTrigger -> if (trigger.role == null) {
+                issues += issue(event.sourceLine, "invalid-character-ub-role", "UB后必须指定角色1到角色5")
+            }
+            is BossDelayTrigger -> when {
+                trigger.rawDelay == null -> issues += issue(
+                    event.sourceLine,
+                    "boss-delay-required",
+                    "Boss UB后节点必须声明延迟"
+                )
+                trigger.minimumDelayMs == null || trigger.minimumDelayMs !in 1..30_000 -> issues += issue(
+                    event.sourceLine,
+                    "invalid-boss-delay",
+                    "Boss延迟必须大于0且不超过30秒"
+                )
+            }
+            is PauseFrameTrigger -> if (trigger.role == null) {
+                issues += issue(event.sourceLine, "invalid-pause-frame-role", "卡帧必须指定角色1到角色5")
+            }
+            is ConflictingSwitchTrigger -> issues += issue(
+                event.sourceLine,
+                "conflicting-sequence-triggers",
+                "同一顺序节点不能同时声明UB后和卡帧"
+            )
+            TimedTrigger -> Unit
+        }
     }
 
     private fun validateSwitch(
