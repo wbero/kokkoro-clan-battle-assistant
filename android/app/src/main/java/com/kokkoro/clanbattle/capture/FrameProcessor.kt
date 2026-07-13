@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.Image
 import android.os.SystemClock
 import com.kokkoro.clanbattle.automation.ActionExecutor
+import com.kokkoro.clanbattle.automation.KokkoroAccessibilityService
 import com.kokkoro.clanbattle.axis.AndroidAxisRepository
 import com.kokkoro.clanbattle.axis.AxisDocument
 import com.kokkoro.clanbattle.axis.AxisLibrary
@@ -42,8 +43,98 @@ data class FrameStatus(
     val processingMs: Long,
     val frameWidth: Int,
     val frameHeight: Int,
-    val controlSafety: ControlSafetyState? = null
+    val controlSafety: ControlSafetyState? = null,
+    val currentAction: String = "当前：等待触发",
+    val nextAction: String = "下一：无",
+    val executionWarning: String? = null
 )
+
+data class ActionPreview(val current: String, val next: String)
+
+fun actionExecutionBlockReason(dryRun: Boolean, accessibilityConnected: Boolean): String? = when {
+    dryRun -> "只识别模式，不执行点击"
+    !accessibilityConnected -> "无障碍服务未启用，点击不会执行"
+    else -> null
+}
+
+fun buildActionPreview(
+    document: AxisDocument,
+    activeNodeId: String?,
+    clockSeconds: Int?
+): ActionPreview = if (document.type == AxisType.SWITCH) {
+    val entries = buildList {
+        document.switchOpenings.singleOrNull()?.let { opening ->
+            add("opening-1" to "开局 → ${formatTarget(opening.target.rawAuto, opening.target.rawRoles)}")
+        }
+        document.switchNodes.forEach { node ->
+            val trigger = when (val value = node.trigger) {
+                com.kokkoro.clanbattle.axis.TimedTrigger -> "定时"
+                is com.kokkoro.clanbattle.axis.CharacterUbTrigger -> "${value.rawRole} UB后"
+                is com.kokkoro.clanbattle.axis.BossDelayTrigger -> {
+                    val delay = value.rawDelay?.let { "+${it}s" }.orEmpty()
+                    "BOSS UB后$delay"
+                }
+                is com.kokkoro.clanbattle.axis.PauseFrameTrigger -> "${value.rawRole} 卡帧"
+                else -> "无效触发"
+            }
+            add(
+                node.id to
+                    "${formatTime(node.timeSeconds)} $trigger → ${formatTarget(node.target.rawAuto, node.target.rawRoles)}"
+            )
+        }
+    }
+    val activeIndex = entries.indexOfFirst { it.first == activeNodeId }
+    if (activeIndex >= 0) {
+        ActionPreview(
+            current = "当前：${entries[activeIndex].second}",
+            next = entries.getOrNull(activeIndex + 1)?.second?.let { "下一：$it" } ?: "下一：无"
+        )
+    } else {
+        val upcomingEntry = when {
+            document.switchOpenings.singleOrNull() != null &&
+                (clockSeconds == null || clockSeconds in 88..90) -> entries.firstOrNull()
+            else -> document.switchNodes.firstOrNull { node ->
+                clockSeconds == null || node.timeSeconds < clockSeconds
+            }?.let { node -> entries.first { it.first == node.id } }
+        }
+        ActionPreview(
+            current = "当前：等待触发",
+            next = upcomingEntry?.second?.let { "下一：$it" } ?: "下一：无"
+        )
+    }
+} else {
+    val currentEvent = clockSeconds?.let { time -> document.events.firstOrNull { it.timeSeconds == time } }
+    val nextEvent = document.events.firstOrNull { event ->
+        clockSeconds == null || event.timeSeconds < clockSeconds
+    }
+    ActionPreview(
+        current = currentEvent?.let { "当前：${formatSequenceEvent(it)}" } ?: "当前：等待触发",
+        next = nextEvent?.let { "下一：${formatSequenceEvent(it)}" } ?: "下一：无"
+    )
+}
+
+private fun formatTarget(auto: String?, roles: List<String>): String =
+    "AUTO${auto ?: "?"} SET:${roles.joinToString("") { toggle ->
+        when (toggle) {
+            "开" -> "O"
+            "关" -> "X"
+            else -> "?"
+        }
+    }}"
+
+private fun formatTime(seconds: Int): String = "%d:%02d".format(seconds / 60, seconds % 60)
+
+private fun formatSequenceEvent(event: com.kokkoro.clanbattle.axis.AxisEvent): String =
+    "${formatTime(event.timeSeconds)} " + event.actions.joinToString(" + ") { action ->
+        when (action.type) {
+            ActionType.CLICK_ROLE -> "点击${action.role}"
+            ActionType.CLICK_AUTO -> "点击AUTO"
+            ActionType.TOGGLE_AUTO -> "AUTO${action.rawValue}"
+            ActionType.SET_ROLES -> "SET:${action.values.joinToString("") { if (it == "开") "O" else "X" }}"
+            ActionType.NOTIFY -> "提示:${action.message}"
+            ActionType.BOSS -> "BOSS"
+        }
+    }
 
 private data class ControlDetection(
     val observation: BattleControlObservation,
@@ -180,7 +271,12 @@ class FrameProcessor(
         var gameState: GameState? = null
         var scheduleReason: String? = null
         var controlStep: ControlStep = controlStateMachine.snapshot()
-        if (sessionReady) {
+        var activeNodeId: String? = null
+        val executionWarning = actionExecutionBlockReason(
+            dryRun = AppPreferences.dryRun(appContext),
+            accessibilityConnected = KokkoroAccessibilityService.instance != null
+        )
+        if (sessionReady && executionWarning == null) {
             controlStep = updateControls(controls, menuScore, start, image)
             if (axis.type == AxisType.SWITCH) {
                 val controlsTrustworthy = roleTapSafe &&
@@ -194,6 +290,7 @@ class FrameProcessor(
                     ),
                     controlStep
                 )
+                activeNodeId = coordinated.activeNodeId
                 controlStep = coordinated.controlStep
                 coordinated.pauseFrame?.let { request ->
                     if (lastPauseFrameNodeId != request.nodeId) {
@@ -244,6 +341,8 @@ class FrameProcessor(
                     scheduleReason = "control-state-gate"
                 }
             }
+        } else if (sessionReady) {
+            scheduleReason = "execution-blocked"
         }
 
         val elapsed = SystemClock.elapsedRealtime() - start
@@ -260,6 +359,7 @@ class FrameProcessor(
         val source = filtered.source?.name?.lowercase() ?: "-"
         val energyText = EnergyStatusFormatter.format(energy, gameState, scheduleReason)
         val controlText = ControlStatusFormatter.format(controlStep)
+        val actionPreview = buildActionPreview(axis, activeNodeId, filtered.timeSeconds)
         val text = if (sessionReady) {
             "${filtered.rawText}  $source  ${elapsed}ms  $energyText\n$controlText"
         } else if (sessionGate.isWaiting()) {
@@ -274,7 +374,10 @@ class FrameProcessor(
                 elapsed,
                 image.width,
                 image.height,
-                controlStep.safety.takeIf { sessionReady }
+                controlStep.safety.takeIf { sessionReady },
+                actionPreview.current,
+                actionPreview.next,
+                executionWarning.takeIf { sessionReady }
             )
         )
     }

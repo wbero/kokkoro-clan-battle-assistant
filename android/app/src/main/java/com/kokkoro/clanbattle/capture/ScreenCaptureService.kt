@@ -26,6 +26,7 @@ import android.view.Display
 import android.view.WindowManager
 import com.kokkoro.clanbattle.MainActivity
 import com.kokkoro.clanbattle.R
+import com.kokkoro.clanbattle.automation.KokkoroAccessibilityService
 import com.kokkoro.clanbattle.axis.AndroidAxisRepository
 import com.kokkoro.clanbattle.axis.AxisLibrary
 import com.kokkoro.clanbattle.config.AppPreferences
@@ -55,6 +56,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private var lastProcessedNanos = 0L
     private var battleLocked = false
     private var pauseFrameRole: CharacterRole? = null
+    private var latestFrameStatus: FrameStatus? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -212,7 +214,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     }
 
     private fun publishStatus(status: FrameStatus) {
-        renderOverlay(status.controlSafety)
+        latestFrameStatus = status
+        renderOverlay(status.controlSafety, status)
         sendBroadcast(
             Intent(ACTION_STATUS)
                 .setPackage(packageName)
@@ -290,14 +293,39 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         }
     }
 
-    private fun renderOverlay(safety: ControlSafetyState? = null) {
+    private fun renderOverlay(
+        safety: ControlSafetyState? = latestFrameStatus?.controlSafety,
+        status: FrameStatus? = latestFrameStatus
+    ) {
         val name = axisLibrary.selected()?.name
+        val executionWarning = status?.executionWarning ?: actionExecutionBlockReason(
+            dryRun = AppPreferences.dryRun(this),
+            accessibilityConnected = KokkoroAccessibilityService.instance != null
+        )
+        val idlePreview = if (!battleLocked) {
+            axisLibrary.selectedDocument()?.let { buildActionPreview(it, activeNodeId = null, clockSeconds = null) }
+        } else {
+            null
+        }
+        val statusText = listOfNotNull(executionWarning, status?.text)
+            .joinToString("\n")
+            .ifBlank { "等待截图状态" }
+        val currentAction = idlePreview?.current ?: status?.currentAction ?: "当前：等待触发"
+        val nextAction = idlePreview?.next ?: status?.nextAction ?: "下一：无"
         overlay.render(
             when {
-                safety == ControlSafetyState.SAFETY_PAUSED -> OverlayUiState.safetyPaused(name)
-                pauseFrameRole != null -> OverlayUiState.pauseFrame(name, "角色${pauseFrameRole!!.ordinal + 1}")
-                battleLocked -> OverlayUiState.running(name)
-                else -> OverlayUiState.idle(name)
+                safety == ControlSafetyState.SAFETY_PAUSED -> OverlayUiState.safetyPaused(
+                    name, statusText, currentAction, nextAction
+                )
+                pauseFrameRole != null -> OverlayUiState.pauseFrame(
+                    name,
+                    "角色${pauseFrameRole!!.ordinal + 1}",
+                    statusText,
+                    currentAction,
+                    nextAction
+                )
+                battleLocked -> OverlayUiState.running(name, statusText, currentAction, nextAction)
+                else -> OverlayUiState.idle(name, statusText, currentAction, nextAction)
             }
         )
     }
