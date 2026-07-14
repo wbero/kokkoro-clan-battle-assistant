@@ -436,6 +436,7 @@ class FrameProcessor(
                 }
             }
         } else if (sessionReady) {
+            controlStep = controls?.let(controlStateMachine::observeOnly) ?: controlStateMachine.snapshot()
             scheduleReason = "execution-blocked"
         }
 
