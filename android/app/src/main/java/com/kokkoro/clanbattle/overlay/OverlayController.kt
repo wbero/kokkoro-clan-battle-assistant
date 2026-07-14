@@ -3,6 +3,7 @@ package com.kokkoro.clanbattle.overlay
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -85,6 +86,8 @@ class OverlayController(
     private var nextActionView: TextView? = null
     private var currentState = OverlayUiState.idle(null)
     private var panelScale = 0.72f
+    private var promptView: TextView? = null
+    private val hidePrompt = Runnable { removePrompt() }
 
     fun show() {
         if (!Settings.canDrawOverlays(context) || rootView != null) return
@@ -140,6 +143,41 @@ class OverlayController(
         }
     }
 
+    fun showPrompt(message: String) {
+        if (message.isBlank() || !Settings.canDrawOverlays(context)) return
+        mainHandler.post {
+            removePrompt()
+            val view = TextView(context).apply {
+                text = message
+                textSize = 18f
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                setPadding(dp(18), dp(8), dp(18), dp(8))
+                background = GradientDrawable().apply {
+                    setColor(0xdd202124.toInt())
+                    cornerRadius = dp(10).toFloat()
+                }
+            }
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                y = dp(36)
+            }
+            runCatching { windowManager.addView(view, params) }
+                .onSuccess {
+                    promptView = view
+                    mainHandler.postDelayed(hidePrompt, PROMPT_DURATION_MS)
+                }
+        }
+    }
+
     fun render(state: OverlayUiState) {
         currentState = state
         mainHandler.post { applyState(state) }
@@ -147,6 +185,7 @@ class OverlayController(
 
     fun hide() {
         mainHandler.post {
+            removePrompt()
             hideAxisPanel()
             minimizedIcon?.let { runCatching { windowManager.removeView(it) } }
             minimizedIcon = null
@@ -164,6 +203,12 @@ class OverlayController(
             currentActionView = null
             nextActionView = null
         }
+    }
+
+    private fun removePrompt() {
+        mainHandler.removeCallbacks(hidePrompt)
+        promptView?.let { runCatching { windowManager.removeView(it) } }
+        promptView = null
     }
 
     fun acquireGamePauseFocus(): Boolean {
@@ -515,4 +560,8 @@ class OverlayController(
 
     private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
     private fun scaledDp(value: Int): Int = (value * context.resources.displayMetrics.density * panelScale).roundToInt()
+
+    private companion object {
+        const val PROMPT_DURATION_MS = 2_500L
+    }
 }

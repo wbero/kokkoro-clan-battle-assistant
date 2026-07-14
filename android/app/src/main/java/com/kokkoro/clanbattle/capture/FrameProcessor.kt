@@ -196,7 +196,8 @@ class FrameProcessor(
     context: Context,
     private val statusCallback: (FrameStatus) -> Unit,
     private val pauseFrameCallback: (String, com.kokkoro.clanbattle.recognition.CharacterRole) -> Unit = { _, _ -> },
-    private val battleLockCallback: () -> Unit = {}
+    private val battleLockCallback: () -> Unit = {},
+    private val messageCallback: (String) -> Unit = {}
 ) {
     private val appContext = context.applicationContext
     private val recognizer = ClockRecognizer(AndroidTemplateLoader.load(appContext))
@@ -214,7 +215,7 @@ class FrameProcessor(
     private var sequenceRuntime: SequenceAxisRuntime? = null
     private var switchCoordinator: SwitchControlCoordinator? = null
     private val gameStateDetector = GameStateDetector()
-    private val executor = ActionExecutor(appContext)
+    private val executor = ActionExecutor(appContext, messageCallback)
     private val sessionGate = BattleSessionGate()
     private var recorder: ClockDebugRecorder? = null
     private var frameId = 0L
@@ -224,6 +225,7 @@ class FrameProcessor(
     private var lastPauseFrameNodeId: String? = null
     private var lastSwitchDebugKey: String? = null
     private var lastSwitchDiagnosticContext: SwitchDiagnosticContext? = null
+    private var lastPromptNodeId: String? = null
     @Volatile private var roleTapSafe = false
 
     init {
@@ -233,6 +235,7 @@ class FrameProcessor(
         lastPauseFrameNodeId = null
         lastSwitchDebugKey = null
         lastSwitchDiagnosticContext = null
+        lastPromptNodeId = null
     }
 
     fun prepareNewBattle(document: AxisDocument = loadSelectedAxis()) {
@@ -245,6 +248,7 @@ class FrameProcessor(
         controlStateMachine.setDesired(openingControlTarget)
         openingControlsConfirmed = openingControlTarget == null
         lastPauseFrameNodeId = null
+        lastPromptNodeId = null
         sessionGate.prepare()
         val wasDebugEnabled = debugEnabled
         refreshDebugPreference(SystemClock.elapsedRealtime(), force = true)
@@ -336,6 +340,17 @@ class FrameProcessor(
                     controlStep
                 )
                 activeNodeId = coordinated.activeNodeId
+                activeNodeId?.let { nodeId ->
+                    if (nodeId != lastPromptNodeId) {
+                        val message = if (nodeId == "opening-1") {
+                            axis.switchOpenings.singleOrNull()?.target?.message
+                        } else {
+                            axis.switchNodes.firstOrNull { it.id == nodeId }?.target?.message
+                        }
+                        message?.takeIf(String::isNotBlank)?.let(messageCallback)
+                        lastPromptNodeId = nodeId
+                    }
+                }
                 controlStep = coordinated.controlStep
                 coordinated.pauseFrame?.let { request ->
                     if (lastPauseFrameNodeId != request.nodeId) {

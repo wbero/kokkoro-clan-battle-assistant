@@ -98,7 +98,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             context = this,
             statusCallback = ::publishStatus,
             pauseFrameCallback = ::onPauseFrameRequested,
-            battleLockCallback = ::lockBattle
+            battleLockCallback = ::lockBattle,
+            messageCallback = overlay::showPrompt
         )
         createNotificationChannel()
     }
