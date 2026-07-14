@@ -77,4 +77,36 @@ class AxisValidatorTest {
         assertTrue(result.isValid)
         assertTrue(result.issues.isEmpty())
     }
+
+    @Test
+    fun `validates sequence trigger roles conflicts and boss delays`() {
+        val document = AxisParser.parse(
+            """
+            轴类型=顺序
+            [轴]
+            1:20 | UB后=角色9 | 点击=角色1
+            1:10 | UB后=角色2 | 卡帧=角色2 | 点击=角色1
+            0:30 | UB后=BOSS | 点击=AUTO
+            """.trimIndent()
+        )
+
+        val result = AxisValidator.validate(document)
+
+        assertTrue(result.issues.any { it.code == "invalid-character-ub-role" && it.line == 3 })
+        assertTrue(result.issues.any { it.code == "conflicting-sequence-triggers" && it.line == 4 })
+        assertTrue(result.issues.any { it.code == "boss-delay-required" && it.line == 5 })
+    }
+
+    @Test
+    fun `accepts sequence pause frame without a second action`() {
+        val document = AxisParser.parse(
+            """
+            轴类型=顺序
+            [轴]
+            1:10 | 卡帧=角色4
+            """.trimIndent()
+        )
+
+        assertTrue(AxisValidator.validate(document).isValid)
+    }
 }

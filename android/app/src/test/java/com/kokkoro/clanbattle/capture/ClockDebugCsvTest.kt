@@ -7,6 +7,14 @@ import com.kokkoro.clanbattle.recognition.ScoreKind
 import com.kokkoro.clanbattle.recognition.CharacterEnergyState
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
+import com.kokkoro.clanbattle.control.BattleControlObservation
+import com.kokkoro.clanbattle.control.BattleControlState
+import com.kokkoro.clanbattle.control.ControlAction
+import com.kokkoro.clanbattle.control.ControlSafetyState
+import com.kokkoro.clanbattle.control.ControlStep
+import com.kokkoro.clanbattle.control.OpeningControlTarget
+import com.kokkoro.clanbattle.control.ToggleObservation
+import com.kokkoro.clanbattle.control.VisualToggleState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -14,6 +22,72 @@ import org.junit.Test
 import java.io.StringWriter
 
 class ClockDebugCsvTest {
+    @Test fun `switch diagnostic row matches stable header contract`() {
+        val values = ClockDebugCsv.switchValues(
+            frameId = 12,
+            wallMs = 34,
+            axisId = "axis-1",
+            axisName = "E5刀1",
+            axisType = "SWITCH",
+            nodeId = "line-4",
+            nodeSourceLine = 4,
+            triggerType = "BOSS_DELAY",
+            runtimeState = "Armed",
+            eligibleWallMs = 1_000,
+            deadlineWallMs = 2_200,
+            clockSeconds = 26,
+            triggeredRoles = setOf(CharacterRole.ROLE_2, CharacterRole.ROLE_4),
+            controlsTrustworthy = false,
+            busy = true,
+            focusAction = "release",
+            focusResult = "success",
+            pauseFrameAction = "confirm",
+            targetRole = CharacterRole.ROLE_3,
+            desired = "auto=ON;roles=XOXOX",
+            observed = "auto=OFF;roles=XXXXX",
+            expected = "auto=ON;roles=XOXOX",
+            safetyState = ControlSafetyState.RUNNING,
+            safetyReason = "waiting-deadline"
+        )
+        val columns = ClockDebugCsv.SWITCH_HEADER.split(',')
+        val row = columns.zip(values.map(Any?::toString)).toMap()
+
+        assertEquals(columns.size, values.size)
+        assertEquals("E5刀1", row.getValue("axisName"))
+        assertEquals("2200", row.getValue("deadlineWallMs"))
+        assertEquals("ROLE_2|ROLE_4", row.getValue("triggeredRoles"))
+        assertEquals("ROLE_3", row.getValue("targetRole"))
+    }
+
+    @Test fun `control diagnostic row matches header`() {
+        val roles = CharacterRole.entries.associateWith { VisualToggleState.ON }
+        val observation = BattleControlObservation(
+            auto = ToggleObservation(VisualToggleState.ON, 0.91, 0.12, 0.79),
+            globalSet = ToggleObservation(VisualToggleState.OFF, 0.20, 0.88, 0.68),
+            roles = CharacterRole.entries.associateWith { ToggleObservation(VisualToggleState.ON, 0.9) },
+            consistent = true
+        )
+        val step = ControlStep(
+            action = ControlAction.TapRole(CharacterRole.ROLE_2),
+            reason = "test",
+            observed = BattleControlState(VisualToggleState.ON, VisualToggleState.OFF, roles),
+            desired = OpeningControlTarget(roles = roles),
+            expected = BattleControlState(VisualToggleState.ON, VisualToggleState.OFF, roles),
+            safety = ControlSafetyState.SAFETY_PAUSED,
+            retryCount = 1
+        )
+
+        val values = ClockDebugCsv.controlValues(12, 34, observation, step, 0.82, "controls-12")
+        val columns = ClockDebugCsv.CONTROL_HEADER.split(',')
+        val row = columns.zip(values.map(Any?::toString)).toMap()
+
+        assertEquals(columns.size, values.size)
+        assertEquals("ON", row.getValue("autoState"))
+        assertEquals("TapRole:ROLE_2", row.getValue("action"))
+        assertEquals("SAFETY_PAUSED", row.getValue("safetyState"))
+        assertEquals("controls-12", row.getValue("cropPrefix"))
+    }
+
     @Test fun `energy row exactly matches stable per-role column contract`() {
         val result = EnergyDetectionResult(
             characters = CharacterRole.entries.associateWith { role ->

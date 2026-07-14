@@ -37,6 +37,11 @@ object ImageRoiExtractor {
         val top = (y * scaleY).toInt().coerceIn(0, height - 1)
         val right = ((x + regionWidth) * scaleX).toInt().coerceIn(left + 1, width)
         val bottom = ((y + regionHeight) * scaleY).toInt().coerceIn(top + 1, height)
-        return Rect(left, top, right, bottom)
+        return Rect().apply {
+            this.left = left
+            this.top = top
+            this.right = right
+            this.bottom = bottom
+        }
     }
 }

@@ -24,7 +24,8 @@ data class AxisEvent(
     val id: String,
     val sourceLine: Int,
     val timeSeconds: Int,
-    val actions: List<AxisAction>
+    val actions: List<AxisAction>,
+    val trigger: SwitchNodeTrigger = TimedTrigger
 )
 
 data class AxisDocument(
@@ -32,5 +33,8 @@ data class AxisDocument(
     val clickIntervalMs: Int,
     val header: Map<String, String>,
     val events: List<AxisEvent>,
-    val hasAxisSection: Boolean = false
+    val hasAxisSection: Boolean = false,
+    val switchOpenings: List<SwitchAxisOpening> = emptyList(),
+    val switchNodes: List<SwitchAxisNode> = emptyList(),
+    val hasSwitchSection: Boolean = false
 )

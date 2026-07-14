@@ -23,6 +23,13 @@ Debug APK 输出到：
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+## 轴文件文档
+
+- [顺序轴与开关轴标准格式](../docs/axis-format-standard.md)
+- [顺序轴行为说明](../docs/sequence-axis-behavior.md)
+- [顺序轴标准示例](../docs/examples/sequence-axis-standard.txt)
+- [开关轴卡帧示例](../docs/examples/switch-axis-pause-frame-test.txt)
+
 安装到当前 ADB 设备：
 
 ```powershell
