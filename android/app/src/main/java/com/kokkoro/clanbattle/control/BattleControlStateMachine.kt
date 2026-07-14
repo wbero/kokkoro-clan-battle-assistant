@@ -109,6 +109,15 @@ class BattleControlStateMachine {
 
     fun snapshot(): ControlStep = step(ControlAction.None, "snapshot")
 
+    /** Updates the displayed observation without planning clicks or changing safety state. */
+    fun observeOnly(observation: BattleControlObservation): ControlStep {
+        if (observation.consistent) observed = observation.toState()
+        return step(
+            ControlAction.None,
+            if (observation.consistent) "observation-only" else observation.reason ?: "inconsistent-observation"
+        )
+    }
+
     fun forceSafety(reason: String) {
         safety = ControlSafetyState.SAFETY_PAUSING
         pauseReason = reason

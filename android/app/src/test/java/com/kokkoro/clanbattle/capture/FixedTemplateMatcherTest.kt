@@ -23,7 +23,7 @@ class FixedTemplateMatcherTest {
         val canvas = IntArray(10 * 8) { background }
         repeat(4) { y ->
             repeat(6) { x ->
-                canvas[(y + 3) * 10 + x + 2] = template[x / 2, y / 2]
+                canvas[(y + 2) * 10 + x + 2] = template[x / 2, y / 2]
             }
         }
 
@@ -34,6 +34,15 @@ class FixedTemplateMatcherTest {
         )
 
         assertTrue("score=$score", score >= 0.99)
+    }
+
+    @Test
+    fun `animated badge score accepts a cyan filled breathing phase`() {
+        val template = imageOf(0, 40, 80, 120, 160, 200)
+        val cyan = (0xff shl 24) or (20 shl 16) or (180 shl 8) or 200
+        val crop = PixelImage(10, 10, IntArray(100) { cyan })
+
+        assertTrue(FixedTemplateMatcher.animatedBadgeScore(crop, template) >= 0.75)
     }
 
     private fun imageOf(vararg gray: Int): PixelImage = PixelImage(

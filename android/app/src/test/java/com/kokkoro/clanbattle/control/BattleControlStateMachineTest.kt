@@ -14,6 +14,16 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class BattleControlStateMachineTest {
+    @Test fun `observation only updates display state without planning a click`() {
+        val machine = BattleControlStateMachine()
+        val observation = observation(auto = VisualToggleState.ON)
+
+        val step = machine.observeOnly(observation)
+
+        assertEquals(ControlAction.None, step.action)
+        assertEquals(VisualToggleState.ON, step.observed?.auto)
+        assertEquals("observation-only", step.reason)
+    }
     @Test fun `all on target uses one global click`() {
         val machine = machine(auto = VisualToggleState.ON, roles = all(VisualToggleState.ON))
         val step = machine.update(observation(auto = VisualToggleState.ON, global = VisualToggleState.OFF, roles = all(VisualToggleState.OFF)), 0)

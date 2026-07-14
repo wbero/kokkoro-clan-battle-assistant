@@ -27,7 +27,7 @@ class BattleControlRecognizer(
         )
         val roles = crops.roles.mapValues { (_, crop) ->
             classifyBadge(
-                onScore = FixedTemplateMatcher.bestScaleScore(crop, templates.roleSetOn),
+                onScore = FixedTemplateMatcher.animatedBadgeScore(crop, templates.roleSetOn),
                 onThreshold = badgeOnThreshold,
                 offThreshold = badgeOffThreshold
             )
@@ -54,7 +54,7 @@ class BattleControlRecognizer(
         const val DEFAULT_PAIR_MIN_SCORE = 0.65
         const val DEFAULT_PAIR_MIN_MARGIN = 0.08
         const val DEFAULT_BADGE_ON_THRESHOLD = 0.75
-        const val DEFAULT_BADGE_OFF_THRESHOLD = 0.55
+        const val DEFAULT_BADGE_OFF_THRESHOLD = 0.56
 
         fun classifyPair(
             onScore: Double,
