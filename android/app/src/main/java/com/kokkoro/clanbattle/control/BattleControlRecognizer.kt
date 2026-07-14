@@ -27,7 +27,7 @@ class BattleControlRecognizer(
         )
         val roles = crops.roles.mapValues { (_, crop) ->
             classifyBadge(
-                onScore = FixedTemplateMatcher.score(crop, templates.roleSetOn),
+                onScore = FixedTemplateMatcher.bestScaleScore(crop, templates.roleSetOn),
                 onThreshold = badgeOnThreshold,
                 offThreshold = badgeOffThreshold
             )

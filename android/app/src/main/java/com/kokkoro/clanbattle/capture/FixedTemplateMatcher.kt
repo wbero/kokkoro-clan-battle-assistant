@@ -37,6 +37,38 @@ object FixedTemplateMatcher {
         return numerator / sqrt(imageDenominator * templateDenominator)
     }
 
+    /**
+     * Finds a template whose rendered size and position can change inside [image].
+     * This is intended for animated HUD badges; fixed controls should keep using [score].
+     */
+    fun bestScaleScore(
+        image: PixelImage,
+        template: PixelImage,
+        scales: DoubleArray = doubleArrayOf(0.78, 0.86, 0.94, 1.0, 1.08, 1.16, 1.24)
+    ): Double {
+        var best = -1.0
+        scales.forEach { scale ->
+            val width = (template.width * scale).toInt().coerceIn(2, image.width)
+            val height = (template.height * scale).toInt().coerceIn(2, image.height)
+            val stepX = maxOf(1, (image.width - width) / 6)
+            val stepY = maxOf(1, (image.height - height) / 6)
+            positions(image.width - width, stepX).forEach { left ->
+                positions(image.height - height, stepY).forEach { top ->
+                    best = maxOf(best, score(image.crop(left, top, width, height), template))
+                }
+            }
+        }
+        return best
+    }
+
+    private fun positions(maxOffset: Int, step: Int): List<Int> {
+        if (maxOffset == 0) return listOf(0)
+        return (0..maxOffset step step).toMutableList().also { offsets ->
+            offsets += maxOffset / 2
+            if (offsets.last() != maxOffset) offsets += maxOffset
+        }.distinct().sorted()
+    }
+
     private fun map(value: Int, sourceSize: Int, targetSize: Int): Int =
         (value * targetSize / sourceSize).coerceAtMost(targetSize - 1)
 
