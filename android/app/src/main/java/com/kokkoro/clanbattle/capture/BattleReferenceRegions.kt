@@ -8,6 +8,14 @@ data class ReferenceRegion(val x: Int, val y: Int, val width: Int, val height: I
 object BattleReferenceRegions {
     val START_BUTTON = ReferenceRegion(1565, 850, 275, 115)
     val LOADING = ReferenceRegion(1545, 955, 190, 60)
+    val MENU_BUTTON = ReferenceRegion(1761, 33, 87, 37)
+    val GLOBAL_SET_BUTTON = ReferenceRegion(1788, 644, 87, 86)
+    val AUTO_BUTTON = ReferenceRegion(1783, 795, 95, 78)
+    val ROLE_SET_BADGES = CharacterRole.entries.associateWith { role ->
+        // The badge has a breathing animation. Keep enough surrounding pixels for
+        // scale/position search instead of assuming that it always fills 54x53.
+        ReferenceRegion(540 + role.ordinal * 240, 761, 74, 73)
+    }
     val ENERGY_HUD = ReferenceRegion(384, 1034, 1160, 25)
     val ENERGY_REGIONS = mapOf(
         CharacterRole.ROLE_1 to EnergyRegion(8, 6, 176, 13),

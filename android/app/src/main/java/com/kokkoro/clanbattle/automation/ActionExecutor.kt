@@ -3,15 +3,16 @@ package com.kokkoro.clanbattle.automation
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
+import android.view.Gravity
 import android.widget.Toast
 import com.kokkoro.clanbattle.axis.ActionType
 import com.kokkoro.clanbattle.axis.AxisEvent
 import com.kokkoro.clanbattle.config.AppPreferences
+import com.kokkoro.clanbattle.recognition.CharacterRole
 
 class ActionExecutor(private val context: Context) {
     private val thread = HandlerThread("kokkoro-actions").apply { start() }
     private val handler = Handler(thread.looper)
-    private var autoOn = false
 
     fun execute(events: List<AxisEvent>, frameWidth: Int, frameHeight: Int, clickIntervalMs: Int) {
         if (events.isEmpty()) return
@@ -20,24 +21,14 @@ class ActionExecutor(private val context: Context) {
         handler.post {
             events.flatMap { it.actions }.forEach { action ->
                 when (action.type) {
-                    ActionType.CLICK_ROLE -> rolePoint(action.role)?.let { tapScaled(it.first, it.second, frameWidth, frameHeight) }
-                    ActionType.CLICK_AUTO -> {
-                        tapScaled(1828, 845, frameWidth, frameHeight)
-                        autoOn = !autoOn
+                    ActionType.CLICK_ROLE -> ActionCoordinates.role(action.role)?.let {
+                        tapScaled(it.x, it.y, frameWidth, frameHeight)
                     }
-                    ActionType.TOGGLE_AUTO -> {
-                        val target = action.value == "on"
-                        if (target != autoOn) {
-                            tapScaled(1828, 845, frameWidth, frameHeight)
-                            autoOn = target
-                        }
-                    }
+                    ActionType.CLICK_AUTO -> tapAuto(frameWidth, frameHeight)
+                    ActionType.TOGGLE_AUTO -> Unit
                     ActionType.NOTIFY -> showToast(action.message.orEmpty())
                     ActionType.BOSS -> showToast("BOSS UB")
-                    ActionType.SET_ROLES -> action.values.indices.take(5).forEach { index ->
-                        tapScaled(ROLE_X[index], 910, frameWidth, frameHeight)
-                        Thread.sleep(clickIntervalMs.toLong())
-                    }
+                    ActionType.SET_ROLES -> Unit
                 }
                 Thread.sleep(clickIntervalMs.toLong())
             }
@@ -48,10 +39,20 @@ class ActionExecutor(private val context: Context) {
         thread.quitSafely()
     }
 
-    private fun rolePoint(role: String?): Pair<Int, Int>? {
-        val index = ROLE_NAMES.indexOf(role)
-        return if (index >= 0) ROLE_X[index] to 845 else null
+    fun tapAuto(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.autoButton, width, height)
+
+    fun tapGlobalSet(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.globalSet, width, height)
+
+    fun tapRole(role: CharacterRole, width: Int, height: Int) = tapIfEnabled(ActionCoordinates.role(role), width, height)
+
+    fun tapMenu(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.menu, width, height)
+
+    private fun tapIfEnabled(point: ReferencePoint, width: Int, height: Int) {
+        if (!AppPreferences.dryRun(context)) tap(point, width, height)
     }
+
+    private fun tap(point: ReferencePoint, width: Int, height: Int) =
+        tapScaled(point.x, point.y, width, height)
 
     private fun tapScaled(referenceX: Int, referenceY: Int, width: Int, height: Int) {
         val x = (referenceX * width / 1920f)
@@ -60,11 +61,15 @@ class ActionExecutor(private val context: Context) {
     }
 
     private fun showToast(message: String) {
-        Handler(context.mainLooper).post { Toast.makeText(context, message, Toast.LENGTH_SHORT).show() }
+        Handler(context.mainLooper).post {
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).apply {
+                setGravity(
+                    Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+                    0,
+                    (72 * context.resources.displayMetrics.density).toInt()
+                )
+            }.show()
+        }
     }
 
-    private companion object {
-        val ROLE_NAMES = listOf("角色5", "角色4", "角色3", "角色2", "角色1")
-        val ROLE_X = listOf(482, 716, 950, 1184, 1418)
-    }
 }

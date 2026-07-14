@@ -21,8 +21,8 @@ class BattleSessionGateTest {
         gate.onLoadingMatched()
         assertTrue(gate.isWaitingForClock())
         assertFalse(gate.shouldEvaluate(60))
-        assertFalse(gate.shouldEvaluate(83))
-        assertTrue(gate.shouldEvaluate(84))
+        assertFalse(gate.shouldEvaluate(87))
+        assertTrue(gate.shouldEvaluate(88))
         assertTrue(gate.shouldEvaluate(90))
         assertFalse(gate.shouldEvaluate(91))
     }
@@ -47,7 +47,7 @@ class BattleSessionGateTest {
         gate.onStartMatched()
         gate.onLoadingMatched()
 
-        assertFalse(gate.onAccepted(83))
+        assertFalse(gate.onAccepted(87))
         assertTrue(gate.isWaiting())
     }
 
@@ -58,8 +58,8 @@ class BattleSessionGateTest {
         gate.onStartMatched()
         gate.onLoadingMatched()
 
-        assertTrue(gate.onAccepted(84))
+        assertTrue(gate.onAccepted(88))
         assertFalse(gate.isWaiting())
-        assertTrue(gate.shouldEvaluate(83))
+        assertTrue(gate.shouldEvaluate(87))
     }
 }
