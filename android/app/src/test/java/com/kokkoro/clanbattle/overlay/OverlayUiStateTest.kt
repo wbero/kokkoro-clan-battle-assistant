@@ -126,6 +126,16 @@ class OverlayUiStateTest {
             OverlayPosition(0, 1860),
             boundedOverlayPosition(10, 1800, -100, 200, 1080, 1920, 60)
         )
+        assertEquals(
+            OverlayPosition(680, 620),
+            boundedOverlayPosition(900, 700, 100, 100, 1080, 1920, 400, 1300)
+        )
+    }
+
+    @Test fun `panel resize follows drag continuously and stays within safe limits`() {
+        assertEquals(0.97f, resizedOverlayScale(0.72f, 240, 240, 960f), 0.001f)
+        assertEquals(0.60f, resizedOverlayScale(0.72f, -1000, -1000, 960f), 0.001f)
+        assertEquals(1.25f, resizedOverlayScale(0.72f, 1000, 1000, 960f), 0.001f)
     }
 
     @Test fun `pause frame enables manual advance and confirmation`() {
@@ -136,6 +146,22 @@ class OverlayUiStateTest {
         assertEquals("确定：角色3", state.confirm.label)
         assertTrue(state.confirm.enabled)
         assertFalse(state.selectAxis.enabled)
+        assertEquals(OverlayPanelColor.AMBER, state.panelColor)
+    }
+
+    @Test fun `active pause frame keeps controls enabled when latest capture is safety paused`() {
+        val state = resolveOverlayUiState(
+            axisName = "E5刀1",
+            battleLocked = true,
+            pauseFrameRoleLabel = "角色3",
+            safetyPaused = true,
+            statusText = "卡帧中",
+            currentAction = "当前：确认目标帧",
+            nextAction = "下一：确认后执行"
+        )
+
+        assertTrue(state.nextFrame.enabled)
+        assertTrue(state.confirm.enabled)
         assertEquals(OverlayPanelColor.AMBER, state.panelColor)
     }
 

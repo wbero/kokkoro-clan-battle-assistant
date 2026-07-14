@@ -110,3 +110,24 @@ data class OverlayUiState(
         )
     }
 }
+
+fun resolveOverlayUiState(
+    axisName: String?,
+    battleLocked: Boolean,
+    pauseFrameRoleLabel: String?,
+    safetyPaused: Boolean,
+    statusText: String,
+    currentAction: String,
+    nextAction: String
+): OverlayUiState = when {
+    pauseFrameRoleLabel != null -> OverlayUiState.pauseFrame(
+        axisName,
+        pauseFrameRoleLabel,
+        statusText,
+        currentAction,
+        nextAction
+    )
+    safetyPaused -> OverlayUiState.safetyPaused(axisName, statusText, currentAction, nextAction)
+    battleLocked -> OverlayUiState.running(axisName, statusText, currentAction, nextAction)
+    else -> OverlayUiState.idle(axisName, statusText, currentAction, nextAction)
+}

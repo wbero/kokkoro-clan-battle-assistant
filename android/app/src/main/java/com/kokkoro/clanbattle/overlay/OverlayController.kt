@@ -19,8 +19,23 @@ import android.widget.TextView
 import com.kokkoro.clanbattle.R
 import com.kokkoro.clanbattle.axis.StoredAxis
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 data class OverlayPosition(val x: Int, val y: Int)
+
+private const val MIN_PANEL_SCALE = 0.60f
+private const val MAX_PANEL_SCALE = 1.25f
+
+fun resizedOverlayScale(
+    startScale: Float,
+    deltaX: Int,
+    deltaY: Int,
+    fullScaleDragPixels: Float
+): Float {
+    if (fullScaleDragPixels <= 0f) return startScale.coerceIn(MIN_PANEL_SCALE, MAX_PANEL_SCALE)
+    val drag = (deltaX + deltaY) / 2f
+    return (startScale + drag / fullScaleDragPixels).coerceIn(MIN_PANEL_SCALE, MAX_PANEL_SCALE)
+}
 
 fun boundedOverlayPosition(
     startX: Int,
@@ -29,10 +44,11 @@ fun boundedOverlayPosition(
     deltaY: Int,
     screenWidth: Int,
     screenHeight: Int,
-    iconSize: Int
+    itemWidth: Int,
+    itemHeight: Int = itemWidth
 ) = OverlayPosition(
-    x = (startX + deltaX).coerceIn(0, maxOf(0, screenWidth - iconSize)),
-    y = (startY + deltaY).coerceIn(0, maxOf(0, screenHeight - iconSize))
+    x = (startX + deltaX).coerceIn(0, maxOf(0, screenWidth - itemWidth)),
+    y = (startY + deltaY).coerceIn(0, maxOf(0, screenHeight - itemHeight))
 )
 
 data class OverlayActions(
@@ -53,11 +69,13 @@ class OverlayController(
     private var rootView: LinearLayout? = null
     private var rootParams: WindowManager.LayoutParams? = null
     private var axisPanel: LinearLayout? = null
+    private var axisPanelParams: WindowManager.LayoutParams? = null
     private var selectAxisButton: Button? = null
     private var nextFrameButton: Button? = null
     private var confirmButton: Button? = null
     private var safetyButton: Button? = null
     private var minimizeButton: Button? = null
+    private var resizeButton: Button? = null
     private var resetButton: Button? = null
     private var minimizedIcon: ImageButton? = null
     private var minimizedX: Int? = null
@@ -66,6 +84,7 @@ class OverlayController(
     private var currentActionView: TextView? = null
     private var nextActionView: TextView? = null
     private var currentState = OverlayUiState.idle(null)
+    private var panelScale = 0.72f
 
     fun show() {
         if (!Settings.canDrawOverlays(context) || rootView != null) return
@@ -82,6 +101,9 @@ class OverlayController(
                 addView(button().also { minimizeButton = it }.apply {
                     setOnClickListener { minimize() }
                 }, compact())
+                addView(button().also { resizeButton = it }.apply {
+                    installPanelResizeHandle(this)
+                }, compact())
                 addView(button().also { resetButton = it }.apply {
                     setOnClickListener { actions.reset() }
                 }, compact())
@@ -97,11 +119,15 @@ class OverlayController(
             }
             val view = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(4), dp(4), dp(4), dp(4))
+                val padding = scaledDp(4)
+                setPadding(padding, padding, padding, padding)
                 setBackgroundColor(0xdd202124.toInt())
-                addView(label().also { statusTextView = it }, matchWidth())
-                addView(label().also { currentActionView = it }, matchWidth())
-                addView(label(0xffb3e5fc.toInt()).also { nextActionView = it }, matchWidth())
+                addView(label().also { statusTextView = it; installPanelDragHandle(it) }, matchWidth())
+                addView(label().also { currentActionView = it; installPanelDragHandle(it) }, matchWidth())
+                addView(label(0xffb3e5fc.toInt()).also {
+                    nextActionView = it
+                    installPanelDragHandle(it)
+                }, matchWidth())
                 addView(firstRow, matchWidth())
                 addView(secondRow, matchWidth())
             }
@@ -109,6 +135,7 @@ class OverlayController(
             windowManager.addView(view, params)
             rootView = view
             rootParams = params
+            applyPanelScale()
             applyState(currentState)
         }
     }
@@ -131,6 +158,7 @@ class OverlayController(
             confirmButton = null
             safetyButton = null
             minimizeButton = null
+            resizeButton = null
             resetButton = null
             statusTextView = null
             currentActionView = null
@@ -177,6 +205,7 @@ class OverlayController(
         apply(confirmButton, state.confirm)
         apply(safetyButton, state.safetyMenu)
         apply(minimizeButton, state.minimize)
+        resizeButton?.text = "缩放↘"
         apply(resetButton, state.reset)
         statusTextView?.text = state.statusText
         currentActionView?.text = state.currentAction
@@ -193,6 +222,138 @@ class OverlayController(
 
     private fun toggleAxisPanel() {
         if (axisPanel == null) showAxisPanel() else hideAxisPanel()
+    }
+
+    private fun applyPanelScale() {
+        val padding = scaledDp(4)
+        rootView?.setPadding(padding, padding, padding, padding)
+        listOfNotNull(
+            selectAxisButton,
+            nextFrameButton,
+            confirmButton,
+            safetyButton,
+            minimizeButton,
+            resizeButton,
+            resetButton
+        ).forEach { button ->
+            button.textSize = 12f * panelScale
+            button.setPadding(scaledDp(6), 0, scaledDp(6), 0)
+        }
+        selectAxisButton?.layoutParams = weighted()
+        nextFrameButton?.layoutParams = weighted()
+        confirmButton?.layoutParams = weighted()
+        safetyButton?.layoutParams = compact()
+        minimizeButton?.layoutParams = compact()
+        resizeButton?.layoutParams = compact()
+        resetButton?.layoutParams = compact()
+        listOfNotNull(statusTextView, currentActionView, nextActionView).forEach { label ->
+            label.textSize = 12f * panelScale
+            label.maxWidth = scaledDp(420)
+            label.setPadding(scaledDp(6), scaledDp(1), scaledDp(6), scaledDp(1))
+        }
+        resizeButton?.text = "缩放↘"
+        rootView?.requestLayout()
+        mainHandler.post { clampPanelPosition() }
+    }
+
+    private fun installPanelResizeHandle(handle: View) {
+        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+        var downRawX = 0f
+        var downRawY = 0f
+        var startScale = panelScale
+        var resizing = false
+        handle.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startScale = panelScale
+                    resizing = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val deltaX = (event.rawX - downRawX).toInt()
+                    val deltaY = (event.rawY - downRawY).toInt()
+                    if (abs(deltaX) > touchSlop || abs(deltaY) > touchSlop) resizing = true
+                    if (resizing) {
+                        panelScale = resizedOverlayScale(
+                            startScale,
+                            deltaX,
+                            deltaY,
+                            scaledDp(320).toFloat()
+                        )
+                        hideAxisPanel()
+                        applyPanelScale()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun installPanelDragHandle(handle: View) {
+        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+        var downRawX = 0f
+        var downRawY = 0f
+        var startX = 0
+        var startY = 0
+        var dragged = false
+        handle.setOnTouchListener { _, event ->
+            val params = rootParams ?: return@setOnTouchListener false
+            val panel = rootView ?: return@setOnTouchListener false
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startX = params.x
+                    startY = params.y
+                    dragged = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val deltaX = (event.rawX - downRawX).toInt()
+                    val deltaY = (event.rawY - downRawY).toInt()
+                    if (abs(deltaX) > touchSlop || abs(deltaY) > touchSlop) dragged = true
+                    if (dragged) updatePanelPosition(panel, params, startX, startY, deltaX, deltaY)
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun updatePanelPosition(
+        panel: View,
+        params: WindowManager.LayoutParams,
+        startX: Int,
+        startY: Int,
+        deltaX: Int,
+        deltaY: Int
+    ) {
+        val metrics = context.resources.displayMetrics
+        val position = boundedOverlayPosition(
+            startX,
+            startY,
+            deltaX,
+            deltaY,
+            metrics.widthPixels,
+            metrics.heightPixels,
+            panel.width.coerceAtLeast(1),
+            panel.height.coerceAtLeast(1)
+        )
+        params.x = position.x
+        params.y = position.y
+        runCatching { windowManager.updateViewLayout(panel, params) }
+        updateAxisPanelPosition()
+    }
+
+    private fun clampPanelPosition() {
+        val panel = rootView ?: return
+        val params = rootParams ?: return
+        updatePanelPosition(panel, params, params.x, params.y, 0, 0)
     }
 
     private fun minimize() {
@@ -293,29 +454,43 @@ class OverlayController(
                 }, matchWidth())
             }
         }
-        windowManager.addView(panel, overlayParams(dp(16), dp(196)))
+        val root = rootParams
+        val params = overlayParams(root?.x ?: dp(16), (root?.y ?: dp(100)) + (rootView?.height ?: dp(96)))
+        windowManager.addView(panel, params)
         axisPanel = panel
+        axisPanelParams = params
     }
 
     private fun hideAxisPanel() {
         axisPanel?.let { runCatching { windowManager.removeView(it) } }
         axisPanel = null
+        axisPanelParams = null
+    }
+
+    private fun updateAxisPanelPosition() {
+        val panel = axisPanel ?: return
+        val params = axisPanelParams ?: return
+        val root = rootParams ?: return
+        params.x = root.x
+        params.y = root.y + (rootView?.height ?: 0)
+        runCatching { windowManager.updateViewLayout(panel, params) }
     }
 
     private fun button(label: String = "") = Button(context).apply {
         text = label
         isAllCaps = false
-        textSize = 12f
+        textSize = 12f * panelScale
         minWidth = 0
         minimumWidth = 0
         setTextColor(Color.WHITE)
-        setPadding(dp(6), 0, dp(6), 0)
+        setPadding(scaledDp(6), 0, scaledDp(6), 0)
     }
 
     private fun label(color: Int = Color.WHITE) = TextView(context).apply {
         setTextColor(color)
-        textSize = 12f
-        setPadding(dp(6), dp(2), dp(6), dp(2))
+        textSize = 12f * panelScale
+        maxWidth = scaledDp(420)
+        setPadding(scaledDp(6), scaledDp(1), scaledDp(6), scaledDp(1))
     }
 
     private fun overlayParams(x: Int, y: Int) = WindowManager.LayoutParams(
@@ -331,12 +506,13 @@ class OverlayController(
         this.y = y
     }
 
-    private fun weighted() = LinearLayout.LayoutParams(0, dp(40), 1f)
-    private fun compact() = LinearLayout.LayoutParams(dp(84), dp(40))
+    private fun weighted() = LinearLayout.LayoutParams(0, scaledDp(40), 1f)
+    private fun compact() = LinearLayout.LayoutParams(scaledDp(84), scaledDp(40))
     private fun matchWidth() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT
     )
 
     private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
+    private fun scaledDp(value: Int): Int = (value * context.resources.displayMetrics.density * panelScale).roundToInt()
 }

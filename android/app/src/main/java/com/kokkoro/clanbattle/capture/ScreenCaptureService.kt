@@ -33,7 +33,7 @@ import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.control.ControlSafetyState
 import com.kokkoro.clanbattle.overlay.OverlayActions
 import com.kokkoro.clanbattle.overlay.OverlayController
-import com.kokkoro.clanbattle.overlay.OverlayUiState
+import com.kokkoro.clanbattle.overlay.resolveOverlayUiState
 import com.kokkoro.clanbattle.pauseframe.AndroidOverlayFocusPort
 import com.kokkoro.clanbattle.pauseframe.PauseFrameScheduler
 import com.kokkoro.clanbattle.pauseframe.PauseFrameSession
@@ -55,7 +55,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private var captureHeight = 0
     private var lastProcessedNanos = 0L
     private var battleLocked = false
-    private var pauseFrameRole: CharacterRole? = null
+    @Volatile private var pauseFrameRole: CharacterRole? = null
     private var latestFrameStatus: FrameStatus? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
@@ -176,6 +176,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         reader.setOnImageAvailableListener({ source ->
             val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
+                if (!captureProcessingAllowed(pauseFrameRole)) return@setOnImageAvailableListener
                 val now = SystemClock.elapsedRealtimeNanos()
                 if (now - lastProcessedNanos < FRAME_INTERVAL_NANOS) return@setOnImageAvailableListener
                 lastProcessedNanos = now
@@ -282,10 +283,9 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
 
     private fun onPauseFrameRequested(nodeId: String, role: CharacterRole) {
         mainHandler.post {
+            pauseFrameRole = role
             val entered = pauseFrameSession.enter(nodeId, role)
-            if (entered.accepted) {
-                pauseFrameRole = role
-            } else {
+            if (!entered.accepted) {
                 pauseFrameRole = null
                 captureHandler.post { frameProcessor?.requestSafetyPause("pause-frame-focus-failed") }
             }
@@ -297,6 +297,10 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         safety: ControlSafetyState? = latestFrameStatus?.controlSafety,
         status: FrameStatus? = latestFrameStatus
     ) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { renderOverlay(safety, status) }
+            return
+        }
         val name = axisLibrary.selected()?.name
         val executionWarning = status?.executionWarning ?: actionExecutionBlockReason(
             dryRun = AppPreferences.dryRun(this),
@@ -313,20 +317,15 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         val currentAction = idlePreview?.current ?: status?.currentAction ?: "当前：等待触发"
         val nextAction = idlePreview?.next ?: status?.nextAction ?: "下一：无"
         overlay.render(
-            when {
-                safety == ControlSafetyState.SAFETY_PAUSED -> OverlayUiState.safetyPaused(
-                    name, statusText, currentAction, nextAction
-                )
-                pauseFrameRole != null -> OverlayUiState.pauseFrame(
-                    name,
-                    "角色${pauseFrameRole!!.ordinal + 1}",
-                    statusText,
-                    currentAction,
-                    nextAction
-                )
-                battleLocked -> OverlayUiState.running(name, statusText, currentAction, nextAction)
-                else -> OverlayUiState.idle(name, statusText, currentAction, nextAction)
-            }
+            resolveOverlayUiState(
+                axisName = name,
+                battleLocked = battleLocked,
+                pauseFrameRoleLabel = pauseFrameRole?.let { "角色${it.ordinal + 1}" },
+                safetyPaused = safety == ControlSafetyState.SAFETY_PAUSED,
+                statusText = statusText,
+                currentAction = currentAction,
+                nextAction = nextAction
+            )
         )
     }
 
@@ -379,3 +378,5 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         private const val FRAME_INTERVAL_NANOS = 50_000_000L
     }
 }
+
+fun captureProcessingAllowed(pauseFrameRole: CharacterRole?): Boolean = pauseFrameRole == null
