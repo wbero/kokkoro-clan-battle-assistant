@@ -73,6 +73,33 @@ class AxisLibraryTest {
         assertTrue(library.list().isEmpty())
     }
 
+    @Test fun `editing selected axis replaces content and preserves selection`() {
+        val library = AxisLibrary(InMemoryAxisStorage())
+        val original = library.import("old.txt", validSwitch("旧轴"))
+        library.select(original.id)
+
+        val edited = library.replace(original.id, "edited.txt", validSwitch("新轴"))!!
+
+        assertTrue(edited.valid)
+        assertEquals("新轴", library.selected()?.name)
+        assertEquals(edited.id, library.selected()?.id)
+        assertEquals(1, library.list().size)
+        assertNull(library.text(original.id))
+    }
+
+    @Test fun `invalid edit keeps original axis and selection`() {
+        val library = AxisLibrary(InMemoryAxisStorage())
+        val original = library.import("old.txt", validSwitch("旧轴"))
+        library.select(original.id)
+
+        val edited = library.replace(original.id, "bad.txt", "轴类型=未知")!!
+
+        assertFalse(edited.valid)
+        assertEquals(original.id, library.selected()?.id)
+        assertEquals(1, library.list().size)
+        assertEquals(validSwitch("旧轴"), library.text(original.id))
+    }
+
     private fun validSwitch(name: String) =
         """
         轴类型=开关
