@@ -3,14 +3,18 @@ package com.kokkoro.clanbattle.automation
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
-import android.view.Gravity
 import android.widget.Toast
 import com.kokkoro.clanbattle.axis.ActionType
 import com.kokkoro.clanbattle.axis.AxisEvent
 import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.recognition.CharacterRole
 
-class ActionExecutor(private val context: Context) {
+class ActionExecutor(
+    private val context: Context,
+    private val messagePresenter: (String) -> Unit = { message ->
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+) {
     private val thread = HandlerThread("kokkoro-actions").apply { start() }
     private val handler = Handler(thread.looper)
 
@@ -61,15 +65,7 @@ class ActionExecutor(private val context: Context) {
     }
 
     private fun showToast(message: String) {
-        Handler(context.mainLooper).post {
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).apply {
-                setGravity(
-                    Gravity.TOP or Gravity.CENTER_HORIZONTAL,
-                    0,
-                    (72 * context.resources.displayMetrics.density).toInt()
-                )
-            }.show()
-        }
+        Handler(context.mainLooper).post { messagePresenter(message) }
     }
 
 }
