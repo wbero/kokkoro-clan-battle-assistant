@@ -16,7 +16,7 @@ class ControlRegionTest {
         assertEquals(CharacterRole.entries.toSet(), BattleReferenceRegions.ROLE_SET_BADGES.keys)
         CharacterRole.entries.forEach { role ->
             assertEquals(
-                ReferenceRegion(550 + role.ordinal * 240, 771, 54, 53),
+                ReferenceRegion(540 + role.ordinal * 240, 761, 74, 73),
                 BattleReferenceRegions.ROLE_SET_BADGES.getValue(role)
             )
         }

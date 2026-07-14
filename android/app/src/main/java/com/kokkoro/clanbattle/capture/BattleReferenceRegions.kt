@@ -12,7 +12,9 @@ object BattleReferenceRegions {
     val GLOBAL_SET_BUTTON = ReferenceRegion(1788, 644, 87, 86)
     val AUTO_BUTTON = ReferenceRegion(1783, 795, 95, 78)
     val ROLE_SET_BADGES = CharacterRole.entries.associateWith { role ->
-        ReferenceRegion(550 + role.ordinal * 240, 771, 54, 53)
+        // The badge has a breathing animation. Keep enough surrounding pixels for
+        // scale/position search instead of assuming that it always fills 54x53.
+        ReferenceRegion(540 + role.ordinal * 240, 761, 74, 73)
     }
     val ENERGY_HUD = ReferenceRegion(384, 1034, 1160, 25)
     val ENERGY_REGIONS = mapOf(
