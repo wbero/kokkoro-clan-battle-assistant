@@ -68,6 +68,24 @@ class AxisLibrary(
         return storage.list().firstOrNull { it.id == id }?.text
     }
 
+    fun text(id: String): String? = storage.list().firstOrNull { it.id == id }?.text
+
+    /** Replaces an existing axis only when the edited text is valid. */
+    fun replace(id: String, sourceName: String, text: String): StoredAxis? {
+        if (storage.selectionLocked()) return null
+        if (storage.list().none { it.id == id }) return null
+        val normalized = normalize(text)
+        val replacement = StoredAxisText(stableId(normalized), sourceName, normalized)
+        val described = describe(replacement)
+        if (!described.valid) return described
+
+        val wasSelected = storage.selectedId() == id
+        storage.put(replacement)
+        if (replacement.id != id) storage.remove(id)
+        if (wasSelected) storage.setSelectedId(replacement.id)
+        return described
+    }
+
     fun remove(id: String): Boolean {
         if (storage.selectionLocked()) return false
         val removed = storage.remove(id)

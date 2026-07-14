@@ -2,6 +2,8 @@ package com.kokkoro.clanbattle
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ClipboardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,10 +15,12 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -126,6 +130,10 @@ class MainActivity : Activity() {
         }
         content.addView(axisView)
 
+        content.addView(button("轴编写指南与标准示例") {
+            startActivity(Intent(this, AxisGuideActivity::class.java))
+        })
+
         content.addView(button("导入轴文件") {
             startActivityForResult(
                 Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -135,6 +143,7 @@ class MainActivity : Activity() {
                 REQUEST_AXIS
             )
         })
+        content.addView(button("粘贴轴文本") { showPasteAxisDialog() })
 
         axisList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         content.addView(axisList, matchWidth())
@@ -197,10 +206,114 @@ class MainActivity : Activity() {
         val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) cursor.getString(0) else uri.lastPathSegment
         } ?: uri.lastPathSegment.orEmpty()
+        importAxis(name, text)
+    }
+
+    private fun showPasteAxisDialog() {
+        val clipboardText = getSystemService(ClipboardManager::class.java)
+            ?.primaryClip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)
+            ?.coerceToText(this)
+            ?.toString()
+            .orEmpty()
+        showAxisEditor(
+            title = "粘贴轴文本",
+            actionLabel = "导入",
+            initialName = "",
+            initialText = clipboardText
+        ) { sourceName, text ->
+            importAxis(sourceName, text)
+            true
+        }
+    }
+
+    private fun showEditAxisDialog(axisId: String, sourceName: String) {
+        val originalText = axisLibrary.text(axisId) ?: return
+        showAxisEditor(
+            title = "编辑轴",
+            actionLabel = "保存",
+            initialName = sourceName,
+            initialText = originalText
+        ) { editedName, editedText ->
+            val replaced = axisLibrary.replace(axisId, editedName, editedText)
+            when {
+                replaced == null -> {
+                    Toast.makeText(this, "战斗中已锁定，暂时不能编辑", Toast.LENGTH_SHORT).show()
+                    false
+                }
+                !replaced.valid -> {
+                    Toast.makeText(this, "轴无效：${replaced.validationMessage}", Toast.LENGTH_LONG).show()
+                    false
+                }
+                else -> {
+                    syncLegacySelectedAxis()
+                    refreshAxisLabel()
+                    Toast.makeText(this, "已保存：${replaced.name}", Toast.LENGTH_SHORT).show()
+                    true
+                }
+            }
+        }
+    }
+
+    private fun showAxisEditor(
+        title: String,
+        actionLabel: String,
+        initialName: String,
+        initialText: String,
+        onSave: (sourceName: String, text: String) -> Boolean
+    ) {
+        val nameInput = EditText(this).apply {
+            hint = "来源名称（可选）"
+            setSingleLine(true)
+            setText(initialName)
+        }
+        val textInput = EditText(this).apply {
+            hint = "在这里粘贴完整轴文本"
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            gravity = Gravity.TOP or Gravity.START
+            minLines = 10
+            maxLines = 18
+            setText(initialText)
+            setSelection(text.length)
+        }
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), 0, dp(20), 0)
+            addView(nameInput, matchWidth())
+            addView(textInput, matchWidth())
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage("支持顺序轴和开关轴；内容会经过与文件导入相同的解析和校验。")
+            .setView(fields)
+            .setNegativeButton("取消", null)
+            .setPositiveButton(actionLabel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val text = textInput.text.toString()
+                if (text.isBlank()) {
+                    textInput.error = "请粘贴轴文本"
+                    return@setOnClickListener
+                }
+                val sourceName = nameInput.text.toString().trim().ifBlank { "粘贴轴.txt" }
+                if (onSave(sourceName, text)) dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun importAxis(name: String, text: String) {
         val imported = axisLibrary.import(name, text)
         if (imported.valid) {
             axisLibrary.select(imported.id)
             syncLegacySelectedAxis()
+            Toast.makeText(this, "已导入并选择：${imported.name}", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "轴无效：${imported.validationMessage}", Toast.LENGTH_LONG).show()
         }
         refreshAxisLabel()
     }
@@ -229,6 +342,12 @@ class MainActivity : Activity() {
                     }
                 }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(Button(this).apply {
+                text = "编辑"
+                isAllCaps = false
+                isEnabled = !locked
+                setOnClickListener { showEditAxisDialog(axis.id, axis.sourceName) }
+            })
             row.addView(Button(this).apply {
                 text = "删除"
                 isAllCaps = false
