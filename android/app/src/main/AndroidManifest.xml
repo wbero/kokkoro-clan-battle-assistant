@@ -17,6 +17,9 @@
         <activity
             android:name=".AxisGuideActivity"
             android:exported="false" />
+        <activity
+            android:name=".SwitchAxisEditorActivity"
+            android:exported="false" />
 
         <activity
             android:name=".MainActivity"

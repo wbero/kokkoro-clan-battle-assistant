@@ -17,10 +17,12 @@ import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -28,6 +30,7 @@ import android.widget.Toast
 import com.kokkoro.clanbattle.capture.ScreenCaptureService
 import com.kokkoro.clanbattle.axis.AndroidAxisRepository
 import com.kokkoro.clanbattle.axis.AxisLibrary
+import com.kokkoro.clanbattle.axis.AxisType
 import com.kokkoro.clanbattle.config.AppPreferences
 
 class MainActivity : Activity() {
@@ -37,6 +40,9 @@ class MainActivity : Activity() {
     private lateinit var projectionManager: MediaProjectionManager
     private lateinit var axisLibrary: AxisLibrary
     private lateinit var axisList: LinearLayout
+    private lateinit var pageHost: FrameLayout
+    private lateinit var pages: List<View>
+    private lateinit var navigationButtons: List<Button>
     private var receiverRegistered = false
 
     private val statusReceiver = object : BroadcastReceiver() {
@@ -97,7 +103,35 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun buildContent(): ScrollView {
+    private fun buildContent(): View {
+        val battlePage = buildBattlePage()
+        val axisPage = buildAxisPage()
+        val settingsPage = buildSettingsPage()
+        pages = listOf(battlePage, axisPage, settingsPage)
+        pageHost = FrameLayout(this).apply { addView(battlePage, frameMatch()) }
+        val navigation = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(6), dp(8), dp(8))
+            setBackgroundColor(Color.rgb(245, 247, 250))
+        }
+        navigationButtons = listOf("战斗", "轴库", "设置").mapIndexed { index, label ->
+            Button(this).apply {
+                text = label
+                isAllCaps = false
+                setOnClickListener { showPage(index) }
+                navigation.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(pageHost, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(navigation, matchWidth())
+        }
+        showPage(0)
+        return root
+    }
+
+    private fun buildBattlePage(): ScrollView {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(20), dp(20), dp(28))
@@ -130,43 +164,12 @@ class MainActivity : Activity() {
         }
         content.addView(axisView)
 
-        content.addView(button("轴编写指南与标准示例") {
-            startActivity(Intent(this, AxisGuideActivity::class.java))
-        })
-
-        content.addView(button("导入轴文件") {
-            startActivityForResult(
-                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "text/plain"
-                },
-                REQUEST_AXIS
-            )
-        })
-        content.addView(button("粘贴轴文本") { showPasteAxisDialog() })
-
-        axisList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(axisList, matchWidth())
-
         dryRunCheckBox = CheckBox(this).apply {
             text = "只识别，不执行点击"
             isChecked = AppPreferences.dryRun(this@MainActivity)
             setOnCheckedChangeListener { _, checked -> AppPreferences.setDryRun(this@MainActivity, checked) }
         }
         content.addView(dryRunCheckBox)
-
-        if (BuildConfig.DEBUG) content.addView(CheckBox(this).apply {
-            text = "记录识别诊断（时钟＋能量）"
-            isChecked = AppPreferences.clockDebugEnabled(this@MainActivity)
-            setOnCheckedChangeListener { _, checked -> AppPreferences.setClockDebugEnabled(this@MainActivity, checked) }
-        })
-
-        content.addView(button("启用无障碍点击") {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        })
-        content.addView(button("授予悬浮窗权限") {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-        })
         content.addView(button("开始原生截图") { requestCapture() })
         content.addView(button("准备新战斗") {
             startService(
@@ -186,6 +189,77 @@ class MainActivity : Activity() {
         })
 
         return ScrollView(this).apply { addView(content) }
+    }
+
+    private fun buildAxisPage(): ScrollView {
+        val content = sectionContent("轴库", "导入、创建和维护战斗轴；战斗运行期间轴库会锁定。")
+        content.addView(button("可视化制作开关轴") {
+            startActivity(Intent(this, SwitchAxisEditorActivity::class.java))
+        })
+        content.addView(button("导入轴文件") {
+            startActivityForResult(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "text/plain"
+                },
+                REQUEST_AXIS
+            )
+        })
+        content.addView(button("粘贴轴文本") { showPasteAxisDialog() })
+        content.addView(button("轴编写指南与标准示例") {
+            startActivity(Intent(this, AxisGuideActivity::class.java))
+        })
+        axisList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(axisList, matchWidth())
+        return ScrollView(this).apply { addView(content) }
+    }
+
+    private fun buildSettingsPage(): ScrollView {
+        val content = sectionContent("设置", "配置点击权限、悬浮窗和开发诊断功能。")
+        content.addView(button("启用无障碍点击") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        })
+        content.addView(button("授予悬浮窗权限") {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        })
+        if (BuildConfig.DEBUG) content.addView(CheckBox(this).apply {
+            text = "记录识别诊断（时钟＋能量）"
+            isChecked = AppPreferences.clockDebugEnabled(this@MainActivity)
+            setOnCheckedChangeListener { _, checked -> AppPreferences.setClockDebugEnabled(this@MainActivity, checked) }
+        })
+        content.addView(TextView(this).apply {
+            text = "建议首次使用时依次授予无障碍和悬浮窗权限，然后回到“战斗”页开始截图。"
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, dp(16), 0, 0)
+        })
+        return ScrollView(this).apply { addView(content) }
+    }
+
+    private fun sectionContent(title: String, subtitle: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(20), dp(20), dp(20), dp(28))
+        addView(TextView(this@MainActivity).apply {
+            text = title
+            textSize = 24f
+            setTextColor(Color.rgb(32, 33, 36))
+        })
+        addView(TextView(this@MainActivity).apply {
+            text = subtitle
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, dp(4), 0, dp(12))
+        })
+    }
+
+    private fun showPage(index: Int) {
+        pageHost.removeAllViews()
+        pageHost.addView(pages[index], frameMatch())
+        navigationButtons.forEachIndexed { buttonIndex, button ->
+            button.isEnabled = buttonIndex != index
+            button.setTextColor(if (buttonIndex == index) Color.rgb(30, 80, 150) else Color.DKGRAY)
+        }
+        if (index == 1) refreshAxisLabel()
     }
 
     private fun requestCapture() {
@@ -342,6 +416,17 @@ class MainActivity : Activity() {
                     }
                 }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (axis.type == AxisType.SWITCH && axis.valid) row.addView(Button(this).apply {
+                text = "制轴"
+                isAllCaps = false
+                isEnabled = !locked
+                setOnClickListener {
+                    startActivity(
+                        Intent(this@MainActivity, SwitchAxisEditorActivity::class.java)
+                            .putExtra(SwitchAxisEditorActivity.EXTRA_AXIS_ID, axis.id)
+                    )
+                }
+            })
             row.addView(Button(this).apply {
                 text = "编辑"
                 isAllCaps = false
@@ -386,6 +471,11 @@ class MainActivity : Activity() {
     private fun matchWidth() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT
+    )
+
+    private fun frameMatch() = FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT
     )
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
