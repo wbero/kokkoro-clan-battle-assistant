@@ -50,7 +50,15 @@ class ClockRecognizer(
         val seconds = tensMatch.digit * 10 + onesMatch.digit
         val totalSeconds = minuteMatch.digit * 60 + seconds
         val rawText = formatClock(totalSeconds)
-        val confidence = min(minuteMatch.confidence, min(tensMatch.confidence, onesMatch.confidence))
+        // A narrow digit margin is common on the real device: the small clock
+        // font makes neighbouring glyphs (for example 5/6) nearly tie even
+        // when the rendered shape matches the template well.  Keep the margin
+        // confidence for genuinely weak digits, but let the aggregate primary
+        // shape score carry a strong, temporally-filterable reading through.
+        val digitConfidence = min(minuteMatch.confidence, min(tensMatch.confidence, onesMatch.confidence))
+        val primaryShapeConfidence = ((min(minuteMatch.score, min(tensMatch.score, onesMatch.score)) - 0.30) / 0.40)
+            .coerceIn(0.0, 1.0)
+        val confidence = max(digitConfidence, primaryShapeConfidence)
         val inRange = totalSeconds in 1..90
         val candidates = buildCandidates(minuteMatch, tensMatch, onesMatch)
 

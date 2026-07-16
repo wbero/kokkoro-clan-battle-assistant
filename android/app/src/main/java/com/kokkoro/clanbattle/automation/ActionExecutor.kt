@@ -26,7 +26,7 @@ class ActionExecutor(
             events.flatMap { it.actions }.forEach { action ->
                 when (action.type) {
                     ActionType.CLICK_ROLE -> ActionCoordinates.role(action.role)?.let {
-                        tapScaled(it.x, it.y, frameWidth, frameHeight)
+                        tapScaled(it.x, it.y, frameWidth, frameHeight, HorizontalAnchor.CENTER)
                     }
                     ActionType.CLICK_AUTO -> tapAuto(frameWidth, frameHeight)
                     ActionType.TOGGLE_AUTO -> Unit
@@ -43,24 +43,24 @@ class ActionExecutor(
         thread.quitSafely()
     }
 
-    fun tapAuto(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.autoButton, width, height)
+    fun tapAuto(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.autoButton, width, height, HorizontalAnchor.RIGHT)
 
-    fun tapGlobalSet(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.globalSet, width, height)
+    fun tapGlobalSet(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.globalSet, width, height, HorizontalAnchor.RIGHT)
 
-    fun tapRole(role: CharacterRole, width: Int, height: Int) = tapIfEnabled(ActionCoordinates.role(role), width, height)
+    fun tapRole(role: CharacterRole, width: Int, height: Int) = tapIfEnabled(ActionCoordinates.role(role), width, height, HorizontalAnchor.CENTER)
 
-    fun tapMenu(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.menu, width, height)
+    fun tapMenu(width: Int, height: Int) = tapIfEnabled(ActionCoordinates.menu, width, height, HorizontalAnchor.RIGHT)
 
-    private fun tapIfEnabled(point: ReferencePoint, width: Int, height: Int) {
-        if (!AppPreferences.dryRun(context)) tap(point, width, height)
+    private fun tapIfEnabled(point: ReferencePoint, width: Int, height: Int, anchor: HorizontalAnchor) {
+        if (!AppPreferences.dryRun(context)) tap(point, width, height, anchor)
     }
 
-    private fun tap(point: ReferencePoint, width: Int, height: Int) =
-        tapScaled(point.x, point.y, width, height)
+    private fun tap(point: ReferencePoint, width: Int, height: Int, anchor: HorizontalAnchor) =
+        tapScaled(point.x, point.y, width, height, anchor)
 
-    private fun tapScaled(referenceX: Int, referenceY: Int, width: Int, height: Int) {
-        val x = (referenceX * width / 1920f)
-        val y = (referenceY * height / 1080f)
+    private fun tapScaled(referenceX: Int, referenceY: Int, width: Int, height: Int, anchor: HorizontalAnchor) {
+        val x = GameCoordinateMapper.mapX(referenceX, width, height, anchor)
+        val y = GameCoordinateMapper.mapY(referenceY, width, height)
         KokkoroAccessibilityService.instance?.tap(x, y)
     }
 

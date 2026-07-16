@@ -29,6 +29,19 @@ class ClockRecognizerTest {
     }
 
     @Test
+    fun `recognizes ultrawide real device clock crops`() {
+        mapOf(
+            "clock_ultrawide/clock_1_30_full.png" to 90,
+            "clock_ultrawide/clock_1_25.png" to 85,
+            "clock_ultrawide/clock_1_15.png" to 75
+        ).forEach { (name, expected) ->
+            val result = recognizer.recognize(loadImage(name))
+            assertTrue("$name: $result", result.ok)
+            assertEquals(name, expected, result.timeSeconds)
+        }
+    }
+
+    @Test
     fun `top two combinations contain correct time for ambiguous digits`() {
         val cases = listOf(
             "clock_1_19.png" to 79,

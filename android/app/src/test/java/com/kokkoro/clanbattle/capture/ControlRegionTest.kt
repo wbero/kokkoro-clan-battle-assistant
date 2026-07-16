@@ -54,6 +54,12 @@ class ControlRegionTest {
             assertTrue(region.right <= 960)
             assertTrue(region.bottom <= 540)
         }
+
+        val ultrawide = ImageRoiExtractor.scaleRegion(2780, 1264, 1565, 850, 275, 115)
+        assertEquals(2098, ultrawide.left)
+        assertEquals(994, ultrawide.top)
+        assertEquals(2419, ultrawide.right)
+        assertEquals(1129, ultrawide.bottom)
     }
 
     @Test

@@ -107,7 +107,7 @@ class BattleControlStateMachine {
         return plan(current, nowMs)
     }
 
-    fun snapshot(): ControlStep = step(ControlAction.None, "snapshot")
+    fun snapshot(reason: String = "snapshot"): ControlStep = step(ControlAction.None, reason)
 
     /** Updates the displayed observation without planning clicks or changing safety state. */
     fun observeOnly(observation: BattleControlObservation): ControlStep {

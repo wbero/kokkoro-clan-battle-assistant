@@ -55,11 +55,13 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private var captureHeight = 0
     private var lastProcessedNanos = 0L
     private var battleLocked = false
+    private val captureSessionGate = CaptureSessionGate()
     @Volatile private var pauseFrameRole: CharacterRole? = null
     private var latestFrameStatus: FrameStatus? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
+            captureSessionGate.clear()
             stopSelf()
         }
     }
@@ -110,7 +112,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_PREPARE_BATTLE) {
-            prepareNewBattle()
+            captureHandler.post { prepareNewBattle() }
             return START_NOT_STICKY
         }
         if (intent?.action != ACTION_START) return START_NOT_STICKY
@@ -128,14 +130,15 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             stopSelf()
             return START_NOT_STICKY
         }
+        val sessionId = intent.getLongExtra(EXTRA_CAPTURE_SESSION_ID, 0L)
+        if (sessionId <= 0L) {
+            publishStatus(FrameStatus("截图会话无效，请重新授权", false, 0, captureWidth, captureHeight))
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (!captureSessionGate.begin(sessionId)) return START_NOT_STICKY
 
-        projection?.stop()
-        projection = getSystemService(MediaProjectionManager::class.java)
-            .getMediaProjection(resultCode, data)
-            .also { it.registerCallback(projectionCallback, captureHandler) }
-        overlay.show()
-        renderOverlay()
-        captureHandler.post { recreateVirtualDisplay(force = true) }
+        captureHandler.post { startCaptureSession(resultCode, data, sessionId) }
         return START_NOT_STICKY
     }
 
@@ -146,6 +149,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             projection?.unregisterCallback(projectionCallback)
             projection?.stop()
             projection = null
+            captureSessionGate.clear()
         }
         frameProcessor?.close()
         frameProcessor = null
@@ -165,15 +169,43 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         if (displayId == Display.DEFAULT_DISPLAY) captureHandler.post { recreateVirtualDisplay(force = false) }
     }
 
-    private fun recreateVirtualDisplay(force: Boolean) {
-        val mediaProjection = projection ?: return
-        val metrics = realDisplayMetrics()
-        if (!force && metrics.widthPixels == captureWidth && metrics.heightPixels == captureHeight) return
+    private fun startCaptureSession(resultCode: Int, data: Intent, sessionId: Long) {
+        val newProjection = try {
+            getSystemService(MediaProjectionManager::class.java)
+                .getMediaProjection(resultCode, data)
+                .also { it.registerCallback(projectionCallback, captureHandler) }
+        } catch (error: RuntimeException) {
+            captureSessionGate.fail(sessionId)
+            publishStatus(FrameStatus("截图授权启动失败，请重新授权", false, 0, captureWidth, captureHeight))
+            return
+        }
 
         releaseDisplay()
-        captureWidth = metrics.widthPixels
-        captureHeight = metrics.heightPixels
-        val reader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2)
+        projection?.unregisterCallback(projectionCallback)
+        projection?.stop()
+        projection = newProjection
+        if (recreateVirtualDisplay(force = true)) {
+            // A battle reset belongs to a successfully established capture session.
+            // Keeping it after display creation prevents an invalid/short-lived
+            // authorization from wiping an already running battle state.
+            lastProcessedNanos = 0L
+            prepareNewBattle()
+            mainHandler.post { overlay.show() }
+            renderOverlay()
+            captureSessionGate.activate(sessionId)
+        } else {
+            captureSessionGate.fail(sessionId)
+        }
+    }
+
+    private fun recreateVirtualDisplay(force: Boolean): Boolean {
+        val mediaProjection = projection ?: return false
+        val metrics = realDisplayMetrics()
+        if (!force && metrics.widthPixels == captureWidth && metrics.heightPixels == captureHeight) return true
+
+        val newWidth = metrics.widthPixels
+        val newHeight = metrics.heightPixels
+        val reader = ImageReader.newInstance(newWidth, newHeight, PixelFormat.RGBA_8888, 2)
         reader.setOnImageAvailableListener({ source ->
             val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
@@ -186,18 +218,39 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                 image.close()
             }
         }, captureHandler)
-        imageReader = reader
-        virtualDisplay = mediaProjection.createVirtualDisplay(
-            "KokkoroCapture",
-            captureWidth,
-            captureHeight,
-            metrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface,
-            null,
-            captureHandler
-        )
+
+        val previousReader = imageReader
+        try {
+            val display = virtualDisplay
+            if (display == null) {
+                virtualDisplay = mediaProjection.createVirtualDisplay(
+                    "KokkoroCapture",
+                    newWidth,
+                    newHeight,
+                    metrics.densityDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    reader.surface,
+                    null,
+                    captureHandler
+                )
+            } else {
+                display.resize(newWidth, newHeight, metrics.densityDpi)
+                display.surface = reader.surface
+            }
+            imageReader = reader
+            captureWidth = newWidth
+            captureHeight = newHeight
+            previousReader?.setOnImageAvailableListener(null, null)
+            previousReader?.close()
+        } catch (error: SecurityException) {
+            reader.setOnImageAvailableListener(null, null)
+            reader.close()
+            publishStatus(FrameStatus("截图授权已失效，请返回助手重新授权", false, 0, captureWidth, captureHeight))
+            stopSelf()
+            return false
+        }
         publishStatus(FrameStatus("捕获 ${captureWidth}×${captureHeight}", captureWidth > captureHeight, 0, captureWidth, captureHeight))
+        return true
     }
 
     private fun releaseDisplay() {
@@ -371,6 +424,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         const val ACTION_STATUS = "com.kokkoro.clanbattle.action.CAPTURE_STATUS"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
+        const val EXTRA_CAPTURE_SESSION_ID = "capture_session_id"
         const val EXTRA_STATUS_TEXT = "status_text"
         const val EXTRA_STATUS_SUCCESS = "status_success"
         const val EXTRA_PROCESSING_MS = "processing_ms"
