@@ -62,4 +62,30 @@ class BattleSessionGateTest {
         assertFalse(gate.isWaiting())
         assertTrue(gate.shouldEvaluate(87))
     }
+
+    @Test
+    fun `two consecutive trusted battle hud frames bypass a missed loading frame`() {
+        val gate = BattleSessionGate()
+        gate.prepare()
+        gate.onStartMatched()
+
+        gate.observeBattleHud(true)
+        assertTrue(gate.isWaitingForLoading())
+
+        gate.observeBattleHud(true)
+        assertTrue(gate.isWaitingForClock())
+    }
+
+    @Test
+    fun `untrusted battle hud frame resets fallback evidence`() {
+        val gate = BattleSessionGate()
+        gate.prepare()
+        gate.onStartMatched()
+
+        gate.observeBattleHud(true)
+        gate.observeBattleHud(false)
+        gate.observeBattleHud(true)
+
+        assertTrue(gate.isWaitingForLoading())
+    }
 }

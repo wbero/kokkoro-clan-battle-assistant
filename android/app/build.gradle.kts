@@ -1,6 +1,26 @@
+import java.io.FileInputStream
+import java.io.File
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+val releasePropertiesPath = providers.environmentVariable("KOKKORO_KEYSTORE_PROPERTIES")
+    .orElse(providers.gradleProperty("kokkoroKeystoreProperties"))
+    .orNull
+val releasePropertiesFile = releasePropertiesPath?.let(::file)
+val releaseProperties = Properties()
+val hasReleaseKeystore = releasePropertiesFile?.isFile == true
+
+if (hasReleaseKeystore) {
+    FileInputStream(releasePropertiesFile!!).use(releaseProperties::load)
+    listOf("storeFile", "storePassword", "keyAlias", "keyPassword").forEach { key ->
+        require(!releaseProperties.getProperty(key).isNullOrBlank()) {
+            "Missing `$key` in release keystore properties"
+        }
+    }
 }
 
 android {
@@ -11,16 +31,32 @@ android {
         applicationId = "com.kokkoro.clanbattle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-native"
+        versionCode = 10001
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     sourceSets["main"].assets.srcDirs("../../assets", "src/main/assets")
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseKeystore) {
+                val configuredStore = File(releaseProperties.getProperty("storeFile"))
+                storeFile = if (configuredStore.isAbsolute) configuredStore
+                    else releasePropertiesFile!!.parentFile.resolve(configuredStore.path)
+                storePassword = releaseProperties.getProperty("storePassword")
+                keyAlias = releaseProperties.getProperty("keyAlias")
+                keyPassword = releaseProperties.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -41,6 +77,16 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+    }
+}
+
+tasks.configureEach {
+    if (name == "assembleRelease" || name == "bundleRelease") {
+        doFirst {
+            require(hasReleaseKeystore) {
+                "Release signing requires KOKKORO_KEYSTORE_PROPERTIES or -PkokkoroKeystoreProperties"
+            }
+        }
     }
 }
 

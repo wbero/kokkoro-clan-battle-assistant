@@ -2,8 +2,11 @@ package com.kokkoro.clanbattle.capture
 
 import android.content.Context
 import android.media.Image
+import android.graphics.Rect
 import android.os.SystemClock
 import com.kokkoro.clanbattle.automation.ActionExecutor
+import com.kokkoro.clanbattle.automation.GameCoordinateCalibration
+import com.kokkoro.clanbattle.automation.HorizontalAnchor
 import com.kokkoro.clanbattle.automation.KokkoroAccessibilityService
 import com.kokkoro.clanbattle.axis.AndroidAxisRepository
 import com.kokkoro.clanbattle.axis.AxisDocument
@@ -15,10 +18,14 @@ import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.control.AndroidControlTemplateLoader
 import com.kokkoro.clanbattle.control.BattleControlObservation
 import com.kokkoro.clanbattle.control.BattleControlRecognizer
+import com.kokkoro.clanbattle.control.BattleControlObservationFilter
 import com.kokkoro.clanbattle.control.BattleControlStateMachine
 import com.kokkoro.clanbattle.control.ControlAction
 import com.kokkoro.clanbattle.control.ControlCrops
+import com.kokkoro.clanbattle.control.ControlObservationSafetyDecision
+import com.kokkoro.clanbattle.control.ControlObservationSafetyGate
 import com.kokkoro.clanbattle.control.ControlSafetyState
+import com.kokkoro.clanbattle.control.FilteredControlObservation
 import com.kokkoro.clanbattle.control.ControlStep
 import com.kokkoro.clanbattle.control.CoordinatedActionStep
 import com.kokkoro.clanbattle.control.OpeningControlTarget
@@ -204,9 +211,15 @@ class FrameProcessor(
     private val battleTemplates = BattleTemplateLoader.load(appContext)
     private val controlTemplates = AndroidControlTemplateLoader.load(appContext)
     private val controlRecognizer = BattleControlRecognizer(controlTemplates.controls)
+    private val controlObservationFilter = BattleControlObservationFilter()
+    private val controlObservationSafetyGate = ControlObservationSafetyGate()
     private val controlStateMachine = BattleControlStateMachine()
     private val actionCoordinator = VerifiedActionCoordinator(controlStateMachine)
-    private val filter = RecognitionFilter(minConfidence = 0.8, minAlternativeScore = 0.55, maxFailedReads = 999)
+    private val filter = RecognitionFilter(
+        minConfidence = REAL_DEVICE_CLOCK_MIN_CONFIDENCE,
+        minAlternativeScore = 0.55,
+        maxFailedReads = 999
+    )
     private var energyDetector: EnergyDetector? = null
     private var energyHudSize: Pair<Int, Int>? = null
     private var axis: AxisDocument = emptyAxis()
@@ -220,6 +233,8 @@ class FrameProcessor(
     private var recorder: ClockDebugRecorder? = null
     private var frameId = 0L
     private var debugEnabled = false
+    private var centerAnchorCalibrated = false
+    private var rightAnchorCalibrated = false
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
     private var openingControlsConfirmed = true
     private var lastPauseFrameNodeId: String? = null
@@ -239,10 +254,15 @@ class FrameProcessor(
     }
 
     fun prepareNewBattle(document: AxisDocument = loadSelectedAxis()) {
+        GameCoordinateCalibration.reset()
+        centerAnchorCalibrated = false
+        rightAnchorCalibrated = false
         filter.reset()
         energyDetector?.reset()
         gameStateDetector.reset()
         controlStateMachine.reset()
+        controlObservationFilter.reset()
+        controlObservationSafetyGate.reset()
         actionCoordinator.reset()
         installAxis(document)
         controlStateMachine.setDesired(openingControlTarget)
@@ -268,7 +288,12 @@ class FrameProcessor(
 
         if (sessionGate.isWaitingForStart()) {
             roleTapSafe = false
-            val score = matchRegion(image, BattleReferenceRegions.START_BUTTON, battleTemplates.startBattle)
+            val score = matchRegion(
+                image, BattleReferenceRegions.START_BUTTON, battleTemplates.startBattle,
+                HorizontalAnchor.CENTER,
+                calibrate = true,
+                calibrationThreshold = TEMPLATE_THRESHOLD
+            )
             if (score >= TEMPLATE_THRESHOLD) {
                 sessionGate.onStartMatched()
                 battleLockCallback()
@@ -280,21 +305,51 @@ class FrameProcessor(
 
         if (sessionGate.isWaitingForLoading()) {
             roleTapSafe = false
-            val score = matchRegion(image, BattleReferenceRegions.LOADING, battleTemplates.loading)
+            val score = matchRegion(
+                image, BattleReferenceRegions.LOADING, battleTemplates.loading, HorizontalAnchor.RIGHT
+            )
             if (score >= TEMPLATE_THRESHOLD) sessionGate.onLoadingMatched()
-            if (debugEnabled) recordEarlyFailure(currentFrameId, "waiting-loading-template score=${"%.4f".format(Locale.US, score)}")
-            publishWaitingStatus("等待加载界面", score, start, image)
-            return
+            if (sessionGate.isWaitingForLoading()) {
+                val menuScore = matchRegion(
+                    image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu,
+                    HorizontalAnchor.RIGHT,
+                    calibrate = true,
+                    calibrationThreshold = MENU_TRUST_THRESHOLD
+                )
+                sessionGate.observeBattleHud(menuScore >= MENU_TRUST_THRESHOLD)
+            }
+            if (!sessionGate.isWaitingForLoading()) {
+                // Continue with the same frame: the loading transition may have
+                // completed between two 50 ms samples on faster devices.
+            } else {
+                if (debugEnabled) recordEarlyFailure(currentFrameId, "waiting-loading-template score=${"%.4f".format(Locale.US, score)}")
+                publishWaitingStatus("等待加载界面", score, start, image)
+                return
+            }
         }
 
+        val menuScore = matchRegion(
+            image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu,
+            HorizontalAnchor.RIGHT,
+            calibrate = true,
+            calibrationThreshold = MENU_TRUST_THRESHOLD
+        )
+        // Calibrate the right anchor from the menu before cropping the clock;
+        // otherwise the first battle frame can read a shifted clock once.
         val region = ImageRoiExtractor.scaleReferenceRegion(image.width, image.height)
         val roi = ImageRoiExtractor.extract(image, region)
-        val recognition = recognizer.recognize(roi, includeDiagnostics = debugEnabled)
+        val recognition = recognizer.recognize(
+            roi,
+            minConfidence = REAL_DEVICE_CLOCK_MIN_CONFIDENCE,
+            includeDiagnostics = debugEnabled
+        )
         val energy = detectEnergy(image)
         val controlDetection = detectControls(image)
-        val controls = controlDetection?.observation
-        val menuScore = matchRegion(image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu)
-        roleTapSafe = controls.isTrustworthy() && menuScore >= MENU_TRUST_THRESHOLD
+        val filteredControls = controlDetection?.observation?.let(controlObservationFilter::update)
+            ?: controlObservationFilter.missing()
+        val controls = filteredControls.observation
+        val trustworthyControls = controls.takeIf { filteredControls.trustworthy }
+        roleTapSafe = filteredControls.trustworthy && menuScore >= MENU_TRUST_THRESHOLD
         gameStateDetector.observeEnergy(energy)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
             if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null, energy)
@@ -326,7 +381,7 @@ class FrameProcessor(
             accessibilityConnected = KokkoroAccessibilityService.instance != null
         )
         if (sessionReady && executionWarning == null) {
-            controlStep = updateControls(controls, menuScore, start, image)
+            controlStep = updateControls(filteredControls, menuScore, start, image)
             if (axis.type == AxisType.SWITCH) {
                 val controlsTrustworthy = roleTapSafe &&
                     controlStep.safety == ControlSafetyState.RUNNING
@@ -451,7 +506,7 @@ class FrameProcessor(
                 }
             }
         } else if (sessionReady) {
-            controlStep = controls?.let(controlStateMachine::observeOnly) ?: controlStateMachine.snapshot()
+            controlStep = trustworthyControls?.let(controlStateMachine::observeOnly) ?: controlStateMachine.snapshot()
             scheduleReason = "execution-blocked"
         }
 
@@ -614,16 +669,59 @@ class FrameProcessor(
         )
     }
 
-    private fun matchRegion(image: Image, region: ReferenceRegion, template: com.kokkoro.clanbattle.recognition.PixelImage): Double {
+    private fun matchRegion(
+        image: Image,
+        region: ReferenceRegion,
+        template: com.kokkoro.clanbattle.recognition.PixelImage,
+        anchor: HorizontalAnchor,
+        calibrate: Boolean = false,
+        calibrationThreshold: Double = CALIBRATION_MIN_SCORE
+    ): Double {
         val scaled = ImageRoiExtractor.scaleRegion(
             image.width,
             image.height,
             region.x,
             region.y,
             region.width,
-            region.height
+            region.height,
+            anchor
         )
-        return FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, scaled), template)
+        val alreadyCalibrated = when (anchor) {
+            HorizontalAnchor.CENTER -> centerAnchorCalibrated
+            HorizontalAnchor.RIGHT -> rightAnchorCalibrated
+        }
+        if (!calibrate || alreadyCalibrated) {
+            return FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, scaled), template)
+        }
+
+        val radius = if (anchor == HorizontalAnchor.CENTER) CENTER_SEARCH_RADIUS else RIGHT_SEARCH_RADIUS
+        var bestScore = Double.NEGATIVE_INFINITY
+        var bestDelta = 0
+        fun consider(delta: Int) {
+            val candidate = Rect(scaled).apply { offset(delta, 0) }
+            if (candidate.left < 0 || candidate.right > image.width) return
+            val score = FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, candidate), template)
+            if (score > bestScore) {
+                bestScore = score
+                bestDelta = delta
+            }
+        }
+
+        for (delta in -radius..radius step CALIBRATION_COARSE_STEP) consider(delta)
+        val coarseBestDelta = bestDelta
+        val fineStart = (coarseBestDelta - CALIBRATION_COARSE_STEP).coerceAtLeast(-radius)
+        val fineEnd = (coarseBestDelta + CALIBRATION_COARSE_STEP).coerceAtMost(radius)
+        for (delta in fineStart..fineEnd) consider(delta)
+
+        if (bestScore >= calibrationThreshold) {
+            val previous = GameCoordinateCalibration.horizontalDelta(anchor)
+            GameCoordinateCalibration.update(anchor, previous + bestDelta)
+            when (anchor) {
+                HorizontalAnchor.CENTER -> centerAnchorCalibrated = true
+                HorizontalAnchor.RIGHT -> rightAnchorCalibrated = true
+            }
+        }
+        return bestScore
     }
 
     private fun detectEnergy(image: Image): EnergyDetectionResult? = runCatching {
@@ -642,8 +740,8 @@ class FrameProcessor(
 
     private fun detectControls(image: Image): ControlDetection? = runCatching {
         val crops = ControlCrops(
-            auto = extractRegion(image, BattleReferenceRegions.AUTO_BUTTON),
-            globalSet = extractRegion(image, BattleReferenceRegions.GLOBAL_SET_BUTTON),
+            auto = extractRegion(image, BattleReferenceRegions.AUTO_BUTTON, HorizontalAnchor.RIGHT),
+            globalSet = extractRegion(image, BattleReferenceRegions.GLOBAL_SET_BUTTON, HorizontalAnchor.RIGHT),
             roles = BattleReferenceRegions.ROLE_SET_BADGES.mapValues { (_, region) ->
                 extractRegion(image, region)
             }
@@ -652,22 +750,36 @@ class FrameProcessor(
     }.getOrNull()
 
     private fun updateControls(
-        controls: BattleControlObservation?,
+        filteredControls: FilteredControlObservation,
         menuScore: Double,
         nowMs: Long,
         image: Image
     ): ControlStep {
         val before = controlStateMachine.snapshot()
+        val controls = filteredControls.observation
         val step = when (before.safety) {
             ControlSafetyState.SAFETY_PAUSING -> controlStateMachine.updateMenu(menuScore)
-            ControlSafetyState.SAFETY_PAUSED -> if (controls == null) before else {
+            ControlSafetyState.SAFETY_PAUSED -> if (!filteredControls.trustworthy || controls == null) before else {
+                controlObservationSafetyGate.reset()
                 controlStateMachine.updateRecovery(menuScore, controls, nowMs)
             }
-            ControlSafetyState.RUNNING -> if (controls == null) {
-                controlStateMachine.forceSafety("control-recognition-failed")
-                controlStateMachine.snapshot()
-            } else {
-                controlStateMachine.update(controls, nowMs)
+            ControlSafetyState.RUNNING -> {
+                val safety = controlObservationSafetyGate.evaluate(filteredControls)
+                when (safety.decision) {
+                    ControlObservationSafetyDecision.USE ->
+                        controlStateMachine.update(requireNotNull(controls), nowMs)
+
+                    ControlObservationSafetyDecision.HOLD -> controlStateMachine.snapshot(
+                        "control-hold-${safety.status.name.lowercase()}-" +
+                            "${safety.consecutiveUntrustedFrames}"
+                    )
+
+                    ControlObservationSafetyDecision.PAUSE -> {
+                        val reason = "control-recognition-failed:${safety.status.name.lowercase()}"
+                        controlStateMachine.forceSafety(reason)
+                        controlStateMachine.snapshot(reason)
+                    }
+                }
             }
         }
         executeControlAction(step.action, image.width, image.height)
@@ -783,10 +895,14 @@ class FrameProcessor(
         }
     }
 
-    private fun extractRegion(image: Image, region: ReferenceRegion) = ImageRoiExtractor.extract(
+    private fun extractRegion(
+        image: Image,
+        region: ReferenceRegion,
+        anchor: HorizontalAnchor = HorizontalAnchor.CENTER
+    ) = ImageRoiExtractor.extract(
         image,
         ImageRoiExtractor.scaleRegion(
-            image.width, image.height, region.x, region.y, region.width, region.height
+            image.width, image.height, region.x, region.y, region.width, region.height, anchor
         )
     )
 
@@ -810,8 +926,13 @@ class FrameProcessor(
     }
 
     private companion object {
+        const val REAL_DEVICE_CLOCK_MIN_CONFIDENCE = 0.75
         const val TEMPLATE_THRESHOLD = 0.72
         const val DEBUG_PREFERENCE_POLL_MS = 1_000L
+        const val CENTER_SEARCH_RADIUS = 180
+        const val RIGHT_SEARCH_RADIUS = 120
+        const val CALIBRATION_COARSE_STEP = 12
+        const val CALIBRATION_MIN_SCORE = 0.55
         const val MENU_TRUST_THRESHOLD = 0.70
 
         fun emptyAxis() = AxisDocument(AxisType.SEQUENCE, 100, emptyMap(), emptyList())

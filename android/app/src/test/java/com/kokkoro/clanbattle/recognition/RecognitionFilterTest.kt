@@ -7,6 +7,21 @@ import org.junit.Test
 
 class RecognitionFilterTest {
     @Test
+    fun `accepts real device 1 29 confidence while preserving countdown direction`() {
+        val filter = RecognitionFilter(minConfidence = 0.75)
+
+        assertTrue(filter.update(RecognitionResult.ok(90, "1:30", 0.8142), 0).accepted)
+
+        val nextSecond = filter.update(RecognitionResult.ok(89, "1:29", 0.7794), 1_000)
+        assertTrue(nextSecond.accepted)
+        assertEquals(89, nextSecond.timeSeconds)
+
+        val falseIncrease = filter.update(RecognitionResult.ok(90, "1:30", 0.90), 1_100)
+        assertFalse(falseIncrease.accepted)
+        assertEquals("time-increased", falseIncrease.reason)
+    }
+
+    @Test
     fun `accepts exact next second candidate even when six score is below normal alternative threshold`() {
         val filter = RecognitionFilter(minAlternativeScore = 0.55)
         assertTrue(filter.update(RecognitionResult.ok(7, "0:07", 0.95), 1_000).accepted)

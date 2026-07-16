@@ -78,11 +78,14 @@ object FixedTemplateMatcher {
      */
     fun animatedBadgeScore(image: PixelImage, template: PixelImage): Double {
         val coverage = cyanCoverage(image)
-        if (coverage >= MIN_CYAN_ON_COVERAGE) {
-            return minOf(1.0, 0.75 + coverage - MIN_CYAN_ON_COVERAGE)
-        }
         if (coverage <= MAX_CLEAR_OFF_COVERAGE) return 0.0
-        return bestScaleScore(image, template)
+        val structureScore = bestScaleScore(image, template)
+        if (structureScore < MIN_BADGE_STRUCTURE_SCORE) return structureScore
+        return if (coverage >= MIN_CYAN_ON_COVERAGE) {
+            maxOf(structureScore, minOf(1.0, 0.75 + coverage - MIN_CYAN_ON_COVERAGE))
+        } else {
+            structureScore
+        }
     }
 
     private fun cyanCoverage(image: PixelImage): Double {
@@ -136,6 +139,7 @@ object FixedTemplateMatcher {
     private val LOCAL_OFFSETS = arrayOf(0 to 0, -2 to 0, 2 to 0, 0 to -2, 0 to 2)
     private const val MIN_CYAN_ON_COVERAGE = 0.63
     private const val MAX_CLEAR_OFF_COVERAGE = 0.45
+    private const val MIN_BADGE_STRUCTURE_SCORE = 0.35
 
     private fun map(value: Int, sourceSize: Int, targetSize: Int): Int =
         (value * targetSize / sourceSize).coerceAtMost(targetSize - 1)

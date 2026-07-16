@@ -15,6 +15,7 @@ android/.gradle/
 android/**/build/
 android/local.properties
 android/clock-debug-pull-*/
+android/clock-debug-pull/
 android/clock-debug-baseline-output/
 android/energy-debug-*/
 android/energy-*-live.png
@@ -26,6 +27,9 @@ android/energy-*-live.png
 *.jks
 *.keystore
 keystore.properties
+
+# User-provided local recognition samples; keep them outside release commits.
+assets/templates/角色set图标会变大变小/
 
 # PC 测试素材（用户自己的截图和模板）
 test/screenshot.png

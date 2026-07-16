@@ -13,6 +13,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.InputType
@@ -95,6 +96,7 @@ class MainActivity : Activity() {
                     .setAction(ScreenCaptureService.ACTION_START)
                     .putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
                     .putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
+                    .putExtra(ScreenCaptureService.EXTRA_CAPTURE_SESSION_ID, SystemClock.elapsedRealtimeNanos())
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(serviceIntent) else startService(serviceIntent)
                 statusView.text = "已授权，打开游戏等待横屏"
             }
@@ -124,6 +126,7 @@ class MainActivity : Activity() {
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.app_background)
             addView(pageHost, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(navigation, matchWidth())
         }
@@ -154,7 +157,7 @@ class MainActivity : Activity() {
             textSize = 18f
             setTextColor(Color.rgb(183, 28, 28))
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            setBackgroundColor(Color.rgb(245, 245, 245))
+            setBackgroundResource(R.drawable.panel_background)
         }
         content.addView(statusView, matchWidth())
 
@@ -222,7 +225,7 @@ class MainActivity : Activity() {
         content.addView(button("授予悬浮窗权限") {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
         })
-        if (BuildConfig.DEBUG) content.addView(CheckBox(this).apply {
+        content.addView(CheckBox(this).apply {
             text = "记录识别诊断（时钟＋能量）"
             isChecked = AppPreferences.clockDebugEnabled(this@MainActivity)
             setOnCheckedChangeListener { _, checked -> AppPreferences.setClockDebugEnabled(this@MainActivity, checked) }
@@ -233,6 +236,20 @@ class MainActivity : Activity() {
             setTextColor(Color.DKGRAY)
             setPadding(0, dp(16), 0, 0)
         })
+        content.addView(TextView(this).apply {
+            text = "关于"
+            textSize = 18f
+            setTextColor(Color.rgb(32, 33, 36))
+            setPadding(0, dp(24), 0, dp(8))
+        })
+        content.addView(TextView(this).apply {
+            text = "可可萝自动会战助手\n版本：v${BuildConfig.VERSION_NAME}\n作者：wbero"
+            textSize = 15f
+            setTextColor(Color.rgb(55, 65, 81))
+            setLineSpacing(dp(3).toFloat(), 1f)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setBackgroundResource(R.drawable.panel_background)
+        }, matchWidth())
         return ScrollView(this).apply { addView(content) }
     }
 

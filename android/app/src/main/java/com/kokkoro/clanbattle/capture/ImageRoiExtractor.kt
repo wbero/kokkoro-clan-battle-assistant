@@ -2,6 +2,8 @@ package com.kokkoro.clanbattle.capture
 
 import android.graphics.Rect
 import android.media.Image
+import com.kokkoro.clanbattle.automation.GameCoordinateMapper
+import com.kokkoro.clanbattle.automation.HorizontalAnchor
 import com.kokkoro.clanbattle.recognition.PixelImage
 
 object ImageRoiExtractor {
@@ -27,16 +29,25 @@ object ImageRoiExtractor {
     }
 
     fun scaleReferenceRegion(width: Int, height: Int): Rect {
-        return scaleRegion(width, height, 1619, 38, 64, 27)
+        return scaleRegion(width, height, 1619, 38, 64, 27, HorizontalAnchor.RIGHT)
     }
 
-    fun scaleRegion(width: Int, height: Int, x: Int, y: Int, regionWidth: Int, regionHeight: Int): Rect {
-        val scaleX = width / 1920.0
-        val scaleY = height / 1080.0
-        val left = (x * scaleX).toInt().coerceIn(0, width - 1)
-        val top = (y * scaleY).toInt().coerceIn(0, height - 1)
-        val right = ((x + regionWidth) * scaleX).toInt().coerceIn(left + 1, width)
-        val bottom = ((y + regionHeight) * scaleY).toInt().coerceIn(top + 1, height)
+    fun scaleRegion(
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int,
+        regionWidth: Int,
+        regionHeight: Int,
+        anchor: HorizontalAnchor = HorizontalAnchor.CENTER,
+        includeCalibration: Boolean = true
+    ): Rect {
+        val viewport = GameCoordinateMapper.viewport(width, height)
+        val left = GameCoordinateMapper.mapX(x, width, height, anchor, includeCalibration).toInt().coerceIn(0, width - 1)
+        val top = (viewport.offsetY + y * viewport.scale).toInt().coerceIn(0, height - 1)
+        val right = GameCoordinateMapper.mapX(x + regionWidth, width, height, anchor, includeCalibration)
+            .toInt().coerceIn(left + 1, width)
+        val bottom = (viewport.offsetY + (y + regionHeight) * viewport.scale).toInt().coerceIn(top + 1, height)
         return Rect().apply {
             this.left = left
             this.top = top

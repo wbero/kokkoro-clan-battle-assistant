@@ -1,5 +1,6 @@
 package com.kokkoro.clanbattle.capture
 
+import com.kokkoro.clanbattle.control.loadBmpResource
 import com.kokkoro.clanbattle.recognition.PixelImage
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -37,12 +38,19 @@ class FixedTemplateMatcherTest {
     }
 
     @Test
-    fun `animated badge score accepts a cyan filled breathing phase`() {
-        val template = imageOf(0, 40, 80, 120, 160, 200)
+    fun `animated badge score rejects cyan background without badge structure`() {
+        val template = loadBmpResource("control/templates/set.bmp")
         val cyan = (0xff shl 24) or (20 shl 16) or (180 shl 8) or 200
-        val crop = PixelImage(10, 10, IntArray(100) { cyan })
+        val crop = PixelImage(template.width, template.height, IntArray(template.width * template.height) { cyan })
 
-        assertTrue(FixedTemplateMatcher.animatedBadgeScore(crop, template) >= 0.75)
+        assertTrue(FixedTemplateMatcher.animatedBadgeScore(crop, template) < 0.56)
+    }
+
+    @Test
+    fun `animated badge score accepts a cyan badge with matching structure`() {
+        val template = loadBmpResource("control/templates/set.bmp")
+
+        assertTrue(FixedTemplateMatcher.animatedBadgeScore(template, template) >= 0.75)
     }
 
     private fun imageOf(vararg gray: Int): PixelImage = PixelImage(
