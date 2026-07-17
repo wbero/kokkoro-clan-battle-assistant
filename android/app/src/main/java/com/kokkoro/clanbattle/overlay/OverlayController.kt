@@ -1,9 +1,12 @@
 package com.kokkoro.clanbattle.overlay
 
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -14,11 +17,13 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.kokkoro.clanbattle.R
 import com.kokkoro.clanbattle.axis.StoredAxis
+import com.kokkoro.clanbattle.config.AppPreferences
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -26,6 +31,14 @@ data class OverlayPosition(val x: Int, val y: Int)
 
 private const val MIN_PANEL_SCALE = 0.60f
 private const val MAX_PANEL_SCALE = 1.25f
+
+/** 点按缩放按钮时循环的预设档位。 */
+val PANEL_SCALE_PRESETS = listOf(0.60f, 0.72f, 0.85f, 1.00f, 1.15f)
+
+fun nextPanelScale(current: Float, presets: List<Float> = PANEL_SCALE_PRESETS): Float =
+    presets.firstOrNull { it > current + 0.01f } ?: presets.first()
+
+fun panelScaleLabel(scale: Float): String = "缩放${(scale * 100).roundToInt()}%"
 
 fun resizedOverlayScale(
     startScale: Float,
@@ -67,7 +80,8 @@ class OverlayController(
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val windowManager = context.getSystemService(WindowManager::class.java)
-    private var rootView: LinearLayout? = null
+    private var rootView: ViewGroup? = null
+    private var panelColumn: LinearLayout? = null
     private var rootParams: WindowManager.LayoutParams? = null
     private var axisPanel: LinearLayout? = null
     private var axisPanelParams: WindowManager.LayoutParams? = null
@@ -76,16 +90,17 @@ class OverlayController(
     private var confirmButton: Button? = null
     private var safetyButton: Button? = null
     private var minimizeButton: Button? = null
-    private var resizeButton: Button? = null
     private var resetButton: Button? = null
     private var minimizedIcon: ImageButton? = null
-    private var minimizedX: Int? = null
-    private var minimizedY: Int? = null
+    private var minimizedX: Int? = AppPreferences.overlayMinimizedX(context)
+    private var minimizedY: Int? = AppPreferences.overlayMinimizedY(context)
     private var statusTextView: TextView? = null
     private var currentActionView: TextView? = null
     private var nextActionView: TextView? = null
     private var currentState = OverlayUiState.idle(null)
-    private var panelScale = 0.72f
+    private var panelScale = AppPreferences.overlayScale(context, DEFAULT_PANEL_SCALE)
+        .coerceIn(MIN_PANEL_SCALE, MAX_PANEL_SCALE)
+    private var panelBackground: GradientDrawable? = null
     private var promptView: TextView? = null
     private val hidePrompt = Runnable { removePrompt() }
 
@@ -104,9 +119,6 @@ class OverlayController(
                 addView(button().also { minimizeButton = it }.apply {
                     setOnClickListener { minimize() }
                 }, compact())
-                addView(button().also { resizeButton = it }.apply {
-                    installPanelResizeHandle(this)
-                }, compact())
                 addView(button().also { resetButton = it }.apply {
                     setOnClickListener { actions.reset() }
                 }, compact())
@@ -120,27 +132,57 @@ class OverlayController(
                     setOnClickListener { actions.confirm() }
                 }, weighted())
             }
-            val view = LinearLayout(context).apply {
+            val column = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 val padding = scaledDp(4)
                 setPadding(padding, padding, padding, padding)
-                setBackgroundColor(0xdd202124.toInt())
-                addView(label().also { statusTextView = it; installPanelDragHandle(it) }, matchWidth())
+                addView(label().also {
+                    statusTextView = it
+                    it.setTypeface(it.typeface, Typeface.BOLD)
+                    installPanelDragHandle(it)
+                }, matchWidth())
                 addView(label().also { currentActionView = it; installPanelDragHandle(it) }, matchWidth())
                 addView(label(0xffb3e5fc.toInt()).also {
                     nextActionView = it
                     installPanelDragHandle(it)
                 }, matchWidth())
-                addView(firstRow, matchWidth())
-                addView(secondRow, matchWidth())
+                addView(firstRow, matchWidth().apply { topMargin = scaledDp(2) })
+                addView(secondRow, matchWidth().apply { topMargin = scaledDp(2) })
             }
-            val params = overlayParams(dp(16), dp(100))
+            val view = FrameLayout(context).apply {
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(10).toFloat()
+                    setColor(0xdd202124.toInt())
+                }.also { panelBackground = it }
+                addView(column)
+                addView(resizeGrip(), FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM or Gravity.END
+                ))
+            }
+            val params = overlayParams(
+                AppPreferences.overlayX(context, dp(16)),
+                AppPreferences.overlayY(context, dp(100))
+            )
             windowManager.addView(view, params)
             rootView = view
+            panelColumn = column
             rootParams = params
             applyPanelScale()
             applyState(currentState)
         }
+    }
+
+    /** 右下角常驻缩放把手：按住自由拖拽缩放，点按在预设档位间切换；不随面板缩放，保证始终可抓。 */
+    private fun resizeGrip() = TextView(context).apply {
+        text = "◢"
+        textSize = 14f
+        includeFontPadding = false
+        setTextColor(0x99ffffff.toInt())
+        setPadding(dp(10), dp(10), dp(3), dp(3))
+        contentDescription = "拖动调整面板大小"
+        installPanelResizeHandle(this)
     }
 
     fun showPrompt(message: String) {
@@ -191,13 +233,14 @@ class OverlayController(
             minimizedIcon = null
             rootView?.let { runCatching { windowManager.removeView(it) } }
             rootView = null
+            panelColumn = null
             rootParams = null
+            panelBackground = null
             selectAxisButton = null
             nextFrameButton = null
             confirmButton = null
             safetyButton = null
             minimizeButton = null
-            resizeButton = null
             resetButton = null
             statusTextView = null
             currentActionView = null
@@ -237,7 +280,7 @@ class OverlayController(
     }
 
     private fun applyState(state: OverlayUiState) {
-        rootView?.setBackgroundColor(
+        panelBackground?.setColor(
             when (state.panelColor) {
                 OverlayPanelColor.GRAY -> 0xdd3c4043.toInt()
                 OverlayPanelColor.GREEN -> 0xdd1b5e20.toInt()
@@ -250,7 +293,6 @@ class OverlayController(
         apply(confirmButton, state.confirm)
         apply(safetyButton, state.safetyMenu)
         apply(minimizeButton, state.minimize)
-        resizeButton?.text = "缩放↘"
         apply(resetButton, state.reset)
         statusTextView?.text = state.statusText
         currentActionView?.text = state.currentAction
@@ -271,14 +313,13 @@ class OverlayController(
 
     private fun applyPanelScale() {
         val padding = scaledDp(4)
-        rootView?.setPadding(padding, padding, padding, padding)
+        panelColumn?.setPadding(padding, padding, padding, padding)
         listOfNotNull(
             selectAxisButton,
             nextFrameButton,
             confirmButton,
             safetyButton,
             minimizeButton,
-            resizeButton,
             resetButton
         ).forEach { button ->
             button.textSize = 12f * panelScale
@@ -289,14 +330,13 @@ class OverlayController(
         confirmButton?.layoutParams = weighted()
         safetyButton?.layoutParams = compact()
         minimizeButton?.layoutParams = compact()
-        resizeButton?.layoutParams = compact()
         resetButton?.layoutParams = compact()
         listOfNotNull(statusTextView, currentActionView, nextActionView).forEach { label ->
             label.textSize = 12f * panelScale
             label.maxWidth = scaledDp(420)
             label.setPadding(scaledDp(6), scaledDp(1), scaledDp(6), scaledDp(1))
         }
-        resizeButton?.text = "缩放↘"
+        statusTextView?.textSize = 13f * panelScale
         rootView?.requestLayout()
         mainHandler.post { clampPanelPosition() }
     }
@@ -332,10 +372,23 @@ class OverlayController(
                     }
                     true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                MotionEvent.ACTION_UP -> {
+                    if (resizing) persistPanelState() else cyclePanelScale()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> true
                 else -> false
             }
         }
+    }
+
+    /** 点按缩放把手：在预设档位间循环；按住拖动仍然可以连续微调。 */
+    private fun cyclePanelScale() {
+        panelScale = nextPanelScale(panelScale)
+        hideAxisPanel()
+        applyPanelScale()
+        persistPanelState()
+        showPrompt(panelScaleLabel(panelScale))
     }
 
     private fun installPanelDragHandle(handle: View) {
@@ -364,7 +417,10 @@ class OverlayController(
                     if (dragged) updatePanelPosition(panel, params, startX, startY, deltaX, deltaY)
                     true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragged) persistPanelState()
+                    true
+                }
                 else -> false
             }
         }
@@ -414,7 +470,17 @@ class OverlayController(
                 setPadding(0, 0, 0, 0)
             }
             val iconSize = dp(60)
-            val params = overlayParams(minimizedX ?: dp(16), minimizedY ?: dp(100)).apply {
+            val metrics = context.resources.displayMetrics
+            val initial = boundedOverlayPosition(
+                minimizedX ?: dp(16),
+                minimizedY ?: dp(100),
+                0,
+                0,
+                metrics.widthPixels,
+                metrics.heightPixels,
+                iconSize
+            )
+            val params = overlayParams(initial.x, initial.y).apply {
                 width = iconSize
                 height = iconSize
             }
@@ -456,7 +522,7 @@ class OverlayController(
                         true
                     }
                     MotionEvent.ACTION_UP -> {
-                        if (!dragged) restore()
+                        if (dragged) persistMinimizedState() else restore()
                         true
                     }
                     MotionEvent.ACTION_CANCEL -> true
@@ -485,10 +551,13 @@ class OverlayController(
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(4), dp(4), dp(4), dp(4))
-            setBackgroundColor(0xee303134.toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(0xee303134.toInt())
+            }
         }
         if (validAxes.isEmpty()) {
-            panel.addView(button("没有已导入的有效轴").apply { isEnabled = false }, matchWidth())
+            panel.addView(button("没有已导入的有效轴").apply { isEnabled = false }, axisRowParams())
         } else {
             validAxes.forEach { axis ->
                 panel.addView(button("${axis.name} [${axis.type}]").apply {
@@ -496,7 +565,7 @@ class OverlayController(
                         actions.selectAxis(axis.id)
                         hideAxisPanel()
                     }
-                }, matchWidth())
+                }, axisRowParams())
             }
         }
         val root = rootParams
@@ -527,8 +596,34 @@ class OverlayController(
         textSize = 12f * panelScale
         minWidth = 0
         minimumWidth = 0
+        stateListAnimator = null
         setTextColor(Color.WHITE)
+        background = overlayButtonBackground()
         setPadding(scaledDp(6), 0, scaledDp(6), 0)
+    }
+
+    // 深色面板上的自绘扁平按钮：平台默认浅色按钮配白字几乎不可读。
+    private fun overlayButtonBackground(): RippleDrawable {
+        fun rounded(color: Int) = GradientDrawable().apply {
+            cornerRadius = dp(6).toFloat()
+            setColor(color)
+        }
+        return RippleDrawable(
+            ColorStateList.valueOf(0x55ffffff),
+            rounded(0x33ffffff),
+            rounded(Color.WHITE)
+        )
+    }
+
+    private fun persistPanelState() {
+        val params = rootParams ?: return
+        AppPreferences.saveOverlayPanel(context, params.x, params.y, panelScale)
+    }
+
+    private fun persistMinimizedState() {
+        val x = minimizedX ?: return
+        val y = minimizedY ?: return
+        AppPreferences.saveOverlayMinimized(context, x, y)
     }
 
     private fun label(color: Int = Color.WHITE) = TextView(context).apply {
@@ -543,7 +638,8 @@ class OverlayController(
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
         PixelFormat.TRANSLUCENT
     ).apply {
         gravity = Gravity.TOP or Gravity.START
@@ -551,17 +647,26 @@ class OverlayController(
         this.y = y
     }
 
-    private fun weighted() = LinearLayout.LayoutParams(0, scaledDp(40), 1f)
-    private fun compact() = LinearLayout.LayoutParams(scaledDp(84), scaledDp(40))
+    private fun weighted() = LinearLayout.LayoutParams(0, scaledDp(40), 1f).apply {
+        rightMargin = scaledDp(2)
+    }
+
+    private fun compact() = LinearLayout.LayoutParams(scaledDp(84), scaledDp(40)).apply {
+        rightMargin = scaledDp(2)
+    }
+
     private fun matchWidth() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT
     )
+
+    private fun axisRowParams() = matchWidth().apply { topMargin = scaledDp(2) }
 
     private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
     private fun scaledDp(value: Int): Int = (value * context.resources.displayMetrics.density * panelScale).roundToInt()
 
     private companion object {
         const val PROMPT_DURATION_MS = 2_500L
+        const val DEFAULT_PANEL_SCALE = 0.72f
     }
 }

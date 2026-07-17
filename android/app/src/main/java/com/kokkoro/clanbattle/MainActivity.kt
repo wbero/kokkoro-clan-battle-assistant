@@ -5,10 +5,14 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -17,6 +21,7 @@ import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.InputType
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -28,14 +33,18 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import com.kokkoro.clanbattle.automation.KokkoroAccessibilityService
 import com.kokkoro.clanbattle.capture.ScreenCaptureService
 import com.kokkoro.clanbattle.axis.AndroidAxisRepository
 import com.kokkoro.clanbattle.axis.AxisLibrary
 import com.kokkoro.clanbattle.axis.AxisType
 import com.kokkoro.clanbattle.config.AppPreferences
+import com.kokkoro.clanbattle.config.parseEnergyThresholdPercents
+import com.kokkoro.clanbattle.ui.UiKit
 
 class MainActivity : Activity() {
     private lateinit var statusView: TextView
+    private lateinit var statusDot: View
     private lateinit var axisView: TextView
     private lateinit var dryRunCheckBox: CheckBox
     private lateinit var projectionManager: MediaProjectionManager
@@ -45,13 +54,13 @@ class MainActivity : Activity() {
     private lateinit var pages: List<View>
     private lateinit var navigationButtons: List<Button>
     private var receiverRegistered = false
+    private val permissionUpdaters = mutableListOf<() -> Unit>()
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val text = intent?.getStringExtra(ScreenCaptureService.EXTRA_STATUS_TEXT) ?: return
             val success = intent.getBooleanExtra(ScreenCaptureService.EXTRA_STATUS_SUCCESS, false)
-            statusView.text = text
-            statusView.setTextColor(if (success) Color.rgb(27, 94, 32) else Color.rgb(183, 28, 28))
+            setStatus(text, success)
         }
     }
 
@@ -67,6 +76,7 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         refreshAxisLabel()
+        refreshPermissionStatus()
         if (!receiverRegistered) {
             val filter = IntentFilter(ScreenCaptureService.ACTION_STATUS)
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(statusReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -89,7 +99,7 @@ class MainActivity : Activity() {
         when (requestCode) {
             REQUEST_CAPTURE -> {
                 if (resultCode != RESULT_OK || data == null) {
-                    statusView.text = "截图授权取消"
+                    setStatus("截图授权取消", false)
                     return
                 }
                 val serviceIntent = Intent(this, ScreenCaptureService::class.java)
@@ -98,7 +108,7 @@ class MainActivity : Activity() {
                     .putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
                     .putExtra(ScreenCaptureService.EXTRA_CAPTURE_SESSION_ID, SystemClock.elapsedRealtimeNanos())
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(serviceIntent) else startService(serviceIntent)
-                statusView.text = "已授权，打开游戏等待横屏"
+                setStatus("已授权，打开游戏等待横屏", true)
             }
 
             REQUEST_AXIS -> if (resultCode == RESULT_OK && data?.data != null) loadAxis(data.data!!)
@@ -113,13 +123,16 @@ class MainActivity : Activity() {
         pageHost = FrameLayout(this).apply { addView(battlePage, frameMatch()) }
         val navigation = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(6), dp(8), dp(8))
-            setBackgroundColor(Color.rgb(245, 247, 250))
+            setPadding(dp(8), dp(4), dp(8), dp(6))
+            setBackgroundColor(Color.rgb(250, 251, 253))
         }
         navigationButtons = listOf("战斗", "轴库", "设置").mapIndexed { index, label ->
             Button(this).apply {
                 text = label
                 isAllCaps = false
+                textSize = 15f
+                stateListAnimator = null
+                setBackgroundResource(borderlessBackground())
                 setOnClickListener { showPage(index) }
                 navigation.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
@@ -128,6 +141,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundResource(R.drawable.app_background)
             addView(pageHost, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(UiKit.hairline(this@MainActivity))
             addView(navigation, matchWidth())
         }
         showPage(0)
@@ -143,63 +157,86 @@ class MainActivity : Activity() {
         content.addView(TextView(this).apply {
             text = "可可萝自动会战助手"
             textSize = 24f
-            setTextColor(Color.rgb(32, 33, 36))
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(UiKit.TEXT_PRIMARY)
         })
         content.addView(TextView(this).apply {
             text = "原生截图 · 50ms 最新帧 · 无障碍执行"
             textSize = 14f
-            setTextColor(Color.DKGRAY)
-            setPadding(0, dp(4), 0, dp(16))
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(0, dp(4), 0, dp(14))
         })
 
+        val statusCard = UiKit.card(this)
+        statusDot = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(UiKit.ERROR)
+            }
+        }
+        statusCard.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(statusDot, LinearLayout.LayoutParams(dp(10), dp(10)).apply { rightMargin = dp(6) })
+            addView(caption("状态"))
+        })
         statusView = TextView(this).apply {
             text = "未启动"
-            textSize = 18f
-            setTextColor(Color.rgb(183, 28, 28))
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            setBackgroundResource(R.drawable.panel_background)
+            textSize = 17f
+            setTextColor(UiKit.ERROR)
+            setPadding(0, dp(6), 0, 0)
         }
-        content.addView(statusView, matchWidth())
-
+        statusCard.addView(statusView, matchWidth())
         axisView = TextView(this).apply {
-            textSize = 15f
-            setPadding(0, dp(16), 0, dp(8))
+            textSize = 14f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(0, dp(6), 0, 0)
         }
-        content.addView(axisView)
+        statusCard.addView(axisView, matchWidth())
+        content.addView(statusCard, matchWidth())
+
+        content.addView(buildPermissionCard(), matchWidth(top = 12))
 
         dryRunCheckBox = CheckBox(this).apply {
             text = "只识别，不执行点击"
+            setTextColor(UiKit.TEXT_PRIMARY)
             isChecked = AppPreferences.dryRun(this@MainActivity)
             setOnCheckedChangeListener { _, checked -> AppPreferences.setDryRun(this@MainActivity, checked) }
         }
-        content.addView(dryRunCheckBox)
-        content.addView(button("开始原生截图") { requestCapture() })
-        content.addView(button("准备新战斗") {
+        content.addView(dryRunCheckBox, matchWidth(top = 12))
+        content.addView(TextView(this).apply {
+            text = "试轴或验证识别时使用；该模式不需要无障碍权限。"
+            textSize = 12f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(dp(32), 0, 0, 0)
+        })
+
+        content.addView(primaryButton("开始原生截图") { requestCapture() }, matchWidth(top = 14))
+        content.addView(secondaryButton("准备新战斗") {
             startService(
                 Intent(this, ScreenCaptureService::class.java)
                     .setAction(ScreenCaptureService.ACTION_PREPARE_BATTLE)
             )
-            statusView.text = "已重置，请打开游戏开始战斗"
-            statusView.setTextColor(Color.rgb(183, 28, 28))
-        })
-        content.addView(button("停止识别") {
+            setStatus("已重置，请打开游戏开始战斗", false)
+        }, matchWidth(top = 8))
+        content.addView(secondaryButton("停止识别") {
             startService(Intent(this, ScreenCaptureService::class.java).setAction(ScreenCaptureService.ACTION_STOP))
-            statusView.text = "已停止"
-        })
-        content.addView(button("打开公主连结") {
+            setStatus("已停止", false)
+        }, matchWidth(top = 8))
+        content.addView(secondaryButton("打开公主连结") {
             packageManager.getLaunchIntentForPackage(GAME_PACKAGE)?.let(::startActivity)
                 ?: Toast.makeText(this, "未找到游戏", Toast.LENGTH_SHORT).show()
-        })
+        }, matchWidth(top = 8))
 
         return ScrollView(this).apply { addView(content) }
     }
 
     private fun buildAxisPage(): ScrollView {
         val content = sectionContent("轴库", "导入、创建和维护战斗轴；战斗运行期间轴库会锁定。")
-        content.addView(button("可视化制作开关轴") {
+        content.addView(secondaryButton("可视化制作开关轴") {
             startActivity(Intent(this, SwitchAxisEditorActivity::class.java))
-        })
-        content.addView(button("导入轴文件") {
+        }, matchWidth(top = 8))
+        content.addView(secondaryButton("导入轴文件") {
             startActivityForResult(
                 Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
@@ -207,50 +244,220 @@ class MainActivity : Activity() {
                 },
                 REQUEST_AXIS
             )
-        })
-        content.addView(button("粘贴轴文本") { showPasteAxisDialog() })
-        content.addView(button("轴编写指南与标准示例") {
+        }, matchWidth(top = 8))
+        content.addView(secondaryButton("粘贴轴文本") { showPasteAxisDialog() }, matchWidth(top = 8))
+        content.addView(secondaryButton("轴编写指南与标准示例") {
             startActivity(Intent(this, AxisGuideActivity::class.java))
-        })
-        axisList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        }, matchWidth(top = 8))
+        axisList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
         content.addView(axisList, matchWidth())
         return ScrollView(this).apply { addView(content) }
     }
 
     private fun buildSettingsPage(): ScrollView {
         val content = sectionContent("设置", "配置点击权限、悬浮窗和开发诊断功能。")
-        content.addView(button("启用无障碍点击") {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        })
-        content.addView(button("授予悬浮窗权限") {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-        })
-        content.addView(CheckBox(this).apply {
+
+        content.addView(buildPermissionCard(), matchWidth(top = 4))
+
+        val diagnosticsCard = UiKit.card(this)
+        diagnosticsCard.addView(caption("诊断"))
+        diagnosticsCard.addView(CheckBox(this).apply {
             text = "记录识别诊断（时钟＋能量）"
+            setTextColor(UiKit.TEXT_PRIMARY)
             isChecked = AppPreferences.clockDebugEnabled(this@MainActivity)
             setOnCheckedChangeListener { _, checked -> AppPreferences.setClockDebugEnabled(this@MainActivity, checked) }
         })
-        content.addView(TextView(this).apply {
-            text = "建议首次使用时依次授予无障碍和悬浮窗权限，然后回到“战斗”页开始截图。"
-            textSize = 14f
-            setTextColor(Color.DKGRAY)
-            setPadding(0, dp(16), 0, 0)
+        diagnosticsCard.addView(TextView(this).apply {
+            text = "开启后会在应用外部目录写入识别诊断文件，仅排查问题时使用。"
+            textSize = 12f
+            setTextColor(UiKit.TEXT_SECONDARY)
         })
-        content.addView(TextView(this).apply {
-            text = "关于"
-            textSize = 18f
-            setTextColor(Color.rgb(32, 33, 36))
-            setPadding(0, dp(24), 0, dp(8))
-        })
-        content.addView(TextView(this).apply {
+        content.addView(diagnosticsCard, matchWidth(top = 12))
+
+        content.addView(buildEnergyThresholdCard(), matchWidth(top = 12))
+
+        val aboutCard = UiKit.card(this)
+        aboutCard.addView(caption("关于"))
+        aboutCard.addView(TextView(this).apply {
             text = "可可萝自动会战助手\n版本：v${BuildConfig.VERSION_NAME}\n作者：wbero"
             textSize = 15f
-            setTextColor(Color.rgb(55, 65, 81))
+            setTextColor(UiKit.TEXT_PRIMARY)
             setLineSpacing(dp(3).toFloat(), 1f)
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            setBackgroundResource(R.drawable.panel_background)
-        }, matchWidth())
+            setPadding(0, dp(4), 0, 0)
+        })
+        content.addView(aboutCard, matchWidth(top = 12))
         return ScrollView(this).apply { addView(content) }
+    }
+
+    private fun buildEnergyThresholdCard(): LinearLayout {
+        val card = UiKit.card(this)
+        card.addView(caption("UB 识别阈值"))
+        card.addView(TextView(this).apply {
+            text = "某角色 TP 上一帧≥满 TP 值、这一帧掉到释放后 TP 以下，判定其释放了 UB。两值越接近越灵敏，但越易误判。"
+            textSize = 12f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(0, dp(4), 0, dp(6))
+        })
+        val fullInput = thresholdInput(AppPreferences.energyFullPercent(this))
+        val dropInput = thresholdInput(AppPreferences.energyDropPercent(this))
+        card.addView(thresholdRow("满 TP 值", fullInput))
+        card.addView(thresholdRow("释放后 TP", dropInput))
+        card.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, 0)
+            addView(textButton("恢复默认", UiKit.TEXT_SECONDARY, enabled = true) {
+                fullInput.setText(AppPreferences.DEFAULT_ENERGY_FULL_PERCENT.toString())
+                dropInput.setText(AppPreferences.DEFAULT_ENERGY_DROP_PERCENT.toString())
+            })
+            addView(textButton("保存阈值", UiKit.ACCENT_DARK, enabled = true) {
+                val parsed = parseEnergyThresholdPercents(fullInput.text.toString(), dropInput.text.toString())
+                if (parsed == null) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "满 TP 值 50~100、释放后 TP 1~95，且满 TP 值至少高出 5",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    AppPreferences.saveEnergyThresholds(this@MainActivity, parsed)
+                    fullInput.setText(parsed.full.toString())
+                    dropInput.setText(parsed.drop.toString())
+                    Toast.makeText(this@MainActivity, "已保存，下一场战斗生效", Toast.LENGTH_SHORT).show()
+                }
+            })
+        }, matchWidth())
+        return card
+    }
+
+    private fun thresholdInput(value: Int) = EditText(this).apply {
+        setText(value.toString())
+        inputType = InputType.TYPE_CLASS_NUMBER
+        setSingleLine(true)
+        gravity = Gravity.CENTER
+        textSize = 15f
+        setTextColor(UiKit.TEXT_PRIMARY)
+        layoutParams = LinearLayout.LayoutParams(dp(72), ViewGroup.LayoutParams.WRAP_CONTENT)
+    }
+
+    private fun thresholdRow(label: String, input: EditText): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, dp(6), 0, dp(6))
+        addView(TextView(this@MainActivity).apply {
+            text = label
+            textSize = 15f
+            setTextColor(UiKit.TEXT_PRIMARY)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        addView(input)
+        addView(TextView(this@MainActivity).apply {
+            text = "%"
+            textSize = 15f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(dp(4), 0, 0, 0)
+        })
+    }
+
+    private fun buildPermissionCard(): LinearLayout {
+        val card = UiKit.card(this)
+        card.addView(caption("权限状态"))
+        card.addView(permissionRow(
+            name = "悬浮窗权限",
+            hint = "战斗控制面板需要显示在游戏上层",
+            isGranted = { Settings.canDrawOverlays(this) }
+        ) { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) })
+        card.addView(UiKit.hairline(this))
+        card.addView(permissionRow(
+            name = "无障碍点击服务",
+            hint = "自动点击 SET、AUTO 等按钮需要",
+            isGranted = { accessibilityEnabled() }
+        ) { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) })
+        if (Build.VERSION.SDK_INT >= 33) {
+            card.addView(UiKit.hairline(this))
+            card.addView(permissionRow(
+                name = "通知权限",
+                hint = "识别运行时显示前台服务通知",
+                isGranted = {
+                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+                }
+            ) {
+                startActivity(
+                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                )
+            })
+        }
+        return card
+    }
+
+    private fun permissionRow(
+        name: String,
+        hint: String,
+        isGranted: () -> Boolean,
+        onClick: () -> Unit
+    ): LinearLayout {
+        val stateView = TextView(this).apply { textSize = 14f }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundResource(borderlessBackground())
+            setPadding(0, dp(10), 0, dp(10))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@MainActivity).apply {
+                    text = name
+                    textSize = 15f
+                    setTextColor(UiKit.TEXT_PRIMARY)
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = hint
+                    textSize = 12f
+                    setTextColor(UiKit.TEXT_SECONDARY)
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(stateView)
+            addView(TextView(this@MainActivity).apply {
+                text = "›"
+                textSize = 18f
+                setTextColor(UiKit.TEXT_SECONDARY)
+                setPadding(dp(8), 0, 0, 0)
+            })
+            setOnClickListener { onClick() }
+        }
+        val update = {
+            val granted = isGranted()
+            stateView.text = if (granted) "已开启" else "未开启"
+            stateView.setTextColor(if (granted) UiKit.SUCCESS else UiKit.ERROR)
+            stateView.setTypeface(stateView.typeface, if (granted) Typeface.NORMAL else Typeface.BOLD)
+        }
+        permissionUpdaters += update
+        update()
+        return row
+    }
+
+    private fun refreshPermissionStatus() {
+        permissionUpdaters.forEach { it() }
+    }
+
+    private fun accessibilityEnabled(): Boolean {
+        if (KokkoroAccessibilityService.instance != null) return true
+        val component = ComponentName(this, KokkoroAccessibilityService::class.java)
+        val enabled = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabled.split(':').any {
+            it.equals(component.flattenToString(), ignoreCase = true) ||
+                it.equals(component.flattenToShortString(), ignoreCase = true)
+        }
+    }
+
+    private fun setStatus(text: String, success: Boolean) {
+        statusView.text = text
+        statusView.setTextColor(if (success) UiKit.SUCCESS else UiKit.ERROR)
+        (statusDot.background as? GradientDrawable)?.setColor(if (success) UiKit.SUCCESS else UiKit.ERROR)
     }
 
     private fun sectionContent(title: String, subtitle: String) = LinearLayout(this).apply {
@@ -259,33 +466,42 @@ class MainActivity : Activity() {
         addView(TextView(this@MainActivity).apply {
             text = title
             textSize = 24f
-            setTextColor(Color.rgb(32, 33, 36))
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(UiKit.TEXT_PRIMARY)
         })
         addView(TextView(this@MainActivity).apply {
             text = subtitle
             textSize = 14f
-            setTextColor(Color.DKGRAY)
+            setTextColor(UiKit.TEXT_SECONDARY)
             setPadding(0, dp(4), 0, dp(12))
         })
+    }
+
+    private fun caption(text: String) = TextView(this).apply {
+        this.text = text
+        textSize = 12f
+        setTypeface(typeface, Typeface.BOLD)
+        setTextColor(UiKit.TEXT_SECONDARY)
     }
 
     private fun showPage(index: Int) {
         pageHost.removeAllViews()
         pageHost.addView(pages[index], frameMatch())
         navigationButtons.forEachIndexed { buttonIndex, button ->
-            button.isEnabled = buttonIndex != index
-            button.setTextColor(if (buttonIndex == index) Color.rgb(30, 80, 150) else Color.DKGRAY)
+            val selected = buttonIndex == index
+            button.setTextColor(if (selected) UiKit.ACCENT else UiKit.TEXT_SECONDARY)
+            button.setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
         }
         if (index == 1) refreshAxisLabel()
     }
 
     private fun requestCapture() {
         if (!Settings.canDrawOverlays(this)) {
-            statusView.text = "请先授予悬浮窗权限，再点开始"
+            setStatus("请先授予悬浮窗权限，再点开始", false)
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             return
         }
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
         }
         startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_CAPTURE)
@@ -412,56 +628,106 @@ class MainActivity : Activity() {
     private fun refreshAxisLabel() {
         val selected = axisLibrary.selected()
         val locked = axisLibrary.isLocked()
-        axisView.text = (selected?.let { "当前轴：${it.name}（${it.type}，${it.eventCount}节点）" }
+        axisView.text = (selected?.let { "当前轴：${it.name}（${it.type.label()}，${it.eventCount}节点）" }
             ?: "当前轴：未选择") + if (locked) "；战斗中已锁定" else ""
         if (!::axisList.isInitialized) return
         axisList.removeAllViews()
-        axisLibrary.list().forEach { axis ->
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            row.addView(Button(this).apply {
-                isAllCaps = false
-                isEnabled = axis.valid && !locked
-                text = buildString {
-                    if (selected?.id == axis.id) append("✓ ")
-                    append(axis.name).append(" [").append(axis.type).append("]")
-                    if (!axis.valid) append(" 无效：").append(axis.validationMessage)
-                }
-                setOnClickListener {
-                    if (axisLibrary.select(axis.id)) {
-                        syncLegacySelectedAxis()
-                        refreshAxisLabel()
-                    }
-                }
+        val axes = axisLibrary.list()
+        if (axes.isEmpty()) {
+            axisList.addView(TextView(this).apply {
+                text = "还没有轴，先导入或粘贴一个"
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setTextColor(UiKit.TEXT_SECONDARY)
+                setPadding(0, dp(24), 0, dp(24))
+            }, matchWidth())
+            return
+        }
+        axes.forEach { axis ->
+            axisList.addView(
+                axisCard(axis, isSelected = selected?.id == axis.id, locked = locked),
+                matchWidth(top = 8)
+            )
+        }
+    }
+
+    private fun axisCard(
+        axis: com.kokkoro.clanbattle.axis.StoredAxis,
+        isSelected: Boolean,
+        locked: Boolean
+    ): LinearLayout {
+        val card = UiKit.card(this, paddingDp = 12)
+        if (isSelected) (card.background as GradientDrawable).setStroke(dp(2), UiKit.ACCENT)
+        val selectable = axis.valid && !locked
+
+        card.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = axis.name
+                textSize = 16f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(UiKit.TEXT_PRIMARY)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            if (axis.type == AxisType.SWITCH && axis.valid) row.addView(Button(this).apply {
-                text = "制轴"
-                isAllCaps = false
-                isEnabled = !locked
-                setOnClickListener {
+            addView(
+                UiKit.chip(this@MainActivity, axis.type.label(), UiKit.ACCENT_DARK),
+                matchWrap().apply { leftMargin = dp(6) }
+            )
+            if (isSelected) addView(
+                UiKit.chip(this@MainActivity, "使用中", UiKit.SUCCESS),
+                matchWrap().apply { leftMargin = dp(6) }
+            )
+        }, matchWidth())
+
+        card.addView(TextView(this).apply {
+            text = if (axis.valid) "${axis.eventCount} 个节点" else "无效：${axis.validationMessage}"
+            textSize = 13f
+            setTextColor(if (axis.valid) UiKit.TEXT_SECONDARY else UiKit.ERROR)
+            setPadding(0, dp(2), 0, 0)
+        }, matchWidth())
+
+        card.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, 0)
+            if (axis.type == AxisType.SWITCH && axis.valid) addView(
+                textButton("制轴", UiKit.ACCENT_DARK, enabled = !locked) {
                     startActivity(
                         Intent(this@MainActivity, SwitchAxisEditorActivity::class.java)
                             .putExtra(SwitchAxisEditorActivity.EXTRA_AXIS_ID, axis.id)
                     )
                 }
+            )
+            addView(textButton("编辑", UiKit.ACCENT_DARK, enabled = !locked) {
+                showEditAxisDialog(axis.id, axis.sourceName)
             })
-            row.addView(Button(this).apply {
-                text = "编辑"
-                isAllCaps = false
-                isEnabled = !locked
-                setOnClickListener { showEditAxisDialog(axis.id, axis.sourceName) }
-            })
-            row.addView(Button(this).apply {
-                text = "删除"
-                isAllCaps = false
-                isEnabled = !locked
-                setOnClickListener {
-                    axisLibrary.remove(axis.id)
-                    syncLegacySelectedAxis()
-                    refreshAxisLabel()
-                }
-            })
-            axisList.addView(row, matchWidth())
+            addView(textButton("删除", UiKit.ERROR, enabled = !locked) { confirmDeleteAxis(axis.id, axis.name) })
+        }, matchWidth())
+
+        card.isEnabled = selectable
+        card.alpha = if (axis.valid) 1f else 0.75f
+        if (selectable) card.setOnClickListener {
+            if (axisLibrary.select(axis.id)) {
+                syncLegacySelectedAxis()
+                refreshAxisLabel()
+            }
         }
+        return card
+    }
+
+    private fun confirmDeleteAxis(axisId: String, name: String) {
+        AlertDialog.Builder(this)
+            .setTitle("删除轴")
+            .setMessage("删除「$name」？此操作不可恢复。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("删除") { _, _ ->
+                axisLibrary.remove(axisId)
+                syncLegacySelectedAxis()
+                refreshAxisLabel()
+            }
+            .show()
     }
 
     private fun migrateLegacyAxis() {
@@ -478,15 +744,47 @@ class MainActivity : Activity() {
         if (selected != null && text != null) AppPreferences.saveAxis(this, selected.name, text)
     }
 
-    private fun button(text: String, onClick: () -> Unit) = Button(this).apply {
-        this.text = text
-        isAllCaps = false
-        setOnClickListener { onClick() }
-        layoutParams = matchWidth().apply { topMargin = dp(8) }
+    private fun AxisType.label(): String = when (this) {
+        AxisType.SEQUENCE -> "顺序"
+        AxisType.SWITCH -> "开关"
     }
 
-    private fun matchWidth() = LinearLayout.LayoutParams(
+    private fun primaryButton(text: String, onClick: () -> Unit) = UiKit.primaryButton(this, text, onClick)
+
+    private fun secondaryButton(text: String, onClick: () -> Unit) = UiKit.secondaryButton(this, text, onClick)
+
+    private fun textButton(label: String, color: Int, enabled: Boolean, onClick: () -> Unit) =
+        Button(this).apply {
+            text = label
+            isAllCaps = false
+            textSize = 13f
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = dp(36)
+            stateListAnimator = null
+            isEnabled = enabled
+            alpha = if (enabled) 1f else 0.4f
+            setTextColor(color)
+            setBackgroundResource(borderlessBackground())
+            setPadding(dp(12), 0, dp(12), 0)
+            setOnClickListener { onClick() }
+        }
+
+    private fun borderlessBackground(): Int {
+        val attrs = obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackgroundBorderless))
+        val resource = attrs.getResourceId(0, 0)
+        attrs.recycle()
+        return resource
+    }
+
+    private fun matchWidth(top: Int = 0) = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+    ).apply { topMargin = dp(top) }
+
+    private fun matchWrap() = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.WRAP_CONTENT,
         ViewGroup.LayoutParams.WRAP_CONTENT
     )
 
