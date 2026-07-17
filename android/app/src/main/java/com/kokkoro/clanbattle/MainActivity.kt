@@ -40,6 +40,7 @@ import com.kokkoro.clanbattle.axis.AxisLibrary
 import com.kokkoro.clanbattle.axis.AxisType
 import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.config.parseEnergyThresholdPercents
+import com.kokkoro.clanbattle.config.parsePauseFrameSettings
 import com.kokkoro.clanbattle.ui.UiKit
 
 class MainActivity : Activity() {
@@ -279,6 +280,8 @@ class MainActivity : Activity() {
 
         content.addView(buildEnergyThresholdCard(), matchWidth(top = 12))
 
+        content.addView(buildPauseFrameCard(), matchWidth(top = 12))
+
         val aboutCard = UiKit.card(this)
         aboutCard.addView(caption("关于"))
         aboutCard.addView(TextView(this).apply {
@@ -332,6 +335,59 @@ class MainActivity : Activity() {
         return card
     }
 
+    private fun buildPauseFrameCard(): LinearLayout {
+        val card = UiKit.card(this)
+        card.addView(caption("卡帧步进"))
+        card.addView(TextView(this).apply {
+            text = "卡帧时用两个“释放N帧”按钮微调目标帧。单帧时长按游戏帧率估算，两档帧数各自可配。"
+            textSize = 12f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(0, dp(4), 0, dp(6))
+        })
+        val msInput = thresholdInput(AppPreferences.pauseFrameMs(this))
+        val aInput = thresholdInput(AppPreferences.pauseFramePresetA(this))
+        val bInput = thresholdInput(AppPreferences.pauseFramePresetB(this))
+        val menuWaitInput = thresholdInput(AppPreferences.pauseFrameMenuWaitMs(this))
+        card.addView(thresholdRow("单帧时长", msInput, suffix = "ms"))
+        card.addView(thresholdRow("档位A", aInput, suffix = "帧"))
+        card.addView(thresholdRow("档位B", bInput, suffix = "帧"))
+        card.addView(thresholdRow("菜单等待", menuWaitInput, suffix = "ms"))
+        card.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, 0)
+            addView(textButton("恢复默认", UiKit.TEXT_SECONDARY, enabled = true) {
+                msInput.setText(AppPreferences.DEFAULT_PAUSE_FRAME_MS.toString())
+                aInput.setText(AppPreferences.DEFAULT_PAUSE_PRESET_A.toString())
+                bInput.setText(AppPreferences.DEFAULT_PAUSE_PRESET_B.toString())
+                menuWaitInput.setText(AppPreferences.DEFAULT_PAUSE_MENU_WAIT_MS.toString())
+            })
+            addView(textButton("保存卡帧", UiKit.ACCENT_DARK, enabled = true) {
+                val parsed = parsePauseFrameSettings(
+                    msInput.text.toString(),
+                    aInput.text.toString(),
+                    bInput.text.toString(),
+                    menuWaitInput.text.toString()
+                )
+                if (parsed == null) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "单帧时长 5~500ms，两档帧数各 1~600，菜单等待 100~3000ms",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    AppPreferences.savePauseFrameSettings(this@MainActivity, parsed)
+                    msInput.setText(parsed.frameMs.toString())
+                    aInput.setText(parsed.presetA.toString())
+                    bInput.setText(parsed.presetB.toString())
+                    menuWaitInput.setText(parsed.menuWaitMs.toString())
+                    Toast.makeText(this@MainActivity, "已保存，重新开始截图后生效", Toast.LENGTH_SHORT).show()
+                }
+            })
+        }, matchWidth())
+        return card
+    }
+
     private fun thresholdInput(value: Int) = EditText(this).apply {
         setText(value.toString())
         inputType = InputType.TYPE_CLASS_NUMBER
@@ -342,7 +398,7 @@ class MainActivity : Activity() {
         layoutParams = LinearLayout.LayoutParams(dp(72), ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
-    private fun thresholdRow(label: String, input: EditText): LinearLayout = LinearLayout(this).apply {
+    private fun thresholdRow(label: String, input: EditText, suffix: String = "%"): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(0, dp(6), 0, dp(6))
@@ -352,8 +408,8 @@ class MainActivity : Activity() {
             setTextColor(UiKit.TEXT_PRIMARY)
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         addView(input)
-        addView(TextView(this@MainActivity).apply {
-            text = "%"
+        if (suffix.isNotEmpty()) addView(TextView(this@MainActivity).apply {
+            text = suffix
             textSize = 15f
             setTextColor(UiKit.TEXT_SECONDARY)
             setPadding(dp(4), 0, 0, 0)

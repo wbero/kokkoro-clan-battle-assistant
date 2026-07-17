@@ -19,7 +19,7 @@ class OverlayUiStateTest {
 
         assertEquals("选择轴：E5刀1", state.selectAxis.label)
         assertTrue(state.selectAxis.enabled)
-        assertFalse(state.nextFrame.enabled)
+        assertFalse(state.releaseA.enabled)
         assertFalse(state.confirm.enabled)
         assertTrue(state.reset.enabled)
         assertEquals(OverlayPanelColor.GRAY, state.panelColor)
@@ -34,7 +34,7 @@ class OverlayUiStateTest {
         )
 
         assertFalse(state.selectAxis.enabled)
-        assertFalse(state.nextFrame.enabled)
+        assertFalse(state.releaseA.enabled)
         assertFalse(state.confirm.enabled)
         assertTrue(state.safetyMenu.enabled)
         assertEquals("最小化", state.minimize.label)
@@ -138,11 +138,13 @@ class OverlayUiStateTest {
         assertEquals(1.25f, resizedOverlayScale(0.72f, 1000, 1000, 960f), 0.001f)
     }
 
-    @Test fun `pause frame enables manual advance and confirmation`() {
-        val state = OverlayUiState.pauseFrame("E5刀1", "角色3")
+    @Test fun `pause frame enables manual release and confirmation`() {
+        val state = OverlayUiState.pauseFrame("E5刀1", "角色3", presetA = 5, presetB = 20)
 
-        assertEquals("下一帧", state.nextFrame.label)
-        assertTrue(state.nextFrame.enabled)
+        assertEquals("释放5帧", state.releaseA.label)
+        assertEquals("释放20帧", state.releaseB.label)
+        assertTrue(state.releaseA.enabled)
+        assertTrue(state.releaseB.enabled)
         assertEquals("确定：角色3", state.confirm.label)
         assertTrue(state.confirm.enabled)
         assertFalse(state.selectAxis.enabled)
@@ -160,7 +162,7 @@ class OverlayUiStateTest {
             nextAction = "下一：确认后执行"
         )
 
-        assertTrue(state.nextFrame.enabled)
+        assertTrue(state.releaseA.enabled)
         assertTrue(state.confirm.enabled)
         assertEquals(OverlayPanelColor.AMBER, state.panelColor)
     }
@@ -169,7 +171,7 @@ class OverlayUiStateTest {
         val state = OverlayUiState.safetyPaused("E5刀1")
 
         assertFalse(state.selectAxis.enabled)
-        assertFalse(state.nextFrame.enabled)
+        assertFalse(state.releaseA.enabled)
         assertFalse(state.confirm.enabled)
         assertFalse(state.safetyMenu.enabled)
         assertTrue(state.reset.enabled)

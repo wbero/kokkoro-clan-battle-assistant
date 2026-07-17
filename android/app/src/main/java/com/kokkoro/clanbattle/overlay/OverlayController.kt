@@ -67,7 +67,8 @@ fun boundedOverlayPosition(
 
 data class OverlayActions(
     val selectAxis: (String) -> Unit,
-    val nextFrame: () -> Unit,
+    val releaseA: () -> Unit,
+    val releaseB: () -> Unit,
     val confirm: () -> Unit,
     val safetyMenu: () -> Unit,
     val reset: () -> Unit
@@ -86,7 +87,8 @@ class OverlayController(
     private var axisPanel: LinearLayout? = null
     private var axisPanelParams: WindowManager.LayoutParams? = null
     private var selectAxisButton: Button? = null
-    private var nextFrameButton: Button? = null
+    private var releaseAButton: Button? = null
+    private var releaseBButton: Button? = null
     private var confirmButton: Button? = null
     private var safetyButton: Button? = null
     private var minimizeButton: Button? = null
@@ -125,8 +127,11 @@ class OverlayController(
             }
             val secondRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
-                addView(button().also { nextFrameButton = it }.apply {
-                    setOnClickListener { actions.nextFrame() }
+                addView(button().also { releaseAButton = it }.apply {
+                    setOnClickListener { actions.releaseA() }
+                }, weighted())
+                addView(button().also { releaseBButton = it }.apply {
+                    setOnClickListener { actions.releaseB() }
                 }, weighted())
                 addView(button().also { confirmButton = it }.apply {
                     setOnClickListener { actions.confirm() }
@@ -237,7 +242,8 @@ class OverlayController(
             rootParams = null
             panelBackground = null
             selectAxisButton = null
-            nextFrameButton = null
+            releaseAButton = null
+            releaseBButton = null
             confirmButton = null
             safetyButton = null
             minimizeButton = null
@@ -289,7 +295,8 @@ class OverlayController(
             }
         )
         apply(selectAxisButton, state.selectAxis)
-        apply(nextFrameButton, state.nextFrame)
+        apply(releaseAButton, state.releaseA)
+        apply(releaseBButton, state.releaseB)
         apply(confirmButton, state.confirm)
         apply(safetyButton, state.safetyMenu)
         apply(minimizeButton, state.minimize)
@@ -316,7 +323,8 @@ class OverlayController(
         panelColumn?.setPadding(padding, padding, padding, padding)
         listOfNotNull(
             selectAxisButton,
-            nextFrameButton,
+            releaseAButton,
+            releaseBButton,
             confirmButton,
             safetyButton,
             minimizeButton,
@@ -326,7 +334,8 @@ class OverlayController(
             button.setPadding(scaledDp(6), 0, scaledDp(6), 0)
         }
         selectAxisButton?.layoutParams = weighted()
-        nextFrameButton?.layoutParams = weighted()
+        releaseAButton?.layoutParams = weighted()
+        releaseBButton?.layoutParams = weighted()
         confirmButton?.layoutParams = weighted()
         safetyButton?.layoutParams = compact()
         minimizeButton?.layoutParams = compact()

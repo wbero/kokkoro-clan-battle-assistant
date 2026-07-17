@@ -9,7 +9,8 @@ enum class OverlayPanelColor { GRAY, GREEN, AMBER, RED }
 
 data class OverlayUiState(
     val selectAxis: OverlayButtonState,
-    val nextFrame: OverlayButtonState,
+    val releaseA: OverlayButtonState,
+    val releaseB: OverlayButtonState,
     val confirm: OverlayButtonState,
     val safetyMenu: OverlayButtonState,
     val minimize: OverlayButtonState,
@@ -24,7 +25,9 @@ data class OverlayUiState(
             axisName: String?,
             statusText: String = "等待开始",
             currentAction: String = "当前：等待触发",
-            nextAction: String = "下一：无"
+            nextAction: String = "下一：无",
+            presetA: Int = 5,
+            presetB: Int = 20
         ) = state(
             axisName = axisName,
             selectionEnabled = true,
@@ -33,14 +36,18 @@ data class OverlayUiState(
             panelColor = OverlayPanelColor.GRAY,
             statusText = statusText,
             currentAction = currentAction,
-            nextAction = nextAction
+            nextAction = nextAction,
+            presetA = presetA,
+            presetB = presetB
         )
 
         fun running(
             axisName: String?,
             statusText: String = "运行中",
             currentAction: String = "当前：等待触发",
-            nextAction: String = "下一：无"
+            nextAction: String = "下一：无",
+            presetA: Int = 5,
+            presetB: Int = 20
         ) = state(
             axisName = axisName,
             selectionEnabled = false,
@@ -49,7 +56,9 @@ data class OverlayUiState(
             panelColor = OverlayPanelColor.GREEN,
             statusText = statusText,
             currentAction = currentAction,
-            nextAction = nextAction
+            nextAction = nextAction,
+            presetA = presetA,
+            presetB = presetB
         )
 
         fun pauseFrame(
@@ -57,7 +66,9 @@ data class OverlayUiState(
             roleLabel: String,
             statusText: String = "卡帧中",
             currentAction: String = "当前：确认目标帧",
-            nextAction: String = "下一：确认后收敛控制状态"
+            nextAction: String = "下一：确认后收敛控制状态",
+            presetA: Int = 5,
+            presetB: Int = 20
         ) = state(
             axisName = axisName,
             selectionEnabled = false,
@@ -67,14 +78,18 @@ data class OverlayUiState(
             panelColor = OverlayPanelColor.AMBER,
             statusText = statusText,
             currentAction = currentAction,
-            nextAction = nextAction
+            nextAction = nextAction,
+            presetA = presetA,
+            presetB = presetB
         )
 
         fun safetyPaused(
             axisName: String?,
             statusText: String = "安全暂停",
             currentAction: String = "当前：动作已冻结",
-            nextAction: String = "下一：人工恢复后重新规划"
+            nextAction: String = "下一：人工恢复后重新规划",
+            presetA: Int = 5,
+            presetB: Int = 20
         ) = state(
             axisName = axisName,
             selectionEnabled = false,
@@ -83,7 +98,9 @@ data class OverlayUiState(
             panelColor = OverlayPanelColor.RED,
             statusText = statusText,
             currentAction = currentAction,
-            nextAction = nextAction
+            nextAction = nextAction,
+            presetA = presetA,
+            presetB = presetB
         )
 
         private fun state(
@@ -95,10 +112,13 @@ data class OverlayUiState(
             panelColor: OverlayPanelColor,
             statusText: String,
             currentAction: String,
-            nextAction: String
+            nextAction: String,
+            presetA: Int,
+            presetB: Int
         ) = OverlayUiState(
             selectAxis = OverlayButtonState("选择轴：${axisName ?: "未选择"}", selectionEnabled),
-            nextFrame = OverlayButtonState("下一帧", pauseFrameEnabled),
+            releaseA = OverlayButtonState("释放${presetA}帧", pauseFrameEnabled),
+            releaseB = OverlayButtonState("释放${presetB}帧", pauseFrameEnabled),
             confirm = OverlayButtonState(confirmLabel, pauseFrameEnabled),
             safetyMenu = OverlayButtonState("安全菜单", safetyEnabled),
             minimize = OverlayButtonState("最小化", true),
@@ -118,16 +138,20 @@ fun resolveOverlayUiState(
     safetyPaused: Boolean,
     statusText: String,
     currentAction: String,
-    nextAction: String
+    nextAction: String,
+    presetA: Int = 5,
+    presetB: Int = 20
 ): OverlayUiState = when {
     pauseFrameRoleLabel != null -> OverlayUiState.pauseFrame(
         axisName,
         pauseFrameRoleLabel,
         statusText,
         currentAction,
-        nextAction
+        nextAction,
+        presetA,
+        presetB
     )
-    safetyPaused -> OverlayUiState.safetyPaused(axisName, statusText, currentAction, nextAction)
-    battleLocked -> OverlayUiState.running(axisName, statusText, currentAction, nextAction)
-    else -> OverlayUiState.idle(axisName, statusText, currentAction, nextAction)
+    safetyPaused -> OverlayUiState.safetyPaused(axisName, statusText, currentAction, nextAction, presetA, presetB)
+    battleLocked -> OverlayUiState.running(axisName, statusText, currentAction, nextAction, presetA, presetB)
+    else -> OverlayUiState.idle(axisName, statusText, currentAction, nextAction, presetA, presetB)
 }
