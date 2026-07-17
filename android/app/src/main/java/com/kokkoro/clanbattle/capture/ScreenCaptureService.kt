@@ -79,7 +79,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             axesProvider = axisLibrary::list,
             actions = OverlayActions(
                 selectAxis = { id -> captureHandler.post { selectAxis(id) } },
-                nextFrame = ::requestNextFrame,
+                releaseA = { requestRelease(AppPreferences.pauseFramePresetA(this)) },
+                releaseB = { requestRelease(AppPreferences.pauseFramePresetB(this)) },
                 confirm = ::confirmPauseFrame,
                 safetyMenu = ::requestSafetyMenu,
                 reset = { captureHandler.post { prepareNewBattle() } }
@@ -89,10 +90,11 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             focusPort = AndroidOverlayFocusPort(
                 context = this,
                 overlay = overlay,
-                dimensions = { captureWidth to captureHeight },
-                roleTapSafe = { frameProcessor?.isRoleTapSafe() == true }
+                dimensions = { captureWidth to captureHeight }
             ),
             scheduler = PauseFrameScheduler { delayMs, action -> mainHandler.postDelayed(action, delayMs) },
+            perFrameMs = AppPreferences.pauseFrameMs(this).toLong(),
+            menuSettleMs = AppPreferences.pauseFrameMenuWaitMs(this).toLong(),
             diagnosticCallback = { event ->
                 captureHandler.post { frameProcessor?.recordPauseFrameDiagnostic(event) }
             }
@@ -314,8 +316,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         renderOverlay()
     }
 
-    private fun requestNextFrame() {
-        pauseFrameSession.advance()
+    private fun requestRelease(frameCount: Int) {
+        pauseFrameSession.release(frameCount)
         renderOverlay()
     }
 
@@ -385,7 +387,9 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                 safetyPaused = safety == ControlSafetyState.SAFETY_PAUSED,
                 statusText = statusText,
                 currentAction = currentAction,
-                nextAction = nextAction
+                nextAction = nextAction,
+                presetA = AppPreferences.pauseFramePresetA(this),
+                presetB = AppPreferences.pauseFramePresetB(this)
             )
         )
     }

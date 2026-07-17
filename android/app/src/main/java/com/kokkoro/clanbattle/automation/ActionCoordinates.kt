@@ -19,4 +19,12 @@ object ActionCoordinates {
         "角色5" -> role(CharacterRole.ROLE_5)
         else -> null
     }
+
+    // 主菜单“队伍情况”一行的五个角色头像中心（居中对话框，屏幕中心 960，间距约 174）。
+    // 卡帧确定时在此点击设置该角色 SET（立即发动）。CENTER 锚点映射到实际屏幕。
+    fun menuRole(role: CharacterRole): ReferencePoint =
+        ReferencePoint(960 + (role.ordinal - 2) * 174, 490)
+
+    // 主菜单左下角“返回”按钮：点击后关闭菜单、应用立即发动并恢复战斗（实机 1920×1080 实测）。
+    val menuReturnButton = ReferencePoint(670, 868)
 }

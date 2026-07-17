@@ -29,8 +29,10 @@ data class PauseFrameDiagnosticEvent(
 class PauseFrameSession(
     private val focusPort: OverlayFocusPort,
     private val scheduler: PauseFrameScheduler,
-    private val frameIntervalMs: Long = 40,
+    private val perFrameMs: Long = 40,
     private val focusTransitionMs: Long = 1_000,
+    private val menuSettleMs: Long = 700,
+    private val tapGapMs: Long = 400,
     private val diagnosticCallback: (PauseFrameDiagnosticEvent) -> Unit = {}
 ) {
     private var state = PauseFrameState.IDLE
@@ -50,7 +52,8 @@ class PauseFrameSession(
         return result(accepted = state == PauseFrameState.SOFT_PAUSED)
     }
 
-    fun advance(): PauseFrameResult {
+    /** 释放 [frameCount] 帧：解除卡帧、运行 frameCount×perFrameMs 后重新卡住。frameCount<1 视为 1。 */
+    fun release(frameCount: Int): PauseFrameResult {
         if (state != PauseFrameState.SOFT_PAUSED) return result(accepted = false)
         diagnose("advance", "requested")
         state = PauseFrameState.ADVANCING
@@ -58,6 +61,7 @@ class PauseFrameSession(
         diagnose("focus-release", if (released) "success" else "failed")
         if (!released) return fail()
         val advanceGeneration = generation
+        val releaseMs = perFrameMs * frameCount.coerceAtLeast(1)
         scheduler.schedule(focusTransitionMs) outer@{
             if (generation != advanceGeneration || state != PauseFrameState.ADVANCING) return@outer
             val back = focusPort.sendBack()
@@ -66,7 +70,7 @@ class PauseFrameSession(
                 fail()
                 return@outer
             }
-            scheduler.schedule(frameIntervalMs) inner@{
+            scheduler.schedule(releaseMs) inner@{
                 if (generation != advanceGeneration || state != PauseFrameState.ADVANCING) return@inner
                 val acquired = focusPort.acquireFocus()
                 diagnose("focus-acquire", if (acquired) "success" else "failed")
@@ -90,32 +94,45 @@ class PauseFrameSession(
         diagnose("focus-release", if (released) "success" else "failed")
         if (!released) return fail()
         val confirmGeneration = generation
-        scheduler.schedule(focusTransitionMs) confirmation@{
-            if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@confirmation
+        // 打开主菜单 → 等菜单渲染 → 点头像设 SET → 点菜单外关闭遮罩、恢复战斗。
+        scheduler.schedule(focusTransitionMs) openMenu@{
+            if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@openMenu
             val back = focusPort.sendBack()
             diagnose("back", if (back) "success" else "failed")
             if (!back) {
                 onComplete(fail())
-                return@confirmation
+                return@openMenu
             }
-            val tapped = focusPort.tapRole(confirmedRole)
-            diagnose("tap-role", if (tapped) "success" else "failed")
-            if (!tapped) {
-                onComplete(fail())
-                return@confirmation
+            scheduler.schedule(menuSettleMs) tapAvatar@{
+                if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@tapAvatar
+                val tapped = focusPort.tapMenuRole(confirmedRole)
+                diagnose("tap-role", if (tapped) "success" else "failed")
+                if (!tapped) {
+                    onComplete(fail())
+                    return@tapAvatar
+                }
+                scheduler.schedule(tapGapMs) closeMenu@{
+                    if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@closeMenu
+                    val dismissed = focusPort.dismissMenu()
+                    diagnose("dismiss", if (dismissed) "success" else "failed")
+                    if (!dismissed) {
+                        onComplete(fail())
+                        return@closeMenu
+                    }
+                    state = PauseFrameState.IDLE
+                    nodeId = null
+                    role = null
+                    onComplete(
+                        PauseFrameResult(
+                            accepted = true,
+                            state = state,
+                            nodeId = confirmedNode,
+                            confirmedRole = confirmedRole,
+                            readyForConvergence = true
+                        )
+                    )
+                }
             }
-            state = PauseFrameState.IDLE
-            nodeId = null
-            role = null
-            onComplete(
-                PauseFrameResult(
-                    accepted = true,
-                    state = state,
-                    nodeId = confirmedNode,
-                    confirmedRole = confirmedRole,
-                    readyForConvergence = true
-                )
-            )
         }
         return result(accepted = true)
     }

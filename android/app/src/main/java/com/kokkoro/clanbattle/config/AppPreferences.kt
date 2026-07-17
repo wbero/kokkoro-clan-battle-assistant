@@ -21,6 +21,15 @@ object AppPreferences {
 
     const val DEFAULT_ENERGY_FULL_PERCENT = 97
     const val DEFAULT_ENERGY_DROP_PERCENT = 30
+    private const val KEY_PAUSE_FRAME_MS = "pauseframe_frame_ms"
+    private const val KEY_PAUSE_PRESET_A = "pauseframe_preset_a"
+    private const val KEY_PAUSE_PRESET_B = "pauseframe_preset_b"
+    private const val KEY_PAUSE_MENU_WAIT_MS = "pauseframe_menu_wait_ms"
+
+    const val DEFAULT_PAUSE_FRAME_MS = 40
+    const val DEFAULT_PAUSE_PRESET_A = 5
+    const val DEFAULT_PAUSE_PRESET_B = 20
+    const val DEFAULT_PAUSE_MENU_WAIT_MS = 700
 
     fun axisText(context: Context): String = prefs(context).getString(KEY_AXIS_TEXT, "").orEmpty()
     fun axisName(context: Context): String = prefs(context).getString(KEY_AXIS_NAME, "未选择").orEmpty()
@@ -95,10 +104,45 @@ object AppPreferences {
             .apply()
     }
 
+    /** 卡帧步进：单帧时长(ms) 与两个"释放N帧"预设档。 */
+    fun pauseFrameMs(context: Context): Int = prefs(context).getInt(KEY_PAUSE_FRAME_MS, DEFAULT_PAUSE_FRAME_MS)
+    fun pauseFramePresetA(context: Context): Int = prefs(context).getInt(KEY_PAUSE_PRESET_A, DEFAULT_PAUSE_PRESET_A)
+    fun pauseFramePresetB(context: Context): Int = prefs(context).getInt(KEY_PAUSE_PRESET_B, DEFAULT_PAUSE_PRESET_B)
+
+    /** 卡帧确定时，打开主菜单后等待多久再点头像（等菜单开启动画完成）。 */
+    fun pauseFrameMenuWaitMs(context: Context): Int =
+        prefs(context).getInt(KEY_PAUSE_MENU_WAIT_MS, DEFAULT_PAUSE_MENU_WAIT_MS)
+
+    fun savePauseFrameSettings(context: Context, settings: PauseFrameSettings) {
+        prefs(context).edit()
+            .putInt(KEY_PAUSE_FRAME_MS, settings.frameMs)
+            .putInt(KEY_PAUSE_PRESET_A, settings.presetA)
+            .putInt(KEY_PAUSE_PRESET_B, settings.presetB)
+            .putInt(KEY_PAUSE_MENU_WAIT_MS, settings.menuWaitMs)
+            .apply()
+    }
+
     private fun prefs(context: Context) = context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
 }
 
 data class EnergyThresholdPercents(val full: Int, val drop: Int)
+
+data class PauseFrameSettings(val frameMs: Int, val presetA: Int, val presetB: Int, val menuWaitMs: Int)
+
+/**
+ * 校验卡帧设置：单帧时长 5~500ms、两档帧数各 1~600、菜单等待 100~3000ms。合法返回 [PauseFrameSettings]，否则 null。
+ */
+fun parsePauseFrameSettings(msText: String, aText: String, bText: String, menuWaitText: String): PauseFrameSettings? {
+    val ms = msText.trim().toIntOrNull() ?: return null
+    val a = aText.trim().toIntOrNull() ?: return null
+    val b = bText.trim().toIntOrNull() ?: return null
+    val menuWait = menuWaitText.trim().toIntOrNull() ?: return null
+    if (ms !in 5..500) return null
+    if (a !in 1..600) return null
+    if (b !in 1..600) return null
+    if (menuWait !in 100..3000) return null
+    return PauseFrameSettings(ms, a, b, menuWait)
+}
 
 /**
  * 校验 UB 阈值输入（百分比）：满 TP 值 50~100、释放后 TP 1~95、且满 TP 值至少高出释放后 TP 5 个百分点（保留滞回带）。
