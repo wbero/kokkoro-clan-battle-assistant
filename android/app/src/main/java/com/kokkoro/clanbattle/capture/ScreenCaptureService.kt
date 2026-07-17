@@ -57,6 +57,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private var battleLocked = false
     private val captureSessionGate = CaptureSessionGate()
     @Volatile private var pauseFrameRole: CharacterRole? = null
+    @Volatile private var stopRequested = false
     private var latestFrameStatus: FrameStatus? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
@@ -108,6 +109,10 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            // 先关闸再广播最终状态：采集线程可能还有最后一帧在路上，
+            // 不能让它把“已停止”覆盖回帧状态文本。
+            stopRequested = true
+            publishStatus(FrameStatus("已停止", false, 0, captureWidth, captureHeight), force = true)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -117,6 +122,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         }
         if (intent?.action != ACTION_START) return START_NOT_STICKY
 
+        stopRequested = false
         startCaptureForeground()
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         val data = if (Build.VERSION.SDK_INT >= 33) {
@@ -268,7 +274,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         return metrics
     }
 
-    private fun publishStatus(status: FrameStatus) {
+    private fun publishStatus(status: FrameStatus, force: Boolean = false) {
+        if (stopRequested && !force) return
         latestFrameStatus = status
         renderOverlay(status.controlSafety, status)
         sendBroadcast(

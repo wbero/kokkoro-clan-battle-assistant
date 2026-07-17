@@ -1,5 +1,6 @@
 package com.kokkoro.clanbattle.sequenceaxis
 
+import com.kokkoro.clanbattle.axis.ActionType
 import com.kokkoro.clanbattle.axis.AxisEvent
 import com.kokkoro.clanbattle.axis.BossDelayTrigger
 import com.kokkoro.clanbattle.axis.CharacterUbTrigger
@@ -50,11 +51,13 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
     private val remaining = events.toMutableList()
     private val crossed = ArrayDeque<AxisEvent>()
     private var active: ActiveNode? = null
+    // 上一个派发的是否为普通角色点击；只有为真时，才允许下一个普通角色点击提前于时钟链式放行。
+    private var lastDispatchWasRole = false
 
     fun update(frame: SequenceFrameInput): SequenceRuntimeCommand {
         enqueueCrossed(frame.clockSeconds)
         var armedNow = false
-        val current = active ?: crossed.pollFirst()?.let { event ->
+        val current = active ?: (crossed.pollFirst() ?: pollChainedRole())?.let { event ->
             ActiveNode(event, frame.wallMs).also {
                 active = it
                 armedNow = true
@@ -109,9 +112,24 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
     }
 
     private fun dispatch(current: ActiveNode): SequenceRuntimeCommand.Dispatch {
+        lastDispatchWasRole = current.event.isPlainRoleClick()
         active = null
         return SequenceRuntimeCommand.Dispatch(current.event)
     }
+
+    // 上一个派发是普通角色点击时，把待执行队列的队首角色提前于时钟放行，实现 UB 完成即链式点击下一个。
+    private fun pollChainedRole(): AxisEvent? {
+        if (!lastDispatchWasRole) return null
+        val head = remaining.firstOrNull()?.takeIf { it.isPlainRoleClick() } ?: return null
+        remaining.removeAt(0)
+        return head
+    }
+
+    // 普通角色点击：无特殊触发，动作里含角色点击且只含角色点击或提示（排除混入 AUTO/SET/BOSS 的行）。
+    private fun AxisEvent.isPlainRoleClick(): Boolean =
+        trigger == TimedTrigger &&
+            actions.any { it.type == ActionType.CLICK_ROLE } &&
+            actions.all { it.type == ActionType.CLICK_ROLE || it.type == ActionType.NOTIFY }
 
     private fun pauseFrame(
         current: ActiveNode,
@@ -120,6 +138,7 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
     ): SequenceRuntimeCommand {
         if (current.phase == ActivePhase.PAUSE_FRAME_CONFIRMED) {
             active = null
+            lastDispatchWasRole = false
             return if (current.event.actions.isEmpty()) {
                 SequenceRuntimeCommand.None
             } else {

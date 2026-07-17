@@ -72,6 +72,56 @@ class SequenceAxisRuntimeTest {
         assertTrue(runtime.update(frame(29, wallMs = 11_200)) is SequenceRuntimeCommand.Dispatch)
     }
 
+    @Test fun `plain role click chains early after the previous role`() {
+        val role3 = event("role3", 76, TimedTrigger, actions = roleClick("角色3"))
+        val role2 = event("role2", 69, TimedTrigger, actions = roleClick("角色2"))
+        val runtime = SequenceAxisRuntime(listOf(role3, role2))
+
+        assertEquals(role3, (runtime.update(frame(76)) as SequenceRuntimeCommand.Dispatch).event)
+        // clock 74 is still above role2's 69, so without chaining it would not be due yet.
+        assertEquals(role2, (runtime.update(frame(74)) as SequenceRuntimeCommand.Dispatch).event)
+    }
+
+    @Test fun `first role in a chain still waits for its written time`() {
+        val role3 = event("role3", 76, TimedTrigger, actions = roleClick("角色3"))
+        val runtime = SequenceAxisRuntime(listOf(role3))
+
+        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(80)))
+        assertEquals(role3, (runtime.update(frame(76)) as SequenceRuntimeCommand.Dispatch).event)
+    }
+
+    @Test fun `a non-role timed line breaks the chain`() {
+        val role3 = event("role3", 76, TimedTrigger, actions = roleClick("角色3"))
+        val auto = event("auto", 70, TimedTrigger, actions = listOf(AxisAction(ActionType.CLICK_AUTO)))
+        val role2 = event("role2", 69, TimedTrigger, actions = roleClick("角色2"))
+        val runtime = SequenceAxisRuntime(listOf(role3, auto, role2))
+
+        assertEquals(role3, (runtime.update(frame(76)) as SequenceRuntimeCommand.Dispatch).event)
+        // Head of the queue is the AUTO line, so role2 must not jump ahead of it.
+        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(74)))
+        assertEquals(auto, (runtime.update(frame(70)) as SequenceRuntimeCommand.Dispatch).event)
+        // AUTO reset the chain, so role2 waits for its own written time again.
+        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(70)))
+        assertEquals(role2, (runtime.update(frame(69)) as SequenceRuntimeCommand.Dispatch).event)
+    }
+
+    @Test fun `a character ub trigger does not get pulled in early by chaining`() {
+        val role3 = event("role3", 76, TimedTrigger, actions = roleClick("角色3"))
+        val ubGated = event("ub", 70, CharacterUbTrigger(CharacterRole.ROLE_5, "角色5"), actions = roleClick("角色2"))
+        val runtime = SequenceAxisRuntime(listOf(role3, ubGated))
+
+        assertEquals(role3, (runtime.update(frame(76)) as SequenceRuntimeCommand.Dispatch).event)
+        // Special trigger keeps its gating even though the previous dispatch was a role.
+        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(74)))
+        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(70)))
+        assertEquals(
+            ubGated,
+            (runtime.update(frame(69, triggered = setOf(CharacterRole.ROLE_5))) as SequenceRuntimeCommand.Dispatch).event
+        )
+    }
+
+    private fun roleClick(role: String) = listOf(AxisAction(ActionType.CLICK_ROLE, role = role))
+
     private fun event(
         id: String,
         time: Int,

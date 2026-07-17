@@ -67,6 +67,10 @@ fun actionExecutionBlockReason(dryRun: Boolean, accessibilityConnected: Boolean)
     else -> null
 }
 
+/** 等待有效开场 1:30 期间的悬浮窗状态行；原始 OCR 读数明确标注，避免被误解为已在运行。 */
+fun openingWaitStatusText(rawClock: String?, elapsedMs: Long, energyText: String): String =
+    "等待有效开场 1:30（原始 ${rawClock ?: "--:--"}）  ${elapsedMs}ms  $energyText"
+
 fun buildActionPreview(
     document: AxisDocument,
     activeNodeId: String?,
@@ -258,7 +262,7 @@ class FrameProcessor(
         centerAnchorCalibrated = false
         rightAnchorCalibrated = false
         filter.reset()
-        energyDetector?.reset()
+        energyDetector = null // 置空强制重建，使新战斗读到最新 UB 阈值配置
         gameStateDetector.reset()
         controlStateMachine.reset()
         controlObservationFilter.reset()
@@ -356,7 +360,7 @@ class FrameProcessor(
             val elapsed = SystemClock.elapsedRealtime() - start
             statusCallback(
                 FrameStatus(
-                    "等待开场 1:30  ${recognition.rawText ?: "--:--"}  ${elapsed}ms",
+                    openingWaitStatusText(recognition.rawText, elapsed, EnergyStatusFormatter.format(energy)),
                     false,
                     elapsed,
                     image.width,
@@ -548,7 +552,7 @@ class FrameProcessor(
         val text = if (sessionReady) {
             "${filtered.rawText}  $source  ${elapsed}ms  $energyText\n$controlText"
         } else if (sessionGate.isWaiting()) {
-            "等待开场 1:30  ${recognition.rawText ?: "--:--"}  ${elapsed}ms  $energyText"
+            openingWaitStatusText(recognition.rawText, elapsed, energyText)
         } else {
             "FAIL ${filtered.reason ?: recognition.reason}  ${recognition.rawText ?: "--:--"}  ${elapsed}ms  $energyText"
         }
@@ -732,7 +736,11 @@ class FrameProcessor(
         val hud = ImageRoiExtractor.extract(image, scaled)
         val size = hud.width to hud.height
         if (energyDetector == null || energyHudSize != size) {
-            energyDetector = EnergyDetector(BattleReferenceRegions.energyRegionsForHud(hud.width, hud.height))
+            energyDetector = EnergyDetector(
+                BattleReferenceRegions.energyRegionsForHud(hud.width, hud.height),
+                fullThreshold = AppPreferences.energyFullThreshold(appContext),
+                triggeredBelowThreshold = AppPreferences.energyDropThreshold(appContext)
+            )
             energyHudSize = size
         }
         energyDetector!!.detect(hud)
@@ -916,7 +924,7 @@ class FrameProcessor(
         val elapsed = SystemClock.elapsedRealtime() - start
         statusCallback(
             FrameStatus(
-                "$label  ${"%.2f".format(score)}  ${elapsed}ms",
+                "$label  匹配度 ${"%.2f".format(score)}  ${elapsed}ms",
                 false,
                 elapsed,
                 image.width,

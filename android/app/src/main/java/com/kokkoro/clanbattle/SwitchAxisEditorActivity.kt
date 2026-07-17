@@ -246,7 +246,6 @@ class SwitchAxisEditorActivity : Activity() {
             addView(auto)
             addView(note)
             addView(if (deletable) Button(this@SwitchAxisEditorActivity).apply {
-                text = "删除"
                 text = "×"
                 isAllCaps = false
                 textSize = 18f
