@@ -22,6 +22,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.Display
 import android.view.WindowManager
 import com.kokkoro.clanbattle.MainActivity
@@ -96,6 +97,10 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             perFrameMs = AppPreferences.pauseFrameMs(this).toLong(),
             menuSettleMs = AppPreferences.pauseFrameMenuWaitMs(this).toLong(),
             diagnosticCallback = { event ->
+                Log.i(
+                    PAUSE_FRAME_LOG_TAG,
+                    "node=${event.nodeId} role=${event.role} action=${event.action} result=${event.result}"
+                )
                 captureHandler.post { frameProcessor?.recordPauseFrameDiagnostic(event) }
             }
         )
@@ -442,6 +447,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         private const val CHANNEL_ID = "kokkoro_capture"
         private const val NOTIFICATION_ID = 1001
         private const val FRAME_INTERVAL_NANOS = 50_000_000L
+        private const val PAUSE_FRAME_LOG_TAG = "KokkoroPauseFrame"
     }
 }
 

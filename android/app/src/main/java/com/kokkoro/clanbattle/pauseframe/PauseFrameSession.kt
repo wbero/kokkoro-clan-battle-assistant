@@ -32,7 +32,7 @@ class PauseFrameSession(
     private val perFrameMs: Long = 40,
     private val focusTransitionMs: Long = 1_000,
     private val menuSettleMs: Long = 700,
-    private val tapGapMs: Long = 400,
+    private val tapGapMs: Long = 700,
     private val diagnosticCallback: (PauseFrameDiagnosticEvent) -> Unit = {}
 ) {
     private var state = PauseFrameState.IDLE
@@ -94,44 +94,35 @@ class PauseFrameSession(
         diagnose("focus-release", if (released) "success" else "failed")
         if (!released) return fail()
         val confirmGeneration = generation
-        // 打开主菜单 → 等菜单渲染 → 点头像设 SET → 点菜单外关闭遮罩、恢复战斗。
-        scheduler.schedule(focusTransitionMs) openMenu@{
-            if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@openMenu
-            val back = focusPort.sendBack()
-            diagnose("back", if (back) "success" else "failed")
-            if (!back) {
+        // 软卡帧时暂停菜单已经打开；直接点菜单头像设置 SET，再点菜单外恢复战斗。
+        scheduler.schedule(focusTransitionMs + menuSettleMs) tapAvatar@{
+            if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@tapAvatar
+            val tapped = focusPort.tapMenuRole(confirmedRole)
+            diagnose("tap-role", if (tapped) "success" else "failed")
+            if (!tapped) {
                 onComplete(fail())
-                return@openMenu
+                return@tapAvatar
             }
-            scheduler.schedule(menuSettleMs) tapAvatar@{
-                if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@tapAvatar
-                val tapped = focusPort.tapMenuRole(confirmedRole)
-                diagnose("tap-role", if (tapped) "success" else "failed")
-                if (!tapped) {
+            scheduler.schedule(tapGapMs) closeMenu@{
+                if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@closeMenu
+                val dismissed = focusPort.dismissMenu()
+                diagnose("dismiss", if (dismissed) "success" else "failed")
+                if (!dismissed) {
                     onComplete(fail())
-                    return@tapAvatar
+                    return@closeMenu
                 }
-                scheduler.schedule(tapGapMs) closeMenu@{
-                    if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@closeMenu
-                    val dismissed = focusPort.dismissMenu()
-                    diagnose("dismiss", if (dismissed) "success" else "failed")
-                    if (!dismissed) {
-                        onComplete(fail())
-                        return@closeMenu
-                    }
-                    state = PauseFrameState.IDLE
-                    nodeId = null
-                    role = null
-                    onComplete(
-                        PauseFrameResult(
-                            accepted = true,
-                            state = state,
-                            nodeId = confirmedNode,
-                            confirmedRole = confirmedRole,
-                            readyForConvergence = true
-                        )
+                state = PauseFrameState.IDLE
+                nodeId = null
+                role = null
+                onComplete(
+                    PauseFrameResult(
+                        accepted = true,
+                        state = state,
+                        nodeId = confirmedNode,
+                        confirmedRole = confirmedRole,
+                        readyForConvergence = true
                     )
-                }
+                )
             }
         }
         return result(accepted = true)

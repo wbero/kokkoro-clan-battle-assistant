@@ -8,6 +8,7 @@ import com.kokkoro.clanbattle.recognition.loadPngResource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
+import kotlin.math.roundToInt
 
 class BattleControlRecognizerTest {
     @Test
@@ -54,6 +55,31 @@ class BattleControlRecognizerTest {
     }
 
     @Test
+    fun `role badges retain their states after resolution scaling`() {
+        val reference = cropsFromReferenceFixture()
+        val expected = listOf(
+            VisualToggleState.ON,
+            VisualToggleState.OFF,
+            VisualToggleState.ON,
+            VisualToggleState.OFF,
+            VisualToggleState.ON
+        )
+
+        listOf(2.0 / 3.0, 4.0 / 3.0).forEach { scale ->
+            val scaled = reference.copy(
+                roles = reference.roles.mapValues { (_, crop) -> crop.resize(scale) }
+            )
+            val result = recognizer().recognize(scaled)
+
+            assertEquals(
+                "scale=$scale ${result.describe()}",
+                expected,
+                CharacterRole.entries.map { result.roles.getValue(it).state }
+            )
+        }
+    }
+
+    @Test
     fun `global on with an explicitly off role is inconsistent`() {
         val crops = cropsFromReferenceFixture().copy(
             globalSet = loadBmpResource("control/templates/set_on.bmp")
@@ -80,6 +106,20 @@ class BattleControlRecognizerTest {
         assertEquals(result.describe(), VisualToggleState.ON, result.globalSet.state)
     }
 
+    @Test
+    fun `live 2560 role set crop is recognized as on`() {
+        val liveBadge = loadPngResource("control/live_role_set_on_2560.png")
+        val crops = cropsFromReferenceFixture().copy(
+            roles = CharacterRole.entries.associateWith { liveBadge }
+        )
+
+        val result = recognizer().recognize(crops)
+
+        CharacterRole.entries.forEach { role ->
+            assertEquals(result.describe(), VisualToggleState.ON, result.roles.getValue(role).state)
+        }
+    }
+
     private fun recognizer() = BattleControlRecognizer(
         BattleControlTemplates(
             autoOn = loadBmpResource("control/templates/auto_on.bmp"),
@@ -101,6 +141,23 @@ class BattleControlRecognizerTest {
 
     private fun PixelImage.crop(region: ReferenceRegion): PixelImage =
         crop(region.x, region.y, region.width, region.height)
+
+    private fun PixelImage.resize(scale: Double): PixelImage {
+        val targetWidth = (width * scale).roundToInt().coerceAtLeast(2)
+        val targetHeight = (height * scale).roundToInt().coerceAtLeast(2)
+        return PixelImage(
+            targetWidth,
+            targetHeight,
+            IntArray(targetWidth * targetHeight) { index ->
+                val x = index % targetWidth
+                val y = index / targetWidth
+                this[
+                    (x * width / targetWidth).coerceAtMost(width - 1),
+                    (y * height / targetHeight).coerceAtMost(height - 1)
+                ]
+            }
+        )
+    }
 
     private fun ToggleObservation.describe(): String =
         "state=$state onScore=$onScore offScore=$offScore margin=$margin"
