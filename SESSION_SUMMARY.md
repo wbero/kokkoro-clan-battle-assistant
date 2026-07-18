@@ -1,13 +1,13 @@
 # 项目状态摘要
 
-更新时间：2026-07-15
+更新时间：2026-07-19
 
 ## 项目与版本库
 
 - 项目：可可萝自动会战助手，原生 Android/Kotlin 应用。
 - 仓库：`C:\Users\wbero\Desktop\linai\kokkoro-clan-battle-assistant`
-- 当前分支：`master`
-- 当前提交：`a70a4b3 fix: show battle prompts in top overlay`
+- 当前分支：`feat/ux-sequence-chaining-ub-config`
+- 当前提交：`8af9e48 fix: stabilize sequence and pause-frame role lifecycles`
 - 工作区存在未提交改动，不能清理、回退或覆盖这些文件。
 - 已提交基线包含轴格式说明、应用内轴编辑、可视化开关轴编辑、战斗控制状态、暂停帧悬浮窗、动态 SET 识别优化及顶部战斗提示。
 
@@ -212,3 +212,82 @@ $env:KOKKORO_KEYSTORE_PROPERTIES='C:\Users\wbero\Desktop\autopcr-android\keystor
 - 发布产物：`dist/Kokkoro-Clan-Battle-Assistant-v1.0.1-signed.apk`，大小 `3653624` 字节。
 - APK SHA-256：`23D52F623920B89DA14393BDBAB70B06DA740B054617CADC219B159F7A087475`。
 - 本次只完成打包与本地验证，未主动覆盖安装到当前模拟器。
+
+## 2026-07-18：顺序轴、BOSS UB 与 SET 兜底最新状态
+
+### 已提交基线
+
+- 当前分支是 `feat/ux-sequence-chaining-ub-config`，基线提交是 `8af9e48 fix: stabilize sequence and pause-frame role lifecycles`。
+- 已确认暂停帧角色 SET 的正确生命周期：点击“确定”后，在暂停菜单中直接点击对应角色头像开启 SET，点击菜单外返回战斗，随后进入“等待该角色 UB → 关闭该角色 SET”的完整生命周期。暂停菜单不存在额外的“设置”按钮。
+- 顺序轴角色动作必须串行完成：当前角色 TP 从满值下降后立即关闭它的 SET，然后才点击下一角色开启 SET。
+
+### 当前未提交实现
+
+- 新增 `BossUbDetector`，通过异常计时器停留与角色 TP 事件抑制来识别 BOSS UB。BOSS 节点必须等待实际检测到 BOSS UB，配置延迟从检测到事件后才开始计时。
+- `ControlObservationSafetyGate` 中的 `PENDING_CONFIRMATION` 不再累加控件识别故障次数，避免正常的两帧状态确认导致误暂停。
+- SET 兜底已暴露到 `设置 → 顺序轴 SET 兜底 → 额外等待`，单位为毫秒，取值范围 `0～30000ms`，默认值 `0ms`。当前模拟器保存值为 `150ms`。
+- 上述修改与本节后续的 TP 缓存/watchdog 修复均仍在工作区中。不得回退或覆盖现有未提交变更。
+
+### 最新日志结论
+
+- 最新会话：`C:\Users\wbero\Desktop\linai\device-logs\session-20260718-232752-449`。
+- 角色5在帧 `1696`、游戏时间 `1:11` 点击开启 SET，`controls.csv` 记录期望状态由 `XXXXX` 变为 `XXXXO`。
+- 帧 `1719` 正确检测到 `ROLE_5` TP 下降，但同一帧的时钟识别是 `clock-split-failed`。
+- `FrameProcessor` 目前只在时钟帧可用、`sessionReady=true` 时才调用 `VerifiedActionCoordinator.update()`，因此帧 `1719` 的角色5 TP 事件没有交给主生命周期，且之后没有缓存可供补消费。
+- 角色5 SET 直到帧 `1776`、时钟进入 `1:10` 后才被兜底关闭。从实际 TP 下降到 SET OFF 点击相隔约 `7752ms`，这是本次时间轴大幅偏移的主因。
+- 后续角色4从 SET ON 到 SET OFF 为帧 `1778 → 1780`，约 `275ms`；角色2为帧 `1826 → 1828`，约 `264ms`。两者都有真实 TP 事件，说明这次并非每个角色都固定累加 `150ms`。
+
+### 修复前的 SET 兜底架构问题
+
+- 修复前兜底不是独立 watchdog。`VerifiedActionCoordinator` 在每个角色的 `WAITING_ROLE_UB` 阶段内同时检查“TP 事件”和“兜底到期”，并在等待期间持续返回 `busy=true`。
+- `FrameProcessor` 使用 `schedulingAllowed = !coordinated.busy` 阻止下一顺序轴动作，所以任一角色的 TP 事件丢失都会阻塞后续整条队列。
+- 修复前的兜底计时只在识别到 `clockSeconds < event.timeSeconds` 后才开始，完成当前角色后会清空。因此，已过期的后续动作仍可能各自重新开始一段兜底等待，存在串行累计风险。
+- 这次主要偏差不是 `150ms × 角色数`，而是“TP 事件与时钟有效性耦合，丢失后主协调器串行等待到兜底”。
+
+### 2026-07-18 本轮已实施修复
+
+1. `VerifiedActionCoordinator.observeFrame()` 会在战斗已运行的每帧观察 TP 下降，不再依赖当帧时钟是否可用。只缓存当前正在 `CONFIRMING_ROLE_ON`/`WAITING_ROLE_UB` 生命周期中的目标角色，避免旧 UB 事件污染后续同角色动作。
+2. `FrameProcessor` 在时钟识别失败帧仍会更新控件状态并推进当前顺序轴角色生命周期，因此 TP 下降可在同一坏时钟帧立即触发 SET OFF。新的时间轴节点仍只会在有效时钟帧派发。
+3. `SequenceAxisRuntime` 也会缓存已武装 `UB后=角色N` 节点的匹配 TP 事件，下一有效时钟帧可继续派发，不会因单帧 `clock-split-failed` 丢失。
+4. 新增独立 `RoleSetFallbackWatchdog`。watchdog 只在实机画面确认当前角色 SET ON 后武装，以墙钟毫秒运行配置的兜底。TP 先到或已开始 SET OFF 时会立即取消 watchdog，不会因轴时间已过就跳过尚未生效的 SET。
+5. 排队中尚未开始 SET 的角色不继承前一角色的超时截止点。否则该角色会在刚开启 SET 后就被立即关闭，无法正常 UB。正常 TP 识别路径不会固定等待设置的兜底毫秒。
+6. 已增加回归测试，覆盖坏时钟帧 TP 缓存、角色 UB 特殊触发缓存、TP/watchdog 竞态只关闭一次、排队角色独立武装 watchdog，以及新战斗重置。
+7. `testDebugUnitTest --rerun-tasks` 通过：49 个测试套件、263 项测试、0 失败、0 错误、0 跳过。`assembleDebug` 构建成功。
+
+### 尚需实机验证
+
+1. 已于 2026-07-19 使用最新 `app-debug.apk` 通过 `adb install -r` 成功覆盖安装到 `127.0.0.1:5557`，并启动 `MainActivity`。应用仍为 `1.0.1 (10001)`，`firstInstallTime` 保持 `2026-07-18 14:11:42`，最新 `lastUpdateTime` 为 `2026-07-19 01:05:28`，确认是保留数据的覆盖安装。
+2. 模拟器已安装 APK 与 Debug APK 的签名证书 SHA-256 均为 `76462688b8a14de11403b774e436862749b20e6ade0b9873467e7db074b8dfad`。外部 Release 密钥构建的新 APK 证书为 `7f44dba76bba53152215a581f32699f4675d258d198d2f678e4b12f8ba5982cc`，与当前安装不兼容，不能使用该 Release APK 直接覆盖。
+3. 使用同一顺序轴复测角色5，确认 TP 下降即使落在坏时钟帧也会立即关闭 SET，随后立即开始角色4，不再等待到 `1:10`。
+4. 核对新日志中正常角色生命周期没有固定增加兜底毫秒，且真正丢失 TP 时只执行一次强制 SET OFF。
+
+### 2026-07-19 最新实机日志与修复
+
+- 新日志会话：`C:\Users\wbero\Desktop\linai\device-logs\session-20260719-003748-004`。轴文本包含 `1:11 | 点击=角色3 | 点击=角色5`、`1:11 | 点击=角色4` 和 `1:11 | 点击=角色2`。
+- 角色5 TP 事件在帧 `890`、时钟 `1:11` 到达，角色生命周期在帧 `893` 完成，但原实现的 `GameState.UB_ANIMATION` 仍阻止下一普通角色节点。
+- 角色4 直到帧 `947`、时钟跳到 `1:10` 才被点击；帧 `949` 又立即点击角色2。原因是角色4 在已过轴时间后启动，`150ms` watchdog 从点击时开始，导致角色4 还未确认 SET ON 就被跳过；随后帧 `959` 的角色4 TP 触发了 `implausible_transition` 并导致安全暂停。
+- 已修复普通角色链式调度：当前节点是普通角色点击，且上一节点已是角色动作时，可绕过 UB 动画冻结继续派发；AUTO、BOSS、卡帧等特殊节点仍保持冻结。
+- 已修复 watchdog 起算：只有实机画面确认目标角色 SET ON 后才武装毫秒兜底；设置为 `150ms` 时不会因为轴时间已过就跳过尚未生效的 SET，也不会等待游戏下一秒，所有兜底仍以墙钟毫秒运行。
+- 本轮全量测试、Debug 构建和模拟器覆盖安装均成功。
+
+### 当前模拟器
+
+- ADB：`127.0.0.1:5557`。
+- 原始物理配置已恢复并于 2026-07-18 再次核对：`1440×2560`、`640dpi`。
+
+### 2026-07-19 角色2满 TP误关 SET 修复
+
+- 最新问题日志：`C:\Users\wbero\Desktop\linai\device-logs\session-20260719-020339-731`。帧 `1705` 点击角色2开启 SET，帧 `1710`～`1711` 已确认 SET ON；帧 `1713` 却在 `ROLE_2 ratio=1.0/full=true` 时点击关闭 SET，随后进入 `1:09` 卡帧，导致角色2 UB 被跳过。
+- 根因是旧兜底只判断“SET 已确认 + 轴时间已过”，没有确认目标角色 TP 已经下降。角色4动画较长时，角色2仍满 TP 也会被提前关闭。
+- `FrameProcessor` 现在把每帧低于 UB 释放阈值的角色传给 `VerifiedActionCoordinator`；SET 兜底只有在目标角色实机 TP 已低于阈值后才允许执行。TP 仍满时保持 `WAITING_ROLE_UB`，不会推进后续 `1:09` 卡帧动作。
+- 新增回归覆盖：TP 满值禁止兜底关 SET、TP 下降与 watchdog 同帧只关一次、排队角色独立起算 watchdog。聚焦测试和全量 `testDebugUnitTest --rerun-tasks` 均通过。
+- 已执行 `assembleDebug` 并于 `2026-07-19 02:25:27` 覆盖安装到 `127.0.0.1:5557`，保留应用数据；实机偏好仍为 `role_set_fallback_grace_ms=150`，模拟器仍为 `1440×2560 / 640dpi`。
+- 后续复测重点：角色4长动画期间角色2 SET 必须保持；角色2 TP 下降后才关闭 SET，确认关闭动作后再进入 `1:09` 卡帧。
+
+### 2026-07-19 1:09 卡帧与角色 UB 后 AUTO 延迟修复
+
+- 新日志会话：`C:\Users\wbero\Desktop\linai\device-logs\session-20260719-024411-256`。`1:09` 卡帧中角色1 TP 在 `02:46:06.27` 已触发下降，暂停菜单确认后角色1 SET 在 `02:46:08.65` 才被画面确认；原协调器直到时钟变为 `1:08` 的 `02:46:14.93` 才关闭 SET，延迟约 `6.3s`。
+- 延迟原因是 TP 事件发生在暂停菜单确认生命周期建立前，且原兜底必须等待时钟越过 `1:09`。现在协调器会缓存最近 `3s` 的角色 UB 事件；卡帧 `rolesAlreadySet` 生命周期建立时消费该事件并立即关闭 SET。普通点击不会把角色原本就低的 TP 误判成新 UB。
+- 同一日志中 `1:05 | AUTO=开` 在帧 `3118` 打开 AUTO；角色5 TP 在帧 `3120` 下降，但 `1:05 | UB后=角色5 | 点击=AUTO` 原先受 `UB_ANIMATION` 冻结，直到帧 `3179`、`1:04` 才派发。现在角色 UB 触发节点使用非动画冻结的链式调度许可，识别到角色5 UB 后立即派发 AUTO 关闭动作。
+- 新增回归测试覆盖：暂停生命周期消费最近 UB、角色 UB 触发节点在动画期间派发 AUTO，以及原有 TP 满值/兜底竞态。全量 `testDebugUnitTest --rerun-tasks` 通过；当前为 49 个测试套件、265 项测试、0 失败。
+- 最终 Debug APK 已于 `2026-07-19 03:13:56` 覆盖安装到 `127.0.0.1:5557`，保留应用数据；模拟器仍为 `1440×2560 / 640dpi`。

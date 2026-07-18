@@ -64,9 +64,9 @@ class AxisGuideActivity : Activity() {
             addView(body(
                 "定时：1:20 | ...\n" +
                     "角色 UB 后：1:20 | UB后=角色3 | ...\n" +
-                    "Boss 延迟：0:30 | UB后=BOSS | 延迟=1.20 | ...\n" +
+                    "Boss UB 后：0:30 | UB后=BOSS | 延迟=1.20 | ...\n" +
                     "手动卡帧：1:10 | 卡帧=角色4 | ...（确认后自动等待角色4 UB并关闭SET）\n\n" +
-                    "注意：当前 UB后=BOSS 是节点到时后的最短延迟，并非 Boss UB 的视觉确认。"
+                    "UB后=BOSS 到时后先等待实际 Boss UB；程序通过异常停表和角色 TP 变化确认，确认后才开始计算延迟。"
             ))
 
             addView(heading("6. 常见校验错误"))

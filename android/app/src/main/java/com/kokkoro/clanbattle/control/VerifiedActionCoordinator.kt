@@ -17,7 +17,8 @@ data class CoordinatedActionStep(
 )
 
 class VerifiedActionCoordinator(
-    private val stateMachine: BattleControlStateMachine
+    private val stateMachine: BattleControlStateMachine,
+    roleSetFallbackGraceMs: Long = 0
 ) {
     private enum class ActivePhase {
         STARTING,
@@ -31,7 +32,42 @@ class VerifiedActionCoordinator(
     private val alreadySetActionIds = mutableSetOf<String>()
     private var activeControl: AxisEvent? = null
     private var activePhase: ActivePhase? = null
+    private val roleSetFallbackWatchdog = RoleSetFallbackWatchdog(roleSetFallbackGraceMs)
+    private var activeRoleUbObserved = false
+    private var activeRoleTpBelowThresholdObserved = false
+    private val recentRoleUbAtMs = mutableMapOf<CharacterRole, Long>()
+    private val recoveredRoleUbActionIds = mutableSetOf<String>()
     private var roleAliases: Map<String, CharacterRole> = defaultRoleAliases()
+
+    fun configureRoleSetFallbackGraceMs(value: Long) {
+        roleSetFallbackWatchdog.configureGraceMs(value)
+    }
+
+    fun observeFrame(
+        triggeredRoles: Set<CharacterRole>,
+        clockSeconds: Int?,
+        nowMs: Long,
+        tpBelowThresholdRoles: Set<CharacterRole> = emptySet()
+    ) {
+        roleSetFallbackWatchdog.observeClock(clockSeconds, nowMs)
+        triggeredRoles.forEach { recentRoleUbAtMs[it] = nowMs }
+        val event = activeControl ?: return
+        val action = event.actions.single()
+        if (
+            action.type == ActionType.CLICK_ROLE &&
+            activePhase in ROLE_UB_OBSERVING_PHASES &&
+            roleFromName(action.role) in triggeredRoles
+        ) {
+            activeRoleUbObserved = true
+        }
+        if (
+            action.type == ActionType.CLICK_ROLE &&
+            activePhase in ROLE_UB_OBSERVING_PHASES &&
+            roleFromName(action.role) in tpBelowThresholdRoles
+        ) {
+            activeRoleTpBelowThresholdObserved = true
+        }
+    }
 
     fun configureRoleAliases(header: Map<String, String>) {
         roleAliases = buildMap {
@@ -46,7 +82,8 @@ class VerifiedActionCoordinator(
 
     fun enqueue(
         events: List<AxisEvent>,
-        rolesAlreadySet: Set<CharacterRole> = emptySet()
+        rolesAlreadySet: Set<CharacterRole> = emptySet(),
+        nowMs: Long? = null
     ) {
         events.forEach { event ->
             event.actions.forEachIndexed { index, action ->
@@ -57,6 +94,16 @@ class VerifiedActionCoordinator(
                     roleFromName(action.role) in rolesAlreadySet
                 ) {
                     alreadySetActionIds += actionEvent.id
+                    val role = roleFromName(action.role)
+                    val recentUbAt = role?.let(recentRoleUbAtMs::get)
+                    if (
+                        role != null &&
+                        recentUbAt != null &&
+                        nowMs != null &&
+                        nowMs - recentUbAt in 0..RECENT_ROLE_UB_WINDOW_MS
+                    ) {
+                        recoveredRoleUbActionIds += actionEvent.id
+                    }
                 }
             }
         }
@@ -66,16 +113,23 @@ class VerifiedActionCoordinator(
         latest: ControlStep,
         nowMs: Long,
         triggeredRoles: Set<CharacterRole> = emptySet(),
-        clockSeconds: Int? = null
+        clockSeconds: Int? = null,
+        tpBelowThresholdRoles: Set<CharacterRole> = emptySet()
     ): CoordinatedActionStep {
+        observeFrame(triggeredRoles, clockSeconds, nowMs, tpBelowThresholdRoles)
         if (latest.safety != ControlSafetyState.RUNNING) {
-            if (activeControl != null) activePhase = ActivePhase.STARTING
+            if (activeControl != null) {
+                activePhase = ActivePhase.STARTING
+                activeRoleUbObserved = false
+                activeRoleTpBelowThresholdObserved = false
+                roleSetFallbackWatchdog.cancel()
+            }
             return result(latest, emptyList(), busy = true)
         }
 
         val active = activeControl
         if (active != null) {
-            return advance(active, latest, nowMs, triggeredRoles, clockSeconds, emptyList())
+            return advance(active, latest, nowMs, triggeredRoles, emptyList())
         }
 
         val immediate = mutableListOf<AxisEvent>()
@@ -87,7 +141,9 @@ class VerifiedActionCoordinator(
             }
             activeControl = next
             activePhase = ActivePhase.STARTING
-            return advance(next, latest, nowMs, triggeredRoles, clockSeconds, immediate)
+            activeRoleUbObserved = false
+            activeRoleTpBelowThresholdObserved = false
+            return advance(next, latest, nowMs, triggeredRoles, immediate)
         }
         return result(latest, immediate, busy = false)
     }
@@ -99,6 +155,11 @@ class VerifiedActionCoordinator(
         alreadySetActionIds.clear()
         activeControl = null
         activePhase = null
+        activeRoleUbObserved = false
+        activeRoleTpBelowThresholdObserved = false
+        recentRoleUbAtMs.clear()
+        recoveredRoleUbActionIds.clear()
+        roleSetFallbackWatchdog.reset()
     }
 
     private fun advance(
@@ -106,10 +167,9 @@ class VerifiedActionCoordinator(
         latest: ControlStep,
         nowMs: Long,
         triggeredRoles: Set<CharacterRole>,
-        clockSeconds: Int?,
         immediate: List<AxisEvent>
     ): CoordinatedActionStep = when (event.actions.single().type) {
-        ActionType.CLICK_ROLE -> advanceRole(event, latest, nowMs, triggeredRoles, clockSeconds, immediate)
+        ActionType.CLICK_ROLE -> advanceRole(event, latest, nowMs, triggeredRoles, immediate)
         else -> advanceGeneric(event, latest, nowMs, immediate)
     }
 
@@ -118,7 +178,6 @@ class VerifiedActionCoordinator(
         latest: ControlStep,
         nowMs: Long,
         triggeredRoles: Set<CharacterRole>,
-        clockSeconds: Int?,
         immediate: List<AxisEvent>
     ): CoordinatedActionStep {
         val action = event.actions.single()
@@ -127,28 +186,46 @@ class VerifiedActionCoordinator(
             ActivePhase.STARTING -> {
                 if (alreadySetActionIds.remove(event.id)) {
                     activePhase = ActivePhase.WAITING_ROLE_UB
-                    val ubDetected = role in triggeredRoles
-                    val writtenTimePassed = clockSeconds != null && clockSeconds < event.timeSeconds
+                    roleSetFallbackWatchdog.arm(event.timeSeconds, nowMs)
+                    val ubDetected = recoveredRoleUbActionIds.remove(event.id) || hasRoleUb(role, triggeredRoles)
+                    val fallbackDue = isRoleSetFallbackDue(nowMs)
                     if (ubDetected) {
+                        activeRoleUbObserved = false
                         stateMachine.assumeRoleSetOnFromUb(role)
                         return requestRoleOff(role, nowMs, immediate)
                     }
-                    if (writtenTimePassed) return requestRoleOff(role, nowMs, immediate)
+                    if (fallbackDue) return requestRoleOff(role, nowMs, immediate)
                     return result(latest, immediate, busy = true)
                 }
                 val step = stateMachine.requestRoleState(role, VisualToggleState.ON, nowMs)
                 when {
-                    step.confirmed -> activePhase = ActivePhase.WAITING_ROLE_UB
-                    step.action != ControlAction.None -> activePhase = ActivePhase.CONFIRMING_ROLE_ON
+                    step.confirmed -> {
+                        activePhase = ActivePhase.WAITING_ROLE_UB
+                        roleSetFallbackWatchdog.arm(event.timeSeconds, nowMs)
+                        val ubDetected = hasRoleUb(role, triggeredRoles)
+                        if (ubDetected) {
+                            activeRoleUbObserved = false
+                            stateMachine.assumeRoleSetOnFromUb(role)
+                            return requestRoleOff(role, nowMs, immediate)
+                        }
+                        if (isRoleSetFallbackDue(nowMs)) {
+                            return requestRoleOff(role, nowMs, immediate)
+                        }
+                    }
+                    step.action != ControlAction.None -> {
+                        activePhase = ActivePhase.CONFIRMING_ROLE_ON
+                    }
                 }
                 result(step, immediate, busy = true, newControlAction = step.action)
             }
             ActivePhase.CONFIRMING_ROLE_ON -> {
-                val ubDetected = role in triggeredRoles
-                val writtenTimePassed = clockSeconds != null && clockSeconds < event.timeSeconds
+                val ubDetected = hasRoleUb(role, triggeredRoles)
                 if (latest.confirmed) {
                     activePhase = ActivePhase.WAITING_ROLE_UB
-                    if (ubDetected || writtenTimePassed) {
+                    roleSetFallbackWatchdog.arm(event.timeSeconds, nowMs)
+                    val fallbackDue = isRoleSetFallbackDue(nowMs)
+                    if (ubDetected || fallbackDue) {
+                        if (ubDetected) activeRoleUbObserved = false
                         requestRoleOff(role, nowMs, immediate)
                     } else {
                         result(latest, immediate, busy = true)
@@ -156,13 +233,7 @@ class VerifiedActionCoordinator(
                 } else if (ubDetected) {
                     val acknowledged = stateMachine.acknowledgeRoleSetByUb(role)
                     if (acknowledged.confirmed) {
-                        requestRoleOff(role, nowMs, immediate)
-                    } else {
-                        result(latest, immediate, busy = true)
-                    }
-                } else if (writtenTimePassed) {
-                    val cancelled = stateMachine.cancelPendingRoleSetConfirmation(role)
-                    if (cancelled.confirmed) {
+                        activeRoleUbObserved = false
                         requestRoleOff(role, nowMs, immediate)
                     } else {
                         result(latest, immediate, busy = true)
@@ -172,10 +243,13 @@ class VerifiedActionCoordinator(
                 }
             }
             ActivePhase.WAITING_ROLE_UB -> {
-                val ubDetected = role in triggeredRoles
-                val writtenTimePassed = clockSeconds != null && clockSeconds < event.timeSeconds
-                if (!ubDetected && !writtenTimePassed) return result(latest, immediate, busy = true)
-                if (ubDetected) stateMachine.assumeRoleSetOnFromUb(role)
+                val ubDetected = hasRoleUb(role, triggeredRoles)
+                val fallbackDue = isRoleSetFallbackDue(nowMs)
+                if (!ubDetected && !fallbackDue) return result(latest, immediate, busy = true)
+                if (ubDetected) {
+                    activeRoleUbObserved = false
+                    stateMachine.assumeRoleSetOnFromUb(role)
+                }
                 requestRoleOff(role, nowMs, immediate)
             }
             ActivePhase.CONFIRMING_ROLE_OFF -> {
@@ -191,6 +265,7 @@ class VerifiedActionCoordinator(
         nowMs: Long,
         immediate: List<AxisEvent>
     ): CoordinatedActionStep {
+        roleSetFallbackWatchdog.cancel()
         val step = stateMachine.requestRoleState(role, VisualToggleState.OFF, nowMs)
         return if (step.confirmed) {
             completeActive(immediate)
@@ -233,6 +308,10 @@ class VerifiedActionCoordinator(
         if (completed?.actions?.single()?.type?.isTargetAction() == true) stateMachine.clearDesired()
         activeControl = null
         activePhase = null
+        activeRoleUbObserved = false
+        activeRoleTpBelowThresholdObserved = false
+        completed?.id?.let(recoveredRoleUbActionIds::remove)
+        roleSetFallbackWatchdog.cancel()
         return result(stateMachine.snapshot(), immediate, busy = queue.isNotEmpty())
     }
 
@@ -253,6 +332,12 @@ class VerifiedActionCoordinator(
 
     private fun roleFromName(name: String?): CharacterRole? = roleAliases[name]
 
+    private fun hasRoleUb(role: CharacterRole, triggeredRoles: Set<CharacterRole>): Boolean =
+        activeRoleUbObserved || role in triggeredRoles
+
+    private fun isRoleSetFallbackDue(nowMs: Long): Boolean =
+        activeRoleTpBelowThresholdObserved && roleSetFallbackWatchdog.isDue(nowMs)
+
     private fun defaultRoleAliases(): Map<String, CharacterRole> =
         CharacterRole.entries.associateBy { role -> "角色${role.ordinal + 1}" }
 
@@ -263,4 +348,12 @@ class VerifiedActionCoordinator(
 
     private fun ActionType.isTargetAction(): Boolean =
         this == ActionType.TOGGLE_AUTO || this == ActionType.SET_ROLES
+
+    private companion object {
+        const val RECENT_ROLE_UB_WINDOW_MS = 3_000L
+        val ROLE_UB_OBSERVING_PHASES = setOf(
+            ActivePhase.CONFIRMING_ROLE_ON,
+            ActivePhase.WAITING_ROLE_UB
+        )
+    }
 }

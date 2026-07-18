@@ -9,6 +9,7 @@ import com.kokkoro.clanbattle.axis.SwitchAxisOpening
 import com.kokkoro.clanbattle.axis.SwitchControlTarget
 import com.kokkoro.clanbattle.axis.TimedTrigger
 import com.kokkoro.clanbattle.recognition.CharacterRole
+import com.kokkoro.clanbattle.scheduler.BossUbEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -70,40 +71,46 @@ class SwitchAxisRuntimeTest {
         )
     }
 
-    @Test fun `boss node never emits before minimum wall delay`() {
+    @Test fun `boss node never emits without a boss ub detection`() {
         val runtime = runtime(node("boss", 26, BossDelayTrigger(1_200, "1.20"))).openedAt(90)
         runtime.update(frame(clock = 26, wallMs = 10_000))
 
-        assertEquals(SwitchRuntimeCommand.None, runtime.update(frame(clock = 25, wallMs = 11_199)))
-        assertTrue(runtime.update(frame(clock = 25, wallMs = 11_200)) is SwitchRuntimeCommand.Converge)
+        assertEquals(SwitchRuntimeCommand.None, runtime.update(frame(clock = 25, wallMs = 20_000)))
     }
 
-    @Test fun `boss deadline waits for trustworthy controls`() {
+    @Test fun `boss delay starts at detection and waits for trustworthy controls`() {
         val runtime = runtime(node("boss", 26, BossDelayTrigger(1_200, "1.20"))).openedAt(90)
         runtime.update(frame(clock = 26, wallMs = 10_000))
 
         assertEquals(
             SwitchRuntimeCommand.None,
-            runtime.update(frame(clock = 25, wallMs = 11_200, trustworthy = false))
+            runtime.update(frame(clock = 25, wallMs = 15_000, boss = bossEvent(26, 15_000)))
+        )
+        assertEquals(
+            SwitchRuntimeCommand.None,
+            runtime.update(frame(clock = 25, wallMs = 16_200, trustworthy = false))
         )
         assertTrue(
-            runtime.update(frame(clock = 25, wallMs = 11_300, trustworthy = true))
+            runtime.update(frame(clock = 25, wallMs = 16_300, trustworthy = true))
                 is SwitchRuntimeCommand.Converge
         )
     }
 
-    @Test fun `boss snapshot exposes source trigger state and hard deadline`() {
+    @Test fun `boss snapshot exposes deadline only after detection`() {
         val runtime = runtime(node("boss", 26, BossDelayTrigger(1_200, "1.20"))).openedAt(90)
 
         runtime.update(frame(clock = 26, wallMs = 10_000))
-        val snapshot = runtime.snapshot()
+        val armed = runtime.snapshot()
 
-        assertEquals("boss", snapshot.nodeId)
-        assertEquals(2, snapshot.sourceLine)
-        assertEquals("BOSS_DELAY", snapshot.triggerType)
-        assertEquals("Armed", snapshot.runtimeState)
-        assertEquals(10_000L, snapshot.eligibleWallMs)
-        assertEquals(11_200L, snapshot.deadlineWallMs)
+        assertEquals("boss", armed.nodeId)
+        assertEquals(2, armed.sourceLine)
+        assertEquals("BOSS_DELAY", armed.triggerType)
+        assertEquals("Armed", armed.runtimeState)
+        assertEquals(10_000L, armed.eligibleWallMs)
+        assertEquals(null, armed.deadlineWallMs)
+
+        runtime.update(frame(clock = 25, wallMs = 15_000, boss = bossEvent(26, 15_000)))
+        assertEquals(16_200L, runtime.snapshot().deadlineWallMs)
     }
 
     @Test fun `pause frame blocks later nodes until manual confirmation and convergence`() {
@@ -160,6 +167,10 @@ class SwitchAxisRuntimeTest {
         clock: Int,
         wallMs: Long = 0,
         triggered: Set<CharacterRole> = emptySet(),
-        trustworthy: Boolean = true
-    ) = SwitchFrameInput(clock, triggered, trustworthy, wallMs)
+        trustworthy: Boolean = true,
+        boss: BossUbEvent? = null
+    ) = SwitchFrameInput(clock, triggered, trustworthy, wallMs, boss)
+
+    private fun bossEvent(clock: Int, detectedAt: Long) =
+        BossUbEvent(clock, detectedAt, holdDurationMs = 6_000)
 }

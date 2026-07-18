@@ -8,6 +8,7 @@ import com.kokkoro.clanbattle.axis.CharacterUbTrigger
 import com.kokkoro.clanbattle.axis.PauseFrameTrigger
 import com.kokkoro.clanbattle.axis.TimedTrigger
 import com.kokkoro.clanbattle.recognition.CharacterRole
+import com.kokkoro.clanbattle.scheduler.BossUbEvent
 import java.util.ArrayDeque
 
 data class SequenceFrameInput(
@@ -15,7 +16,9 @@ data class SequenceFrameInput(
     val triggeredRoles: Set<CharacterRole>,
     val controlsTrustworthy: Boolean,
     val wallMs: Long,
-    val schedulingAllowed: Boolean
+    val schedulingAllowed: Boolean,
+    val bossUbEvent: BossUbEvent? = null,
+    val roleChainSchedulingAllowed: Boolean = schedulingAllowed
 )
 
 sealed interface SequenceRuntimeCommand {
@@ -49,16 +52,19 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
     private data class ActiveNode(
         val event: AxisEvent,
         val armedAtWallMs: Long,
-        var phase: ActivePhase = ActivePhase.ARMED
+        var phase: ActivePhase = ActivePhase.ARMED,
+        var bossUbDetectedAtWallMs: Long? = null
     )
 
     private val remaining = events.toMutableList()
     private val crossed = ArrayDeque<AxisEvent>()
     private var active: ActiveNode? = null
+    private var activeCharacterUbObserved = false
     // 上一个派发的是否为普通角色点击；只有为真时，才允许下一个普通角色点击提前于时钟链式放行。
     private var lastDispatchWasRole = false
 
     fun update(frame: SequenceFrameInput): SequenceRuntimeCommand {
+        observeRoleUbEvents(frame.triggeredRoles)
         enqueueCrossed(frame.clockSeconds)
         var armedNow = false
         val current = active ?: (crossed.pollFirst() ?: pollChainedRole())?.let { event ->
@@ -69,18 +75,40 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
         } ?: return SequenceRuntimeCommand.None
 
         return when (val trigger = current.event.trigger) {
-            TimedTrigger -> if (frame.schedulingAllowed) dispatch(current) else SequenceRuntimeCommand.None
+            TimedTrigger -> if (canDispatchTimed(current.event, frame)) {
+                dispatch(current)
+            } else {
+                SequenceRuntimeCommand.None
+            }
             is CharacterUbTrigger -> {
-                if (!armedNow && trigger.role != null && trigger.role in frame.triggeredRoles) {
+                if (
+                    !armedNow &&
+                    trigger.role != null &&
+                    (activeCharacterUbObserved || trigger.role in frame.triggeredRoles)
+                ) {
                     current.phase = ActivePhase.TRIGGER_SATISFIED
                 }
-                if (current.phase == ActivePhase.TRIGGER_SATISFIED && frame.schedulingAllowed) {
+                // A matching role UB is itself the synchronization point. Do not
+                // wait for the animation detector to settle before dispatching
+                // the configured follow-up (for example, closing AUTO).
+                if (current.phase == ActivePhase.TRIGGER_SATISFIED && frame.roleChainSchedulingAllowed) {
                     dispatch(current)
                 } else SequenceRuntimeCommand.None
             }
             is BossDelayTrigger -> {
                 val delay = trigger.minimumDelayMs
-                if (frame.schedulingAllowed && delay != null && frame.wallMs - current.armedAtWallMs >= delay) {
+                if (current.bossUbDetectedAtWallMs == null) {
+                    frame.bossUbEvent
+                        ?.takeIf { it.isApplicableTo(current.event.timeSeconds) }
+                        ?.let { current.bossUbDetectedAtWallMs = it.detectedAtWallMs }
+                }
+                val detectedAt = current.bossUbDetectedAtWallMs
+                if (
+                    frame.schedulingAllowed &&
+                    delay != null &&
+                    detectedAt != null &&
+                    frame.wallMs - detectedAt >= delay
+                ) {
                     dispatch(current)
                 } else {
                     SequenceRuntimeCommand.None
@@ -88,6 +116,13 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
             }
             is PauseFrameTrigger -> pauseFrame(current, trigger, frame)
             else -> SequenceRuntimeCommand.None
+        }
+    }
+
+    fun observeRoleUbEvents(triggeredRoles: Set<CharacterRole>) {
+        val trigger = active?.event?.trigger as? CharacterUbTrigger ?: return
+        if (trigger.role != null && trigger.role in triggeredRoles) {
+            activeCharacterUbObserved = true
         }
     }
 
@@ -118,8 +153,13 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
     private fun dispatch(current: ActiveNode): SequenceRuntimeCommand.Dispatch {
         lastDispatchWasRole = current.event.isPlainRoleClick()
         active = null
+        activeCharacterUbObserved = false
         return SequenceRuntimeCommand.Dispatch(current.event)
     }
+
+    private fun canDispatchTimed(event: AxisEvent, frame: SequenceFrameInput): Boolean =
+        frame.schedulingAllowed ||
+            (lastDispatchWasRole && event.isPlainRoleClick() && frame.roleChainSchedulingAllowed)
 
     // 上一个派发是普通角色点击时，把待执行队列的队首角色提前于时钟放行，实现 UB 完成即链式点击下一个。
     private fun pollChainedRole(): AxisEvent? {
@@ -140,8 +180,9 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
         trigger: PauseFrameTrigger,
         frame: SequenceFrameInput
     ): SequenceRuntimeCommand {
-        if (current.phase == ActivePhase.PAUSE_FRAME_CONFIRMED) {
+        if (current.phase == ActivePhase.PAUSE_FRAME_CONFIRMED && frame.schedulingAllowed) {
             active = null
+            activeCharacterUbObserved = false
             lastDispatchWasRole = false
             val role = trigger.role ?: return SequenceRuntimeCommand.None
             return SequenceRuntimeCommand.Dispatch(
@@ -170,4 +211,7 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
             actions = listOf(AxisAction(ActionType.CLICK_ROLE, role = canonicalName)) + remainingActions
         )
     }
+
+    private fun BossUbEvent.isApplicableTo(nodeTimeSeconds: Int): Boolean =
+        heldClockSeconds <= nodeTimeSeconds && nodeTimeSeconds - heldClockSeconds <= 2
 }

@@ -31,6 +31,18 @@ class ControlObservationSafetyGate(
             )
         }
 
+        // A plausible transition is already visible, but the observation filter
+        // needs one more frame before it becomes authoritative. It is not a
+        // recognition failure and must not race the confirmation frame into a
+        // safety pause.
+        if (observation.status == ControlObservationStatus.PENDING_CONFIRMATION) {
+            return ControlObservationSafetyResult(
+                ControlObservationSafetyDecision.HOLD,
+                consecutiveUntrustedFrames,
+                observation.status
+            )
+        }
+
         consecutiveUntrustedFrames++
         val decision = if (consecutiveUntrustedFrames >= maxUntrustedFrames) {
             ControlObservationSafetyDecision.PAUSE

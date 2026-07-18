@@ -18,9 +18,12 @@ object AppPreferences {
     private const val KEY_OVERLAY_MIN_Y = "overlay_min_y"
     private const val KEY_ENERGY_FULL = "energy_full_threshold"
     private const val KEY_ENERGY_DROP = "energy_drop_threshold"
+    private const val KEY_ROLE_SET_FALLBACK_GRACE_MS = "role_set_fallback_grace_ms"
 
     const val DEFAULT_ENERGY_FULL_PERCENT = 97
     const val DEFAULT_ENERGY_DROP_PERCENT = 30
+    const val DEFAULT_ROLE_SET_FALLBACK_GRACE_MS = 0
+    const val MAX_ROLE_SET_FALLBACK_GRACE_MS = 30_000
     private const val KEY_PAUSE_FRAME_MS = "pauseframe_frame_ms"
     private const val KEY_PAUSE_PRESET_A = "pauseframe_preset_a"
     private const val KEY_PAUSE_PRESET_B = "pauseframe_preset_b"
@@ -104,6 +107,15 @@ object AppPreferences {
             .apply()
     }
 
+    /** 倒计时越过角色动作书写时间后，额外等待多久才执行 SET 兜底清理。 */
+    fun roleSetFallbackGraceMs(context: Context): Int =
+        prefs(context).getInt(KEY_ROLE_SET_FALLBACK_GRACE_MS, DEFAULT_ROLE_SET_FALLBACK_GRACE_MS)
+
+    fun setRoleSetFallbackGraceMs(context: Context, value: Int) {
+        require(value in 0..MAX_ROLE_SET_FALLBACK_GRACE_MS)
+        prefs(context).edit().putInt(KEY_ROLE_SET_FALLBACK_GRACE_MS, value).apply()
+    }
+
     /** 卡帧步进：单帧时长(ms) 与两个"释放N帧"预设档。 */
     fun pauseFrameMs(context: Context): Int = prefs(context).getInt(KEY_PAUSE_FRAME_MS, DEFAULT_PAUSE_FRAME_MS)
     fun pauseFramePresetA(context: Context): Int = prefs(context).getInt(KEY_PAUSE_PRESET_A, DEFAULT_PAUSE_PRESET_A)
@@ -156,3 +168,6 @@ fun parseEnergyThresholdPercents(fullText: String, dropText: String): EnergyThre
     if (full - drop < 5) return null
     return EnergyThresholdPercents(full, drop)
 }
+
+fun parseRoleSetFallbackGraceMs(text: String): Int? =
+    text.trim().toIntOrNull()?.takeIf { it in 0..AppPreferences.MAX_ROLE_SET_FALLBACK_GRACE_MS }
