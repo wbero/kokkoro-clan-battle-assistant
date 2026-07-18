@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.Image
 import android.graphics.Rect
 import android.os.SystemClock
+import android.util.Log
 import com.kokkoro.clanbattle.automation.ActionExecutor
 import com.kokkoro.clanbattle.automation.GameCoordinateCalibration
 import com.kokkoro.clanbattle.automation.HorizontalAnchor
@@ -39,6 +40,7 @@ import com.kokkoro.clanbattle.recognition.RecognitionFilter
 import com.kokkoro.clanbattle.recognition.RecognitionResult
 import com.kokkoro.clanbattle.scheduler.GameStateDetector
 import com.kokkoro.clanbattle.scheduler.GameState
+import com.kokkoro.clanbattle.scheduler.BossUbDetector
 import com.kokkoro.clanbattle.pauseframe.PauseFrameDiagnosticEvent
 import com.kokkoro.clanbattle.sequenceaxis.SequenceAxisRuntime
 import com.kokkoro.clanbattle.sequenceaxis.SequenceFrameInput
@@ -218,7 +220,10 @@ class FrameProcessor(
     private val controlObservationFilter = BattleControlObservationFilter()
     private val controlObservationSafetyGate = ControlObservationSafetyGate()
     private val controlStateMachine = BattleControlStateMachine()
-    private val actionCoordinator = VerifiedActionCoordinator(controlStateMachine)
+    private val actionCoordinator = VerifiedActionCoordinator(
+        controlStateMachine,
+        AppPreferences.roleSetFallbackGraceMs(appContext).toLong()
+    )
     private val filter = RecognitionFilter(
         minConfidence = REAL_DEVICE_CLOCK_MIN_CONFIDENCE,
         minAlternativeScore = 0.55,
@@ -232,6 +237,7 @@ class FrameProcessor(
     private var sequenceRuntime: SequenceAxisRuntime? = null
     private var switchCoordinator: SwitchControlCoordinator? = null
     private val gameStateDetector = GameStateDetector()
+    private val bossUbDetector = BossUbDetector()
     private val executor = ActionExecutor(appContext, messageCallback)
     private val sessionGate = BattleSessionGate()
     private var recorder: ClockDebugRecorder? = null
@@ -264,9 +270,13 @@ class FrameProcessor(
         filter.reset()
         energyDetector = null // 置空强制重建，使新战斗读到最新 UB 阈值配置
         gameStateDetector.reset()
+        bossUbDetector.reset()
         controlStateMachine.reset()
         controlObservationFilter.reset()
         controlObservationSafetyGate.reset()
+        actionCoordinator.configureRoleSetFallbackGraceMs(
+            AppPreferences.roleSetFallbackGraceMs(appContext).toLong()
+        )
         actionCoordinator.reset()
         installAxis(document)
         controlStateMachine.setDesired(openingControlTarget)
@@ -374,6 +384,40 @@ class FrameProcessor(
         if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, filtered, energy)
         val usable = filtered.accepted || filtered.reason == "same-time"
         val sessionReady = usable && sessionGate.onAccepted(filtered.timeSeconds)
+        val battleRunning = !sessionGate.isWaiting()
+        val triggeredRoles = energy?.triggeredRoles.orEmpty()
+        val tpBelowThresholdRoles = energy?.characters
+            ?.filterValues { it.blueRatio < AppPreferences.energyDropThreshold(appContext) }
+            ?.keys
+            .orEmpty()
+        val acceptedClockSeconds = filtered.timeSeconds.takeIf { usable }
+        if (battleRunning && axis.type == AxisType.SEQUENCE) {
+            actionCoordinator.observeFrame(
+                triggeredRoles,
+                acceptedClockSeconds,
+                start,
+                tpBelowThresholdRoles
+            )
+            sequenceRuntime?.observeRoleUbEvents(triggeredRoles)
+        }
+        if (menuScore < MENU_TRUST_THRESHOLD) bossUbDetector.suspend()
+        val detectedBossUb = if (sessionReady && menuScore >= MENU_TRUST_THRESHOLD) {
+            bossUbDetector.update(
+                requireNotNull(filtered.timeSeconds),
+                energy?.triggeredRoles.orEmpty(),
+                start
+            )
+        } else {
+            null
+        }
+        detectedBossUb?.let { event ->
+            Log.i(
+                BOSS_UB_LOG_TAG,
+                "detected clock=${event.heldClockSeconds} holdMs=${event.holdDurationMs} " +
+                    "detectedAt=${event.detectedAtWallMs}"
+            )
+        }
+        val bossUbEvent = bossUbDetector.latestEvent(start)
 
         var gameState: GameState? = null
         var scheduleReason: String? = null
@@ -384,53 +428,58 @@ class FrameProcessor(
             dryRun = AppPreferences.dryRun(appContext),
             accessibilityConnected = KokkoroAccessibilityService.instance != null
         )
-        if (sessionReady && executionWarning == null) {
+        if (battleRunning && executionWarning == null) {
             controlStep = updateControls(filteredControls, menuScore, start, image)
             if (axis.type == AxisType.SWITCH) {
-                val controlsTrustworthy = roleTapSafe &&
-                    controlStep.safety == ControlSafetyState.RUNNING
-                val coordinated = requireNotNull(switchCoordinator).update(
-                    SwitchFrameInput(
-                        clockSeconds = filtered.timeSeconds,
-                        triggeredRoles = energy?.triggeredRoles.orEmpty(),
-                        controlsTrustworthy = controlsTrustworthy,
-                        wallMs = start
-                    ),
-                    controlStep
-                )
-                activeNodeId = coordinated.activeNodeId
-                activeNodeId?.let { nodeId ->
-                    if (nodeId != lastPromptNodeId) {
-                        val message = if (nodeId == "opening-1") {
-                            axis.switchOpenings.singleOrNull()?.target?.message
-                        } else {
-                            axis.switchNodes.firstOrNull { it.id == nodeId }?.target?.message
-                        }
-                        message?.takeIf(String::isNotBlank)?.let(messageCallback)
-                        lastPromptNodeId = nodeId
-                    }
-                }
-                controlStep = coordinated.controlStep
-                coordinated.pauseFrame?.let { request ->
-                    if (lastPauseFrameNodeId != request.nodeId) {
-                        lastPauseFrameNodeId = request.nodeId
-                        pauseFrameCallback(request.nodeId, request.role)
-                    }
-                }
-                if (debugEnabled) {
-                    recordSwitchTransition(
-                        currentFrameId,
-                        System.currentTimeMillis(),
-                        filtered.timeSeconds,
-                        energy?.triggeredRoles.orEmpty(),
-                        controlsTrustworthy,
-                        coordinated
+                if (sessionReady) {
+                    val controlsTrustworthy = roleTapSafe &&
+                        controlStep.safety == ControlSafetyState.RUNNING
+                    val coordinated = requireNotNull(switchCoordinator).update(
+                        SwitchFrameInput(
+                            clockSeconds = filtered.timeSeconds,
+                            triggeredRoles = triggeredRoles,
+                            controlsTrustworthy = controlsTrustworthy,
+                            wallMs = start,
+                            bossUbEvent = bossUbEvent
+                        ),
+                        controlStep
                     )
-                }
-                scheduleReason = when {
-                    coordinated.pauseFrame != null -> "pause-frame:${coordinated.pauseFrame.role.name}"
-                    coordinated.activeNodeId != null -> "switch-node:${coordinated.activeNodeId}"
-                    else -> "switch-waiting"
+                    activeNodeId = coordinated.activeNodeId
+                    activeNodeId?.let { nodeId ->
+                        if (nodeId != lastPromptNodeId) {
+                            val message = if (nodeId == "opening-1") {
+                                axis.switchOpenings.singleOrNull()?.target?.message
+                            } else {
+                                axis.switchNodes.firstOrNull { it.id == nodeId }?.target?.message
+                            }
+                            message?.takeIf(String::isNotBlank)?.let(messageCallback)
+                            lastPromptNodeId = nodeId
+                        }
+                    }
+                    controlStep = coordinated.controlStep
+                    coordinated.pauseFrame?.let { request ->
+                        if (lastPauseFrameNodeId != request.nodeId) {
+                            lastPauseFrameNodeId = request.nodeId
+                            pauseFrameCallback(request.nodeId, request.role)
+                        }
+                    }
+                    if (debugEnabled) {
+                        recordSwitchTransition(
+                            currentFrameId,
+                            System.currentTimeMillis(),
+                            filtered.timeSeconds,
+                            triggeredRoles,
+                            controlsTrustworthy,
+                            coordinated
+                        )
+                    }
+                    scheduleReason = when {
+                        coordinated.pauseFrame != null -> "pause-frame:${coordinated.pauseFrame.role.name}"
+                        coordinated.activeNodeId != null -> "switch-node:${coordinated.activeNodeId}"
+                        else -> "switch-waiting"
+                    }
+                } else {
+                    scheduleReason = "switch-clock-gate"
                 }
             } else {
                 if (controlStep.confirmed && !openingControlsConfirmed) {
@@ -438,38 +487,41 @@ class FrameProcessor(
                     controlStateMachine.setDesired(null)
                 }
                 if (openingControlsConfirmed && controlStep.safety == ControlSafetyState.RUNNING) {
-                    gameState = gameStateDetector.update(filtered.timeSeconds, null)
-                    val triggeredRoles = energy?.triggeredRoles.orEmpty()
+                    if (sessionReady) gameState = gameStateDetector.update(filtered.timeSeconds, null)
                     var coordinated = actionCoordinator.update(
                         controlStep,
                         start,
                         triggeredRoles,
-                        filtered.timeSeconds
+                        acceptedClockSeconds,
+                        tpBelowThresholdRoles
                     )
                     sequenceProgress = coordinated
                     executeControlAction(coordinated.newControlAction, image.width, image.height)
                     executor.execute(coordinated.immediateEvents, image.width, image.height, axis.clickIntervalMs)
                     controlStep = coordinated.controlStep
 
-                    if (!coordinated.busy) {
-                        val runtime = requireNotNull(sequenceRuntime)
+                    val runtime = requireNotNull(sequenceRuntime)
+                    if (sessionReady) {
                         val command = runtime.update(
                             SequenceFrameInput(
                                 clockSeconds = filtered.timeSeconds,
                                 triggeredRoles = triggeredRoles,
                                 controlsTrustworthy = roleTapSafe,
                                 wallMs = start,
-                                schedulingAllowed = gameState != GameState.CHARACTER_UB &&
-                                    gameState != GameState.UB_ANIMATION
+                                schedulingAllowed = !coordinated.busy &&
+                                    gameState != GameState.CHARACTER_UB &&
+                                    gameState != GameState.UB_ANIMATION,
+                                bossUbEvent = bossUbEvent,
+                                roleChainSchedulingAllowed = !coordinated.busy
                             )
                         )
                         activeNodeId = runtime.snapshot().activeEvent?.id
                         when (command) {
                             SequenceRuntimeCommand.None -> {
-                                scheduleReason = if (activeNodeId != null) {
-                                    "sequence-trigger:$activeNodeId"
-                                } else {
-                                    "sequence-waiting"
+                                scheduleReason = when {
+                                    coordinated.busy -> "verified-control-action"
+                                    activeNodeId != null -> "sequence-trigger:$activeNodeId"
+                                    else -> "sequence-waiting"
                                 }
                             }
                             is SequenceRuntimeCommand.EnterPauseFrame -> {
@@ -483,13 +535,15 @@ class FrameProcessor(
                             is SequenceRuntimeCommand.Dispatch -> {
                                 actionCoordinator.enqueue(
                                     listOf(command.event),
-                                    command.rolesAlreadySet
+                                    command.rolesAlreadySet,
+                                    start
                                 )
                                 coordinated = actionCoordinator.update(
                                     controlStep,
                                     start,
                                     triggeredRoles,
-                                    filtered.timeSeconds
+                                    filtered.timeSeconds,
+                                    tpBelowThresholdRoles
                                 )
                                 sequenceProgress = coordinated
                                 executeControlAction(coordinated.newControlAction, image.width, image.height)
@@ -508,19 +562,24 @@ class FrameProcessor(
                             }
                         }
                     } else {
-                        scheduleReason = "verified-control-action"
+                        activeNodeId = runtime.snapshot().activeEvent?.id
+                        scheduleReason = if (coordinated.busy) {
+                            "verified-control-action"
+                        } else {
+                            "sequence-clock-gate"
+                        }
                     }
                 } else {
                     scheduleReason = "control-state-gate"
                 }
             }
-        } else if (sessionReady) {
+        } else if (battleRunning) {
             controlStep = trustworthyControls?.let(controlStateMachine::observeOnly) ?: controlStateMachine.snapshot()
             scheduleReason = "execution-blocked"
         }
 
         val elapsed = SystemClock.elapsedRealtime() - start
-        if (debugEnabled && sessionReady) {
+        if (debugEnabled && battleRunning) {
             recorder().recordControls(
                 currentFrameId,
                 System.currentTimeMillis(),
@@ -568,10 +627,10 @@ class FrameProcessor(
                 elapsed,
                 image.width,
                 image.height,
-                controlStep.safety.takeIf { sessionReady },
+                controlStep.safety.takeIf { battleRunning },
                 actionPreview.current,
                 actionPreview.next,
-                executionWarning.takeIf { sessionReady }
+                executionWarning.takeIf { battleRunning }
             )
         )
     }
@@ -939,6 +998,7 @@ class FrameProcessor(
     }
 
     private companion object {
+        const val BOSS_UB_LOG_TAG = "KokkoroBossUb"
         const val REAL_DEVICE_CLOCK_MIN_CONFIDENCE = 0.75
         const val TEMPLATE_THRESHOLD = 0.72
         const val DEBUG_PREFERENCE_POLL_MS = 1_000L

@@ -8,13 +8,15 @@ import com.kokkoro.clanbattle.axis.SwitchAxisOpening
 import com.kokkoro.clanbattle.axis.SwitchControlTarget
 import com.kokkoro.clanbattle.axis.TimedTrigger
 import com.kokkoro.clanbattle.recognition.CharacterRole
+import com.kokkoro.clanbattle.scheduler.BossUbEvent
 import java.util.ArrayDeque
 
 data class SwitchFrameInput(
     val clockSeconds: Int?,
     val triggeredRoles: Set<CharacterRole>,
     val controlsTrustworthy: Boolean,
-    val wallMs: Long
+    val wallMs: Long,
+    val bossUbEvent: BossUbEvent? = null
 )
 
 sealed interface SwitchRuntimeCommand {
@@ -54,7 +56,8 @@ class SwitchAxisRuntime(
     private data class ActiveNode(
         val node: SwitchAxisNode,
         var state: ActiveState = ActiveState.Armed,
-        val armedAtWallMs: Long
+        val armedAtWallMs: Long,
+        var bossUbDetectedAtWallMs: Long? = null
     )
 
     private val remainingNodes = nodes.toMutableList()
@@ -135,7 +138,7 @@ class SwitchAxisRuntime(
             },
             eligibleWallMs = current.armedAtWallMs,
             deadlineWallMs = (trigger as? BossDelayTrigger)?.minimumDelayMs?.let {
-                current.armedAtWallMs + it
+                current.bossUbDetectedAtWallMs?.plus(it)
             }
         )
     }
@@ -180,8 +183,17 @@ class SwitchAxisRuntime(
                 }
             }
             is BossDelayTrigger -> {
+                if (active.bossUbDetectedAtWallMs == null) {
+                    frame.bossUbEvent
+                        ?.takeIf { it.isApplicableTo(active.node.timeSeconds) }
+                        ?.let { active.bossUbDetectedAtWallMs = it.detectedAtWallMs }
+                }
                 val delayMs = trigger.minimumDelayMs
-                if (delayMs != null && frame.wallMs - active.armedAtWallMs >= delayMs) {
+                if (
+                    delayMs != null &&
+                    active.bossUbDetectedAtWallMs != null &&
+                    frame.wallMs - active.bossUbDetectedAtWallMs!! >= delayMs
+                ) {
                     convergeWhenTrustworthy(active, frame)
                 } else {
                     SwitchRuntimeCommand.None
@@ -223,4 +235,7 @@ class SwitchAxisRuntime(
         const val OPENING_NODE_ID = "opening-1"
         val OPENING_WINDOW = 88..90
     }
+
+    private fun BossUbEvent.isApplicableTo(nodeTimeSeconds: Int): Boolean =
+        heldClockSeconds <= nodeTimeSeconds && nodeTimeSeconds - heldClockSeconds <= 2
 }

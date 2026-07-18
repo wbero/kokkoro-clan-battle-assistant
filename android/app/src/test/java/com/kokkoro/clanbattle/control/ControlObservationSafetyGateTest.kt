@@ -13,9 +13,22 @@ class ControlObservationSafetyGateTest {
         val resumed = gate.evaluate(filtered(ControlObservationStatus.TRUSTWORTHY))
 
         assertEquals(ControlObservationSafetyDecision.HOLD, hold.decision)
-        assertEquals(1, hold.consecutiveUntrustedFrames)
+        assertEquals(0, hold.consecutiveUntrustedFrames)
         assertEquals(ControlObservationSafetyDecision.USE, resumed.decision)
         assertEquals(0, resumed.consecutiveUntrustedFrames)
+    }
+
+    @Test
+    fun `pending confirmation does not erase or advance an existing failure streak`() {
+        val gate = ControlObservationSafetyGate(maxUntrustedFrames = 3)
+
+        gate.evaluate(filtered(ControlObservationStatus.RAW_UNTRUSTWORTHY))
+        val pending = gate.evaluate(filtered(ControlObservationStatus.PENDING_CONFIRMATION))
+        val second = gate.evaluate(filtered(ControlObservationStatus.RAW_UNTRUSTWORTHY))
+
+        assertEquals(1, pending.consecutiveUntrustedFrames)
+        assertEquals(ControlObservationSafetyDecision.HOLD, pending.decision)
+        assertEquals(2, second.consecutiveUntrustedFrames)
     }
 
     @Test

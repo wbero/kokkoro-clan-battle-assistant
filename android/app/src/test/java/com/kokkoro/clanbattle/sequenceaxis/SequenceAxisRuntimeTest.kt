@@ -8,6 +8,7 @@ import com.kokkoro.clanbattle.axis.CharacterUbTrigger
 import com.kokkoro.clanbattle.axis.PauseFrameTrigger
 import com.kokkoro.clanbattle.axis.TimedTrigger
 import com.kokkoro.clanbattle.recognition.CharacterRole
+import com.kokkoro.clanbattle.scheduler.BossUbEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -26,6 +27,39 @@ class SequenceAxisRuntimeTest {
             runtime.update(frame(60, triggered = setOf(CharacterRole.ROLE_2)))
         )
         val command = runtime.update(frame(59, triggered = setOf(CharacterRole.ROLE_3)))
+
+        assertEquals(event, (command as SequenceRuntimeCommand.Dispatch).event)
+    }
+
+    @Test fun `character ub trigger survives a clock-gated frame`() {
+        val event = event("role3", 60, CharacterUbTrigger(CharacterRole.ROLE_3, "角色3"))
+        val runtime = SequenceAxisRuntime(listOf(event))
+        runtime.update(frame(60))
+
+        runtime.observeRoleUbEvents(setOf(CharacterRole.ROLE_3))
+        val command = runtime.update(frame(59))
+
+        assertEquals(event, (command as SequenceRuntimeCommand.Dispatch).event)
+    }
+
+    @Test fun `character ub follow-up dispatches during ub animation`() {
+        val event = event(
+            "role5-follow-up",
+            65,
+            CharacterUbTrigger(CharacterRole.ROLE_5, "角色5"),
+            actions = listOf(AxisAction(ActionType.CLICK_AUTO))
+        )
+        val runtime = SequenceAxisRuntime(listOf(event))
+        runtime.update(frame(65))
+
+        val command = runtime.update(
+            frame(
+                65,
+                triggered = setOf(CharacterRole.ROLE_5),
+                schedulingAllowed = false,
+                roleChainSchedulingAllowed = true
+            )
+        )
 
         assertEquals(event, (command as SequenceRuntimeCommand.Dispatch).event)
     }
@@ -86,13 +120,25 @@ class SequenceAxisRuntimeTest {
         assertEquals(second, (runtime.update(frame(58)) as SequenceRuntimeCommand.Dispatch).event)
     }
 
-    @Test fun `boss delay does not dispatch before deadline`() {
+    @Test fun `boss node does not dispatch from time and delay alone`() {
         val boss = event("boss", 30, BossDelayTrigger(1_200, "1.20"))
         val runtime = SequenceAxisRuntime(listOf(boss))
         runtime.update(frame(30, wallMs = 10_000))
 
-        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(29, wallMs = 11_199)))
-        assertTrue(runtime.update(frame(29, wallMs = 11_200)) is SequenceRuntimeCommand.Dispatch)
+        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(29, wallMs = 20_000)))
+    }
+
+    @Test fun `boss delay starts when boss ub is detected`() {
+        val boss = event("boss", 30, BossDelayTrigger(1_200, "1.20"))
+        val runtime = SequenceAxisRuntime(listOf(boss))
+        runtime.update(frame(30, wallMs = 10_000))
+
+        assertEquals(
+            SequenceRuntimeCommand.None,
+            runtime.update(frame(29, wallMs = 15_000, boss = bossEvent(30, 15_000)))
+        )
+        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(29, wallMs = 16_199)))
+        assertTrue(runtime.update(frame(29, wallMs = 16_200)) is SequenceRuntimeCommand.Dispatch)
     }
 
     @Test fun `plain role click chains early after the previous role`() {
@@ -103,6 +149,37 @@ class SequenceAxisRuntimeTest {
         assertEquals(role3, (runtime.update(frame(76)) as SequenceRuntimeCommand.Dispatch).event)
         // clock 74 is still above role2's 69, so without chaining it would not be due yet.
         assertEquals(role2, (runtime.update(frame(74)) as SequenceRuntimeCommand.Dispatch).event)
+    }
+
+    @Test fun `plain role chain continues while previous ub animation is active`() {
+        val role3 = event("role3", 71, TimedTrigger, actions = roleClick("角色3"))
+        val role4 = event("role4", 71, TimedTrigger, actions = roleClick("角色4"))
+        val runtime = SequenceAxisRuntime(listOf(role3, role4))
+
+        assertEquals(role3, (runtime.update(frame(71)) as SequenceRuntimeCommand.Dispatch).event)
+        assertEquals(
+            SequenceRuntimeCommand.None,
+            runtime.update(frame(71, schedulingAllowed = false, roleChainSchedulingAllowed = false))
+        )
+
+        val chained = runtime.update(
+            frame(71, schedulingAllowed = false, roleChainSchedulingAllowed = true)
+        )
+
+        assertEquals(role4, (chained as SequenceRuntimeCommand.Dispatch).event)
+    }
+
+    @Test fun `non-role timed node remains frozen during ub animation`() {
+        val role3 = event("role3", 71, TimedTrigger, actions = roleClick("角色3"))
+        val auto = event("auto", 71, TimedTrigger, actions = listOf(AxisAction(ActionType.CLICK_AUTO)))
+        val runtime = SequenceAxisRuntime(listOf(role3, auto))
+        runtime.update(frame(71))
+
+        val frozen = runtime.update(
+            frame(71, schedulingAllowed = false, roleChainSchedulingAllowed = true)
+        )
+
+        assertEquals(SequenceRuntimeCommand.None, frozen)
     }
 
     @Test fun `first role in a chain still waits for its written time`() {
@@ -157,6 +234,19 @@ class SequenceAxisRuntimeTest {
         wallMs: Long = 0,
         triggered: Set<CharacterRole> = emptySet(),
         trustworthy: Boolean = true,
-        schedulingAllowed: Boolean = true
-    ) = SequenceFrameInput(clock, triggered, trustworthy, wallMs, schedulingAllowed)
+        schedulingAllowed: Boolean = true,
+        boss: BossUbEvent? = null,
+        roleChainSchedulingAllowed: Boolean = schedulingAllowed
+    ) = SequenceFrameInput(
+        clock,
+        triggered,
+        trustworthy,
+        wallMs,
+        schedulingAllowed,
+        boss,
+        roleChainSchedulingAllowed
+    )
+
+    private fun bossEvent(clock: Int, detectedAt: Long) =
+        BossUbEvent(clock, detectedAt, holdDurationMs = 6_000)
 }
