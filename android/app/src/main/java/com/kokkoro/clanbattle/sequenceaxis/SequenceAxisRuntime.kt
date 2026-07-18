@@ -1,6 +1,7 @@
 package com.kokkoro.clanbattle.sequenceaxis
 
 import com.kokkoro.clanbattle.axis.ActionType
+import com.kokkoro.clanbattle.axis.AxisAction
 import com.kokkoro.clanbattle.axis.AxisEvent
 import com.kokkoro.clanbattle.axis.BossDelayTrigger
 import com.kokkoro.clanbattle.axis.CharacterUbTrigger
@@ -20,7 +21,10 @@ data class SequenceFrameInput(
 sealed interface SequenceRuntimeCommand {
     data object None : SequenceRuntimeCommand
 
-    data class Dispatch(val event: AxisEvent) : SequenceRuntimeCommand
+    data class Dispatch(
+        val event: AxisEvent,
+        val rolesAlreadySet: Set<CharacterRole> = emptySet()
+    ) : SequenceRuntimeCommand
 
     data class EnterPauseFrame(
         val nodeId: String,
@@ -139,11 +143,11 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
         if (current.phase == ActivePhase.PAUSE_FRAME_CONFIRMED) {
             active = null
             lastDispatchWasRole = false
-            return if (current.event.actions.isEmpty()) {
-                SequenceRuntimeCommand.None
-            } else {
-                SequenceRuntimeCommand.Dispatch(current.event)
-            }
+            val role = trigger.role ?: return SequenceRuntimeCommand.None
+            return SequenceRuntimeCommand.Dispatch(
+                current.event.withPauseFrameLifecycle(role),
+                rolesAlreadySet = setOf(role)
+            )
         }
         if (
             current.phase == ActivePhase.PAUSE_FRAME_ENTERED ||
@@ -155,5 +159,15 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
         val role = trigger.role ?: return SequenceRuntimeCommand.None
         current.phase = ActivePhase.PAUSE_FRAME_ENTERED
         return SequenceRuntimeCommand.EnterPauseFrame(current.event.id, role)
+    }
+
+    private fun AxisEvent.withPauseFrameLifecycle(role: CharacterRole): AxisEvent {
+        val canonicalName = "角色${role.ordinal + 1}"
+        val remainingActions = actions.filterNot { action ->
+            action.type == ActionType.CLICK_ROLE && action.role == canonicalName
+        }
+        return copy(
+            actions = listOf(AxisAction(ActionType.CLICK_ROLE, role = canonicalName)) + remainingActions
+        )
     }
 }

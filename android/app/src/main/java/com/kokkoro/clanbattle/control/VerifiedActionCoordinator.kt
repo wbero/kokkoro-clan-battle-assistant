@@ -28,6 +28,7 @@ class VerifiedActionCoordinator(
     }
 
     private val queue = ArrayDeque<AxisEvent>()
+    private val alreadySetActionIds = mutableSetOf<String>()
     private var activeControl: AxisEvent? = null
     private var activePhase: ActivePhase? = null
     private var roleAliases: Map<String, CharacterRole> = defaultRoleAliases()
@@ -43,10 +44,20 @@ class VerifiedActionCoordinator(
         }
     }
 
-    fun enqueue(events: List<AxisEvent>) {
+    fun enqueue(
+        events: List<AxisEvent>,
+        rolesAlreadySet: Set<CharacterRole> = emptySet()
+    ) {
         events.forEach { event ->
             event.actions.forEachIndexed { index, action ->
-                queue.addLast(event.copy(id = "${event.id}:$index", actions = listOf(action)))
+                val actionEvent = event.copy(id = "${event.id}:$index", actions = listOf(action))
+                queue.addLast(actionEvent)
+                if (
+                    action.type == ActionType.CLICK_ROLE &&
+                    roleFromName(action.role) in rolesAlreadySet
+                ) {
+                    alreadySetActionIds += actionEvent.id
+                }
             }
         }
     }
@@ -54,7 +65,8 @@ class VerifiedActionCoordinator(
     fun update(
         latest: ControlStep,
         nowMs: Long,
-        triggeredRoles: Set<CharacterRole> = emptySet()
+        triggeredRoles: Set<CharacterRole> = emptySet(),
+        clockSeconds: Int? = null
     ): CoordinatedActionStep {
         if (latest.safety != ControlSafetyState.RUNNING) {
             if (activeControl != null) activePhase = ActivePhase.STARTING
@@ -63,7 +75,7 @@ class VerifiedActionCoordinator(
 
         val active = activeControl
         if (active != null) {
-            return advance(active, latest, nowMs, triggeredRoles, emptyList())
+            return advance(active, latest, nowMs, triggeredRoles, clockSeconds, emptyList())
         }
 
         val immediate = mutableListOf<AxisEvent>()
@@ -75,7 +87,7 @@ class VerifiedActionCoordinator(
             }
             activeControl = next
             activePhase = ActivePhase.STARTING
-            return advance(next, latest, nowMs, triggeredRoles, immediate)
+            return advance(next, latest, nowMs, triggeredRoles, clockSeconds, immediate)
         }
         return result(latest, immediate, busy = false)
     }
@@ -84,6 +96,7 @@ class VerifiedActionCoordinator(
 
     fun reset() {
         queue.clear()
+        alreadySetActionIds.clear()
         activeControl = null
         activePhase = null
     }
@@ -93,9 +106,10 @@ class VerifiedActionCoordinator(
         latest: ControlStep,
         nowMs: Long,
         triggeredRoles: Set<CharacterRole>,
+        clockSeconds: Int?,
         immediate: List<AxisEvent>
     ): CoordinatedActionStep = when (event.actions.single().type) {
-        ActionType.CLICK_ROLE -> advanceRole(event, latest, nowMs, triggeredRoles, immediate)
+        ActionType.CLICK_ROLE -> advanceRole(event, latest, nowMs, triggeredRoles, clockSeconds, immediate)
         else -> advanceGeneric(event, latest, nowMs, immediate)
     }
 
@@ -104,12 +118,24 @@ class VerifiedActionCoordinator(
         latest: ControlStep,
         nowMs: Long,
         triggeredRoles: Set<CharacterRole>,
+        clockSeconds: Int?,
         immediate: List<AxisEvent>
     ): CoordinatedActionStep {
         val action = event.actions.single()
         val role = requireNotNull(roleFromName(action.role)) { "非法角色：${action.role}" }
         return when (activePhase ?: ActivePhase.STARTING) {
             ActivePhase.STARTING -> {
+                if (alreadySetActionIds.remove(event.id)) {
+                    activePhase = ActivePhase.WAITING_ROLE_UB
+                    val ubDetected = role in triggeredRoles
+                    val writtenTimePassed = clockSeconds != null && clockSeconds < event.timeSeconds
+                    if (ubDetected) {
+                        stateMachine.assumeRoleSetOnFromUb(role)
+                        return requestRoleOff(role, nowMs, immediate)
+                    }
+                    if (writtenTimePassed) return requestRoleOff(role, nowMs, immediate)
+                    return result(latest, immediate, busy = true)
+                }
                 val step = stateMachine.requestRoleState(role, VisualToggleState.ON, nowMs)
                 when {
                     step.confirmed -> activePhase = ActivePhase.WAITING_ROLE_UB
@@ -118,24 +144,59 @@ class VerifiedActionCoordinator(
                 result(step, immediate, busy = true, newControlAction = step.action)
             }
             ActivePhase.CONFIRMING_ROLE_ON -> {
-                if (latest.confirmed) activePhase = ActivePhase.WAITING_ROLE_UB
-                result(latest, immediate, busy = true)
+                val ubDetected = role in triggeredRoles
+                val writtenTimePassed = clockSeconds != null && clockSeconds < event.timeSeconds
+                if (latest.confirmed) {
+                    activePhase = ActivePhase.WAITING_ROLE_UB
+                    if (ubDetected || writtenTimePassed) {
+                        requestRoleOff(role, nowMs, immediate)
+                    } else {
+                        result(latest, immediate, busy = true)
+                    }
+                } else if (ubDetected) {
+                    val acknowledged = stateMachine.acknowledgeRoleSetByUb(role)
+                    if (acknowledged.confirmed) {
+                        requestRoleOff(role, nowMs, immediate)
+                    } else {
+                        result(latest, immediate, busy = true)
+                    }
+                } else if (writtenTimePassed) {
+                    val cancelled = stateMachine.cancelPendingRoleSetConfirmation(role)
+                    if (cancelled.confirmed) {
+                        requestRoleOff(role, nowMs, immediate)
+                    } else {
+                        result(latest, immediate, busy = true)
+                    }
+                } else {
+                    result(latest, immediate, busy = true)
+                }
             }
             ActivePhase.WAITING_ROLE_UB -> {
-                if (role !in triggeredRoles) return result(latest, immediate, busy = true)
-                val step = stateMachine.requestRoleState(role, VisualToggleState.OFF, nowMs)
-                if (step.confirmed) {
-                    completeActive(immediate)
-                } else {
-                    if (step.action != ControlAction.None) activePhase = ActivePhase.CONFIRMING_ROLE_OFF
-                    result(step, immediate, busy = true, newControlAction = step.action)
-                }
+                val ubDetected = role in triggeredRoles
+                val writtenTimePassed = clockSeconds != null && clockSeconds < event.timeSeconds
+                if (!ubDetected && !writtenTimePassed) return result(latest, immediate, busy = true)
+                if (ubDetected) stateMachine.assumeRoleSetOnFromUb(role)
+                requestRoleOff(role, nowMs, immediate)
             }
             ActivePhase.CONFIRMING_ROLE_OFF -> {
                 if (latest.confirmed) completeActive(immediate)
                 else result(latest, immediate, busy = true)
             }
             ActivePhase.CONFIRMING_GENERIC -> error("角色动作进入了非法阶段")
+        }
+    }
+
+    private fun requestRoleOff(
+        role: CharacterRole,
+        nowMs: Long,
+        immediate: List<AxisEvent>
+    ): CoordinatedActionStep {
+        val step = stateMachine.requestRoleState(role, VisualToggleState.OFF, nowMs)
+        return if (step.confirmed) {
+            completeActive(immediate)
+        } else {
+            if (step.action != ControlAction.None) activePhase = ActivePhase.CONFIRMING_ROLE_OFF
+            result(step, immediate, busy = true, newControlAction = step.action)
         }
     }
 

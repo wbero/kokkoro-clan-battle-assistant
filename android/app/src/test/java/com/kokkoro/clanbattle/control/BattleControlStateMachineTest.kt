@@ -209,6 +209,73 @@ class BattleControlStateMachineTest {
         assertEquals(true, step.confirmed)
     }
 
+    @Test fun `matching ub acknowledges a role set hidden by the animation`() {
+        val machine = BattleControlStateMachine()
+        val initial = observation(global = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
+        machine.update(initial, 0)
+        machine.requestRoleSet(CharacterRole.ROLE_4, 10)
+
+        val acknowledged = machine.acknowledgeRoleSetByUb(CharacterRole.ROLE_4)
+        val cleanup = machine.requestRoleState(CharacterRole.ROLE_4, VisualToggleState.OFF, 20)
+
+        assertEquals(true, acknowledged.confirmed)
+        assertEquals("role-set-confirmed-by-ub", acknowledged.reason)
+        assertEquals(TapRole(CharacterRole.ROLE_4), cleanup.action)
+    }
+
+    @Test fun `ub evidence forces an off tap when the badge is obscured as off`() {
+        val machine = BattleControlStateMachine()
+        machine.update(observation(roles = all(VisualToggleState.OFF)), 0)
+
+        val assumed = machine.assumeRoleSetOnFromUb(CharacterRole.ROLE_4)
+        val cleanup = machine.requestRoleState(CharacterRole.ROLE_4, VisualToggleState.OFF, 10)
+
+        assertEquals(true, assumed.confirmed)
+        assertEquals(TapRole(CharacterRole.ROLE_4), cleanup.action)
+    }
+
+    @Test fun `pending role set on is not blindly retried after one second`() {
+        val machine = BattleControlStateMachine()
+        val unchanged = observation(global = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
+        machine.update(unchanged, 0)
+        machine.requestRoleSet(CharacterRole.ROLE_4, 10)
+
+        val waiting = machine.update(unchanged, 1_100)
+
+        assertEquals(None, waiting.action)
+        assertEquals(RUNNING, waiting.safety)
+        assertEquals(0, waiting.retryCount)
+    }
+
+    @Test fun `pending role set on does not safety pause during a long ub animation`() {
+        val machine = BattleControlStateMachine()
+        val unchanged = observation(global = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
+        machine.update(unchanged, 0)
+        machine.requestRoleSet(CharacterRole.ROLE_4, 10)
+
+        val waiting = machine.update(unchanged, 20_000)
+
+        assertEquals(None, waiting.action)
+        assertEquals(RUNNING, waiting.safety)
+        assertEquals("waiting-role-set-ub-or-clock", waiting.reason)
+    }
+
+    @Test fun `cancelling role set confirmation retains the latest visual state`() {
+        val machine = BattleControlStateMachine()
+        val initial = observation(global = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
+        machine.update(initial, 0)
+        machine.requestRoleSet(CharacterRole.ROLE_4, 10)
+        val roleOn = initial.copy(roles = initial.roles.toMutableMap().apply {
+            this[CharacterRole.ROLE_4] = toggle(VisualToggleState.ON)
+        })
+        machine.update(roleOn, 20)
+
+        machine.cancelPendingRoleSetConfirmation(CharacterRole.ROLE_4)
+        val cleanup = machine.requestRoleState(CharacterRole.ROLE_4, VisualToggleState.OFF, 30)
+
+        assertEquals(TapRole(CharacterRole.ROLE_4), cleanup.action)
+    }
+
     @Test fun `role set confirmation ignores unrelated role flicker`() {
         val machine = BattleControlStateMachine()
         val initial = observation(global = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))

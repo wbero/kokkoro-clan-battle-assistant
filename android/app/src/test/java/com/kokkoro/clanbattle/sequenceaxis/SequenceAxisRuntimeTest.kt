@@ -30,7 +30,7 @@ class SequenceAxisRuntimeTest {
         assertEquals(event, (command as SequenceRuntimeCommand.Dispatch).event)
     }
 
-    @Test fun `pause frame blocks later nodes until confirmation`() {
+    @Test fun `pause frame starts a preset role lifecycle after confirmation`() {
         val pause = event("pause", 60, PauseFrameTrigger(CharacterRole.ROLE_4, "角色4"), actions = emptyList())
         val later = event("later", 59, TimedTrigger)
         val runtime = SequenceAxisRuntime(listOf(pause, later))
@@ -40,7 +40,9 @@ class SequenceAxisRuntimeTest {
         assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(59)))
 
         runtime.confirmPauseFrame("pause")
-        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(59)))
+        val lifecycle = runtime.update(frame(59)) as SequenceRuntimeCommand.Dispatch
+        assertEquals(roleClick("角色4"), lifecycle.event.actions)
+        assertEquals(setOf(CharacterRole.ROLE_4), lifecycle.rolesAlreadySet)
         assertEquals(later, (runtime.update(frame(59)) as SequenceRuntimeCommand.Dispatch).event)
     }
 
@@ -51,7 +53,28 @@ class SequenceAxisRuntimeTest {
 
         runtime.confirmPauseFrame("pause")
 
-        assertEquals(pause, (runtime.update(frame(60)) as SequenceRuntimeCommand.Dispatch).event)
+        val command = runtime.update(frame(60)) as SequenceRuntimeCommand.Dispatch
+        assertEquals(
+            roleClick("角色4") + pause.actions,
+            command.event.actions
+        )
+        assertEquals(setOf(CharacterRole.ROLE_4), command.rolesAlreadySet)
+    }
+
+    @Test fun `pause frame deduplicates an explicit click of the same role`() {
+        val pause = event(
+            "pause",
+            60,
+            PauseFrameTrigger(CharacterRole.ROLE_4, "角色4"),
+            actions = roleClick("角色4") + roleClick("角色2")
+        )
+        val runtime = SequenceAxisRuntime(listOf(pause))
+        runtime.update(frame(60))
+        runtime.confirmPauseFrame("pause")
+
+        val command = runtime.update(frame(60)) as SequenceRuntimeCommand.Dispatch
+
+        assertEquals(roleClick("角色4") + roleClick("角色2"), command.event.actions)
     }
 
     @Test fun `clock skip preserves source order`() {

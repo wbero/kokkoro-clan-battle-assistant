@@ -443,7 +443,8 @@ class FrameProcessor(
                     var coordinated = actionCoordinator.update(
                         controlStep,
                         start,
-                        triggeredRoles
+                        triggeredRoles,
+                        filtered.timeSeconds
                     )
                     sequenceProgress = coordinated
                     executeControlAction(coordinated.newControlAction, image.width, image.height)
@@ -480,11 +481,15 @@ class FrameProcessor(
                                 scheduleReason = "pause-frame:${command.role.name}"
                             }
                             is SequenceRuntimeCommand.Dispatch -> {
-                                actionCoordinator.enqueue(listOf(command.event))
+                                actionCoordinator.enqueue(
+                                    listOf(command.event),
+                                    command.rolesAlreadySet
+                                )
                                 coordinated = actionCoordinator.update(
                                     controlStep,
                                     start,
-                                    triggeredRoles
+                                    triggeredRoles,
+                                    filtered.timeSeconds
                                 )
                                 sequenceProgress = coordinated
                                 executeControlAction(coordinated.newControlAction, image.width, image.height)

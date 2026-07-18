@@ -67,6 +67,57 @@ class BattleControlStateMachine {
         }
     }
 
+    /**
+     * A matching TP drop proves that a pending role-SET click took effect even when the
+     * breathing badge disappears under the UB animation. Seed the expected ON state so
+     * the coordinator can immediately issue the cleanup OFF click.
+     */
+    fun acknowledgeRoleSetByUb(role: CharacterRole): ControlStep {
+        val pending = pendingAction
+        val target = expected
+        if (
+            pending != ControlAction.TapRole(role) ||
+            target?.roles?.get(role) != VisualToggleState.ON
+        ) {
+            return step(ControlAction.None, "no-pending-role-set")
+        }
+        observed = target
+        clearPending()
+        return step(ControlAction.None, "role-set-confirmed-by-ub", confirmed = true)
+    }
+
+    /** A TP drop proves the role has just used UB. Treat its SET as ON before cleanup so
+     * an animation-obscured OFF observation cannot suppress the required closing tap. */
+    fun assumeRoleSetOnFromUb(role: CharacterRole): ControlStep {
+        if (pendingAction != null) return step(ControlAction.None, "control-action-busy")
+        val current = observed ?: return step(ControlAction.None, "waiting-trustworthy-state")
+        val roles = current.roles.toMutableMap().apply { this[role] = VisualToggleState.ON }
+        observed = current.copy(
+            globalSet = if (roles.values.all { it == VisualToggleState.ON }) {
+                VisualToggleState.ON
+            } else {
+                VisualToggleState.OFF
+            },
+            roles = roles
+        )
+        return step(ControlAction.None, "role-set-assumed-on-from-ub", confirmed = true)
+    }
+
+    /** Stops waiting for an ON badge after the axis time has passed. [observed] keeps the
+     * latest trustworthy visual state, so the caller can turn the role off only when needed. */
+    fun cancelPendingRoleSetConfirmation(role: CharacterRole): ControlStep {
+        val pending = pendingAction
+        val target = expected
+        if (
+            pending != ControlAction.TapRole(role) ||
+            target?.roles?.get(role) != VisualToggleState.ON
+        ) {
+            return step(ControlAction.None, "no-pending-role-set")
+        }
+        clearPending()
+        return step(ControlAction.None, "role-set-confirmation-cancelled", confirmed = true)
+    }
+
     fun update(observation: BattleControlObservation, nowMs: Long): ControlStep {
         if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, pauseReason ?: "safety-paused")
         if (!observation.consistent) {
@@ -79,6 +130,9 @@ class BattleControlStateMachine {
         }
         inconsistentFrames = 0
         val current = observation.toState()
+        // Keep the freshest trustworthy state even while a click is pending. This lets
+        // axis-time fallback inspect the actual SET badge before deciding whether to tap.
+        observed = current
         val pending = pendingAction
         if (pending != null) {
             if (matchesExpected(current, pending, requireNotNull(expected))) {
@@ -86,11 +140,17 @@ class BattleControlStateMachine {
                 if (confirmationFrames < CONFIRM_FRAMES) {
                     return step(ControlAction.None, "confirming-click")
                 }
-                observed = current
                 clearPending()
                 return plan(current, nowMs)
             }
             confirmationFrames = 0
+            val confirmingRoleSetOn = pending is ControlAction.TapRole &&
+                expected?.roles?.get(pending.role) == VisualToggleState.ON
+            // UB animations can hide the ON badge for several seconds. The sequence
+            // coordinator resolves this pending action from TP drop or axis-time progress.
+            if (confirmingRoleSetOn) {
+                return step(ControlAction.None, "waiting-role-set-ub-or-clock")
+            }
             if (nowMs - actionStartedMs >= CONFIRM_TIMEOUT_MS) {
                 if (retryCount < MAX_RETRIES) {
                     retryCount++

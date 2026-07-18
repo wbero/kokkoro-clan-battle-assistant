@@ -36,7 +36,7 @@ class PauseFrameSessionTest {
         assertTrue(log.contains("delay:800"))
     }
 
-    @Test fun `confirm opens the menu, taps the avatar, then dismisses the menu`() {
+    @Test fun `confirm taps the avatar in the existing pause menu then dismisses it`() {
         val log = mutableListOf<String>()
         val diagnostics = mutableListOf<PauseFrameDiagnosticEvent>()
         val scheduler = FakeScheduler(log)
@@ -51,7 +51,6 @@ class PauseFrameSessionTest {
         val accepted = session.confirm { completed = it }
         scheduler.runNext()
         scheduler.runNext()
-        scheduler.runNext()
 
         assertTrue(accepted.accepted)
         assertFalse(accepted.readyForConvergence)
@@ -59,9 +58,10 @@ class PauseFrameSessionTest {
         assertTrue(completed?.readyForConvergence == true)
         assertEquals(1, log.count { it == "menu-tap:ROLE_3" })
         assertEquals(
-            listOf("focus:on", "focus:off", "delay:1000", "back", "delay:300", "menu-tap:ROLE_3", "delay:150", "dismiss"),
+            listOf("focus:on", "focus:off", "delay:1300", "menu-tap:ROLE_3", "delay:150", "dismiss"),
             log
         )
+        assertFalse(log.contains("back"))
         assertTrue(diagnostics.any { it.action == "confirm" && it.result == "requested" })
         assertTrue(diagnostics.any { it.action == "tap-role" && it.result == "success" })
         assertTrue(diagnostics.any { it.action == "dismiss" && it.result == "success" })
@@ -95,7 +95,6 @@ class PauseFrameSessionTest {
         var completed: PauseFrameResult? = null
 
         session.confirm { completed = it }
-        scheduler.runNext()
         scheduler.runNext()
 
         assertEquals(PauseFrameState.FAILED, completed?.state)

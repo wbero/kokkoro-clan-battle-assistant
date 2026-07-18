@@ -17,6 +17,7 @@ class ActionCoordinatesTest {
         assertEquals(ReferencePoint(1828, 690), ActionCoordinates.globalSet)
         assertEquals(ReferencePoint(1828, 845), ActionCoordinates.autoButton)
         assertEquals(ReferencePoint(1805, 50), ActionCoordinates.menu)
+        assertEquals(ReferencePoint(1600, 540), ActionCoordinates.menuOutside)
     }
 
     @Test fun `axis role names map to the same left to right slots`() {

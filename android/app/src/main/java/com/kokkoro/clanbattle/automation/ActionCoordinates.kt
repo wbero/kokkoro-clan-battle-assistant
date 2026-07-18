@@ -25,6 +25,6 @@ object ActionCoordinates {
     fun menuRole(role: CharacterRole): ReferencePoint =
         ReferencePoint(960 + (role.ordinal - 2) * 174, 490)
 
-    // 主菜单左下角“返回”按钮：点击后关闭菜单、应用立即发动并恢复战斗（实机 1920×1080 实测）。
-    val menuReturnButton = ReferencePoint(670, 868)
+    // 对话框右侧空白战斗区域，用于关闭菜单遮罩并恢复战斗。
+    val menuOutside = ReferencePoint(1600, 540)
 }
