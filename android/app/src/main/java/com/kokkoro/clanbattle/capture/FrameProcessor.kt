@@ -247,6 +247,7 @@ class FrameProcessor(
     private var debugEnabled = false
     private var centerAnchorCalibrated = false
     private var rightAnchorCalibrated = false
+    private val calibrationSearchCooldown = java.util.EnumMap<HorizontalAnchor, Int>(HorizontalAnchor::class.java)
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
     private var openingControlsConfirmed = true
     private var lastPauseFrameNodeId: String? = null
@@ -269,6 +270,7 @@ class FrameProcessor(
         GameCoordinateCalibration.reset()
         centerAnchorCalibrated = false
         rightAnchorCalibrated = false
+        calibrationSearchCooldown.clear()
         filter.reset()
         energyDetector = null // 置空强制重建，使新战斗读到最新 UB 阈值配置
         gameStateDetector.reset()
@@ -347,6 +349,7 @@ class FrameProcessor(
             }
         }
 
+        val menuStart = SystemClock.elapsedRealtime()
         val menuScore = matchRegion(
             image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu,
             HorizontalAnchor.RIGHT,
@@ -355,6 +358,7 @@ class FrameProcessor(
         )
         // Calibrate the right anchor from the menu before cropping the clock;
         // otherwise the first battle frame can read a shifted clock once.
+        val clockStart = SystemClock.elapsedRealtime()
         val region = ImageRoiExtractor.scaleReferenceRegion(image.width, image.height)
         val roi = ImageRoiExtractor.extract(image, region)
         val recognition = recognizer.recognize(
@@ -362,8 +366,19 @@ class FrameProcessor(
             minConfidence = REAL_DEVICE_CLOCK_MIN_CONFIDENCE,
             includeDiagnostics = debugEnabled
         )
+        val energyStart = SystemClock.elapsedRealtime()
         val energy = detectEnergy(image)
+        val controlStart = SystemClock.elapsedRealtime()
         val controlDetection = detectControls(image)
+        if (debugEnabled) {
+            val now = SystemClock.elapsedRealtime()
+            android.util.Log.i(
+                RECOGNITION_TIMING_TAG,
+                "menu=${clockStart - menuStart} clock=${energyStart - clockStart} " +
+                    "energy=${controlStart - energyStart} controls=${now - controlStart} " +
+                    "total=${now - start}ms calib(c=$centerAnchorCalibrated r=$rightAnchorCalibrated)"
+            )
+        }
         val filteredControls = controlDetection?.observation?.let(controlObservationFilter::update)
             ?: controlObservationFilter.missing()
         val controls = filteredControls.observation
@@ -770,10 +785,26 @@ class FrameProcessor(
             return FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, scaled), template)
         }
 
+        // Cheap pre-check at the nominal position: when the target is clearly absent
+        // (< presence gate) skip the sliding search on most frames. The score can sit
+        // below the gate on ultrawide devices even with the target visible (nominal
+        // guess far off), so a throttled full search still runs every few frames —
+        // discovery is guaranteed, waiting frames stay cheap.
+        val baseScore = FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, scaled), template)
+        if (baseScore < calibrationThreshold - CALIBRATION_PRESENCE_MARGIN) {
+            val cooldown = calibrationSearchCooldown.getOrDefault(anchor, 0)
+            if (cooldown > 0) {
+                calibrationSearchCooldown[anchor] = cooldown - 1
+                return baseScore
+            }
+            calibrationSearchCooldown[anchor] = CALIBRATION_SEARCH_RETRY_FRAMES
+        }
+
         val radius = if (anchor == HorizontalAnchor.CENTER) CENTER_SEARCH_RADIUS else RIGHT_SEARCH_RADIUS
-        var bestScore = Double.NEGATIVE_INFINITY
+        var bestScore = baseScore
         var bestDelta = 0
         fun consider(delta: Int) {
+            if (delta == 0) return
             val candidate = Rect(scaled).apply { offset(delta, 0) }
             if (candidate.left < 0 || candidate.right > image.width) return
             val score = FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, candidate), template)
@@ -792,12 +823,21 @@ class FrameProcessor(
         if (bestScore >= calibrationThreshold) {
             val previous = GameCoordinateCalibration.horizontalDelta(anchor)
             GameCoordinateCalibration.update(anchor, previous + bestDelta)
-            when (anchor) {
-                HorizontalAnchor.CENTER -> centerAnchorCalibrated = true
-                HorizontalAnchor.RIGHT -> rightAnchorCalibrated = true
-            }
+            markAnchorCalibrated(anchor)
+            Log.i(
+                CALIBRATION_LOG_TAG,
+                "anchor=$anchor committedDelta=${previous + bestDelta} base=${"%.3f".format(Locale.US, baseScore)} " +
+                    "best=${"%.3f".format(Locale.US, bestScore)} bestOffset=$bestDelta size=${image.width}x${image.height}"
+            )
         }
         return bestScore
+    }
+
+    private fun markAnchorCalibrated(anchor: HorizontalAnchor) {
+        when (anchor) {
+            HorizontalAnchor.CENTER -> centerAnchorCalibrated = true
+            HorizontalAnchor.RIGHT -> rightAnchorCalibrated = true
+        }
     }
 
     private fun detectEnergy(image: Image): EnergyDetectionResult? = runCatching {
@@ -1011,6 +1051,8 @@ class FrameProcessor(
 
     private companion object {
         const val BOSS_UB_LOG_TAG = "KokkoroBossUb"
+        const val RECOGNITION_TIMING_TAG = "KokkoroRecogMs"
+        const val CALIBRATION_LOG_TAG = "KokkoroCalib"
         const val REAL_DEVICE_CLOCK_MIN_CONFIDENCE = 0.75
         const val TEMPLATE_THRESHOLD = 0.72
         const val DEBUG_PREFERENCE_POLL_MS = 1_000L
@@ -1018,6 +1060,10 @@ class FrameProcessor(
         const val RIGHT_SEARCH_RADIUS = 120
         const val CALIBRATION_COARSE_STEP = 12
         const val CALIBRATION_MIN_SCORE = 0.55
+        // 校准前的存在性预门槛：当前位置分数低于(阈值-此值)即判定目标不在，跳过滑窗搜索。
+        const val CALIBRATION_PRESENCE_MARGIN = 0.30
+        // 门槛之下仍每隔这些帧强制跑一次全量搜索，保证超宽屏/大偏移设备也能发现并校准。
+        const val CALIBRATION_SEARCH_RETRY_FRAMES = 5
         const val MENU_TRUST_THRESHOLD = 0.70
 
         fun emptyAxis() = AxisDocument(AxisType.SEQUENCE, 100, emptyMap(), emptyList())

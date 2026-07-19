@@ -11,21 +11,30 @@ object ImageRoiExtractor {
         require(region.left >= 0 && region.top >= 0)
         require(region.right <= image.width && region.bottom <= image.height)
         val plane = image.planes.first()
-        val buffer = plane.buffer
-        val pixels = IntArray(region.width() * region.height())
+        // 独立游标的只读视图；按行批量读取代替逐像素 buffer.get()，输出逐位相同。
+        val buffer = plane.buffer.duplicate()
+        val pixelStride = plane.pixelStride
+        val width = region.width()
+        val height = region.height()
+        val pixels = IntArray(width * height)
+        val rowBytes = ByteArray(width * pixelStride)
 
-        repeat(region.height()) { row ->
-            repeat(region.width()) { column ->
-                val offset = (region.top + row) * plane.rowStride + (region.left + column) * plane.pixelStride
-                val red = buffer.get(offset).toInt() and 0xff
-                val green = buffer.get(offset + 1).toInt() and 0xff
-                val blue = buffer.get(offset + 2).toInt() and 0xff
-                val alpha = if (plane.pixelStride >= 4) buffer.get(offset + 3).toInt() and 0xff else 255
-                pixels[row * region.width() + column] =
+        repeat(height) { row ->
+            buffer.position((region.top + row) * plane.rowStride + region.left * pixelStride)
+            buffer.get(rowBytes, 0, rowBytes.size)
+            var source = 0
+            val destinationBase = row * width
+            repeat(width) { column ->
+                val red = rowBytes[source].toInt() and 0xff
+                val green = rowBytes[source + 1].toInt() and 0xff
+                val blue = rowBytes[source + 2].toInt() and 0xff
+                val alpha = if (pixelStride >= 4) rowBytes[source + 3].toInt() and 0xff else 255
+                pixels[destinationBase + column] =
                     (alpha shl 24) or (red shl 16) or (green shl 8) or blue
+                source += pixelStride
             }
         }
-        return PixelImage(region.width(), region.height(), pixels)
+        return PixelImage(width, height, pixels)
     }
 
     fun scaleReferenceRegion(width: Int, height: Int): Rect {

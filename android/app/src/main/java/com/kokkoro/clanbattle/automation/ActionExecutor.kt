@@ -61,11 +61,17 @@ class ActionExecutor(
     private fun tapScaled(referenceX: Int, referenceY: Int, width: Int, height: Int, anchor: HorizontalAnchor) {
         val x = GameCoordinateMapper.mapX(referenceX, width, height, anchor)
         val y = GameCoordinateMapper.mapY(referenceY, width, height)
-        KokkoroAccessibilityService.instance?.tap(x, y)
+        val dispatched = KokkoroAccessibilityService.instance?.tap(x, y) == true
+        android.util.Log.i(
+            TAP_LOG_TAG,
+            "ref=$referenceX,$referenceY anchor=$anchor size=${width}x$height mapped=$x,$y " +
+                "calibDelta=${GameCoordinateCalibration.horizontalDelta(anchor)} dispatched=$dispatched"
+        )
     }
 
     private fun showToast(message: String) {
         Handler(context.mainLooper).post { messagePresenter(message) }
     }
 
+    private companion object { const val TAP_LOG_TAG = "KokkoroTap" }
 }
