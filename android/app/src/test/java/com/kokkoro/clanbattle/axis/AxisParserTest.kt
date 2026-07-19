@@ -50,4 +50,17 @@ class AxisParserTest {
         assertEquals(BossDelayTrigger(1_200, "1.20"), axis.events[2].trigger)
         assertTrue(axis.events[1].actions.single().message == "确认动作帧")
     }
+
+    @Test
+    fun `parses boss ub without delay as immediate trigger`() {
+        val axis = AxisParser.parse(
+            """
+            轴类型=顺序
+            [轴]
+            0:56 | UB后=BOSS | 点击=角色5 | 点击=角色2
+            """.trimIndent()
+        )
+
+        assertEquals(BossDelayTrigger(null, null), axis.events.single().trigger)
+    }
 }

@@ -45,6 +45,24 @@ class ControlObservationSafetyGateTest {
         assertEquals(3, third.consecutiveUntrustedFrames)
     }
 
+    @Test
+    fun `busy verified action holds transient raw frames without pausing`() {
+        val gate = ControlObservationSafetyGate(maxUntrustedFrames = 2)
+
+        val first = gate.evaluate(
+            filtered(ControlObservationStatus.RAW_UNTRUSTWORTHY),
+            holdWhileActionBusy = true
+        )
+        val second = gate.evaluate(
+            filtered(ControlObservationStatus.RAW_UNTRUSTWORTHY),
+            holdWhileActionBusy = true
+        )
+
+        assertEquals(ControlObservationSafetyDecision.HOLD, first.decision)
+        assertEquals(ControlObservationSafetyDecision.HOLD, second.decision)
+        assertEquals(0, second.consecutiveUntrustedFrames)
+    }
+
     private fun filtered(status: ControlObservationStatus): FilteredControlObservation =
         FilteredControlObservation(
             observation = if (status == ControlObservationStatus.TRUSTWORTHY) observation() else null,

@@ -185,12 +185,14 @@ class SwitchAxisRuntime(
             is BossDelayTrigger -> {
                 if (active.bossUbDetectedAtWallMs == null) {
                     frame.bossUbEvent
-                        ?.takeIf { it.isApplicableTo(active.node.timeSeconds) }
+                        ?.takeIf {
+                            it.isApplicableTo(active.node.timeSeconds) &&
+                                (trigger.minimumDelayMs == null || trigger.minimumDelayMs == 0L || !it.early)
+                        }
                         ?.let { active.bossUbDetectedAtWallMs = it.detectedAtWallMs }
                 }
-                val delayMs = trigger.minimumDelayMs
+                val delayMs = trigger.minimumDelayMs ?: 0L
                 if (
-                    delayMs != null &&
                     active.bossUbDetectedAtWallMs != null &&
                     frame.wallMs - active.bossUbDetectedAtWallMs!! >= delayMs
                 ) {
