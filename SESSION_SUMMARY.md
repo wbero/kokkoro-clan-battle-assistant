@@ -350,3 +350,14 @@ $env:KOKKORO_KEYSTORE_PROPERTIES='C:\Users\wbero\Desktop\autopcr-android\keystor
 - `SequenceAxisRuntime` 的卡帧确认派发增加控件可信条件；状态栏仅在开局控制目标首次确认的那一帧显示“开局已确认”，普通 `confirmed=true` 帧不再闪烁该文案。
 - 新增采集闸、卡帧兜底、状态文案和不可信控件派发回归测试。`testDebugUnitTest`：50 个测试套件、285 项测试、0 失败；`assembleDebug` 通过。
 - Debug APK 已于 `2026-07-19 07:57:08` 覆盖安装到 `127.0.0.1:5557`，保留应用数据；设备仍为 `1440×2560 / 640dpi`。
+
+## 2026-07-19：v1.0.2 正式打包
+
+- `feat/ux-sequence-chaining-ub-config` 已快进合并到本地 `master`；独立的 `claude/recognition-performance` 性能分支未合入本次发布。
+- Android 版本已更新为 `versionName 1.0.2`、`versionCode 10002`。
+- 完整 `testDebugUnitTest --rerun-tasks` 通过；正式签名 `clean assembleRelease` 构建成功。
+- 发布包名为 `com.kokkoro.clanbattle`，APK 内版本核验为 `1.0.2 (10002)`，目标 SDK 为 `35`。
+- APK Signature Scheme v2 验证通过；签名证书 SHA-256 为 `7f44dba76bba53152215a581f32699f4675d258d198d2f678e4b12f8ba5982cc`，与 v1.0.1 相同，可覆盖升级并保留应用数据。
+- 发布产物：`dist/Kokkoro-Clan-Battle-Assistant-v1.0.2-signed.apk`，大小 `3680682` 字节。
+- APK SHA-256：`ACB0EE7362A649BA3948C0C06DCBD28D67ED93B181743D560429D63602722F47`。
+- 当前仓库没有配置 Git remote；本地 `master` 可完成发布提交，但无法执行远程 `git push`。
