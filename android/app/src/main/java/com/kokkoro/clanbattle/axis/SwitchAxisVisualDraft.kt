@@ -71,7 +71,7 @@ data class SwitchAxisVisualDraft(
                     timeSeconds = node.timeSeconds,
                     trigger = trigger,
                     triggerRoleIndex = role,
-                    bossDelayMs = (node.trigger as? BossDelayTrigger)?.minimumDelayMs ?: 1_200,
+                    bossDelayMs = (node.trigger as? BossDelayTrigger)?.minimumDelayMs ?: 0,
                     target = target,
                     message = node.target.message.orEmpty()
                 )

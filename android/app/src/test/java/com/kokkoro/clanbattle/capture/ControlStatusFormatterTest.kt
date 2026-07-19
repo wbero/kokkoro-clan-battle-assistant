@@ -52,5 +52,31 @@ class ControlStatusFormatterTest {
         )
     }
 
+    @Test fun `generic confirmed state does not flash opening confirmation`() {
+        val observed = BattleControlState(
+            auto = VisualToggleState.OFF,
+            globalSet = VisualToggleState.OFF,
+            roles = CharacterRole.entries.associateWith { VisualToggleState.OFF }
+        )
+        val step = ControlStep(
+            action = ControlAction.None,
+            reason = "no-control-target",
+            observed = observed,
+            desired = null,
+            expected = null,
+            safety = ControlSafetyState.RUNNING,
+            confirmed = true
+        )
+
+        assertEquals(
+            "目标 AUTO:? 角色:?????\n当前 AUTO:关 全体UB:关 角色:XXXXX",
+            ControlStatusFormatter.format(step)
+        )
+        assertEquals(
+            "目标 AUTO:? 角色:?????\n当前 AUTO:关 全体UB:关 角色:XXXXX  开局已确认",
+            ControlStatusFormatter.format(step, showOpeningConfirmed = true)
+        )
+    }
+
     private fun roles(vararg states: VisualToggleState) = CharacterRole.entries.zip(states.asList()).toMap()
 }

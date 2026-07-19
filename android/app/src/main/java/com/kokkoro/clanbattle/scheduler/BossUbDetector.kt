@@ -6,7 +6,8 @@ import java.util.ArrayDeque
 data class BossUbEvent(
     val heldClockSeconds: Int,
     val detectedAtWallMs: Long,
-    val holdDurationMs: Long
+    val holdDurationMs: Long,
+    val early: Boolean = false
 )
 
 /**
@@ -18,13 +19,15 @@ class BossUbDetector(
     private val holdMarginMs: Long = 700,
     private val fallbackSecondMs: Long = 1_000,
     private val eventRetentionMs: Long = 30_000,
-    private val maxObservationGapMs: Long = 5_000
+    private val maxObservationGapMs: Long = 5_000,
+    private var earlyConfirmationHoldMs: Long = 7_000
 ) {
     private val normalSecondDurations = ArrayDeque<Long>()
     private var clockSeconds: Int? = null
     private var clockStartedAtWallMs: Long? = null
     private var lastObservedAtWallMs: Long? = null
     private var characterUbObserved = false
+    private var earlyEventEmittedForHold = false
     private var latestEvent: BossUbEvent? = null
 
     init {
@@ -32,6 +35,7 @@ class BossUbDetector(
         require(fallbackSecondMs > 0)
         require(eventRetentionMs > 0)
         require(maxObservationGapMs > 0)
+        require(earlyConfirmationHoldMs > 0)
     }
 
     fun update(
@@ -52,10 +56,21 @@ class BossUbDetector(
         }
         lastObservedAtWallMs = nowMs
 
-        if (triggeredRoles.size == 1) characterUbObserved = true
-        if (clockSeconds == previousClock) return null
-
         val durationMs = (nowMs - startedAt).coerceAtLeast(0)
+        if (triggeredRoles.size == 1) characterUbObserved = true
+        if (clockSeconds == previousClock) {
+            if (
+                !earlyEventEmittedForHold &&
+                !characterUbObserved &&
+                durationMs >= earlyConfirmationHoldMs
+            ) {
+                earlyEventEmittedForHold = true
+                return BossUbEvent(previousClock, nowMs, durationMs, early = true)
+                    .also { latestEvent = it }
+            }
+            return null
+        }
+
         val sequentialTick = previousClock - clockSeconds == 1
         val thresholdMs = normalSecondMs() + holdMarginMs
         val detected = if (
@@ -82,12 +97,18 @@ class BossUbDetector(
         nowMs - it.detectedAtWallMs in 0..eventRetentionMs
     }
 
+    fun configureEarlyConfirmationHoldMs(value: Long) {
+        require(value > 0)
+        earlyConfirmationHoldMs = value
+    }
+
     /** Drops the current hold around menus while retaining learned normal cadence. */
     fun suspend() {
         clockSeconds = null
         clockStartedAtWallMs = null
         lastObservedAtWallMs = null
         characterUbObserved = false
+        earlyEventEmittedForHold = false
     }
 
     fun reset() {
@@ -105,6 +126,7 @@ class BossUbDetector(
         clockStartedAtWallMs = nowMs
         lastObservedAtWallMs = nowMs
         characterUbObserved = triggeredRoles.size == 1
+        earlyEventEmittedForHold = false
     }
 
     private fun normalSecondMs(): Long {

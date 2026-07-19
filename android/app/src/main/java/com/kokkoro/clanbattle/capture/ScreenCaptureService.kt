@@ -38,6 +38,7 @@ import com.kokkoro.clanbattle.overlay.resolveOverlayUiState
 import com.kokkoro.clanbattle.pauseframe.AndroidOverlayFocusPort
 import com.kokkoro.clanbattle.pauseframe.PauseFrameScheduler
 import com.kokkoro.clanbattle.pauseframe.PauseFrameSession
+import com.kokkoro.clanbattle.pauseframe.PauseFrameState
 import com.kokkoro.clanbattle.recognition.CharacterRole
 
 class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
@@ -58,6 +59,9 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private var battleLocked = false
     private val captureSessionGate = CaptureSessionGate()
     @Volatile private var pauseFrameRole: CharacterRole? = null
+    // Keep recognition paused until the confirmation menu interaction has fully
+    // completed; the menu covers the TP HUD and can look like a false UB.
+    @Volatile private var pauseFrameProcessingBlocked = false
     @Volatile private var stopRequested = false
     private var latestFrameStatus: FrameStatus? = null
 
@@ -222,7 +226,9 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         reader.setOnImageAvailableListener({ source ->
             val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                if (!captureProcessingAllowed(pauseFrameRole)) return@setOnImageAvailableListener
+                if (!captureProcessingAllowed(pauseFrameRole, pauseFrameProcessingBlocked)) {
+                    return@setOnImageAvailableListener
+                }
                 val now = SystemClock.elapsedRealtimeNanos()
                 if (now - lastProcessedNanos < FRAME_INTERVAL_NANOS) return@setOnImageAvailableListener
                 lastProcessedNanos = now
@@ -297,6 +303,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private fun prepareNewBattle() {
         battleLocked = false
         pauseFrameRole = null
+        pauseFrameProcessingBlocked = false
         mainHandler.post { pauseFrameSession.reset() }
         axisLibrary.unlock()
         val selected = axisLibrary.selectedDocument()
@@ -329,32 +336,46 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private fun requestSafetyMenu() {
         pauseFrameSession.reset()
         pauseFrameRole = null
+        pauseFrameProcessingBlocked = false
         captureHandler.post { frameProcessor?.requestSafetyPause() }
         renderOverlay()
     }
 
     private fun confirmPauseFrame() {
         val accepted = pauseFrameSession.confirm { result ->
-            if (result.readyForConvergence && result.nodeId != null) {
-                pauseFrameRole = null
-                captureHandler.post { frameProcessor?.confirmPauseFrame(result.nodeId) }
-            } else {
-                pauseFrameRole = null
-                captureHandler.post { frameProcessor?.requestSafetyPause("pause-frame-confirm-failed") }
+            // Serialize reopening capture with the runtime transition so no menu
+            // transition image can feed the energy detector first.
+            captureHandler.post {
+                if (result.readyForConvergence && result.nodeId != null) {
+                    frameProcessor?.confirmPauseFrame(result.nodeId)
+                } else {
+                    frameProcessor?.requestSafetyPause("pause-frame-confirm-failed")
+                }
+                pauseFrameProcessingBlocked = false
             }
+            pauseFrameRole = null
             renderOverlay()
         }
-        if (!accepted.accepted) return
+        if (!accepted.accepted) {
+            if (accepted.state == PauseFrameState.FAILED) {
+                pauseFrameRole = null
+                pauseFrameProcessingBlocked = false
+                captureHandler.post { frameProcessor?.requestSafetyPause("pause-frame-confirm-failed") }
+            }
+            return
+        }
         pauseFrameRole = null
         renderOverlay()
     }
 
     private fun onPauseFrameRequested(nodeId: String, role: CharacterRole) {
         mainHandler.post {
+            pauseFrameProcessingBlocked = true
             pauseFrameRole = role
             val entered = pauseFrameSession.enter(nodeId, role)
             if (!entered.accepted) {
                 pauseFrameRole = null
+                pauseFrameProcessingBlocked = false
                 captureHandler.post { frameProcessor?.requestSafetyPause("pause-frame-focus-failed") }
             }
             renderOverlay()
@@ -451,4 +472,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     }
 }
 
-fun captureProcessingAllowed(pauseFrameRole: CharacterRole?): Boolean = pauseFrameRole == null
+fun captureProcessingAllowed(
+    pauseFrameRole: CharacterRole?,
+    pauseFrameProcessingBlocked: Boolean = false
+): Boolean = pauseFrameRole == null && !pauseFrameProcessingBlocked

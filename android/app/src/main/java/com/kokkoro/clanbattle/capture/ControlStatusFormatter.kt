@@ -7,7 +7,7 @@ import com.kokkoro.clanbattle.control.VisualToggleState
 import com.kokkoro.clanbattle.recognition.CharacterRole
 
 object ControlStatusFormatter {
-    fun format(step: ControlStep): String {
+    fun format(step: ControlStep, showOpeningConfirmed: Boolean = false): String {
         if (step.safety == ControlSafetyState.SAFETY_PAUSED) {
             return "游戏已暂停：${step.reason}\n请手动点击菜单外区域恢复"
         }
@@ -26,7 +26,7 @@ object ControlStatusFormatter {
             append(" 全体UB:").append(observed?.globalSet.symbol())
             append(" 角色:").append(observed?.roles.roleSymbols())
             if (step.action != ControlAction.None) append("  调整:").append(step.action.label())
-            else if (step.confirmed) append("  开局已确认")
+            else if (showOpeningConfirmed) append("  开局已确认")
         }
         return "$targetLine\n$currentLine"
     }

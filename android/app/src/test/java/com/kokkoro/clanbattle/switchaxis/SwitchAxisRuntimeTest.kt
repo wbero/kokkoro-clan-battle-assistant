@@ -96,6 +96,31 @@ class SwitchAxisRuntimeTest {
         )
     }
 
+    @Test fun `boss node without delay converges immediately after detection`() {
+        val runtime = runtime(node("boss-immediate", 56, BossDelayTrigger(null, null))).openedAt(90)
+        runtime.update(frame(clock = 56, wallMs = 10_000))
+
+        assertTrue(
+            runtime.update(frame(clock = 55, wallMs = 15_000, boss = bossEvent(56, 15_000)))
+                is SwitchRuntimeCommand.Converge
+        )
+    }
+
+    @Test fun `boss node without delay accepts early hold confirmation`() {
+        val runtime = runtime(node("boss-early", 56, BossDelayTrigger(null, null))).openedAt(90)
+        runtime.update(frame(clock = 56, wallMs = 10_000))
+
+        assertTrue(
+            runtime.update(
+                frame(
+                    clock = 56,
+                    wallMs = 17_000,
+                    boss = BossUbEvent(56, 17_000, 7_000, early = true)
+                )
+            ) is SwitchRuntimeCommand.Converge
+        )
+    }
+
     @Test fun `boss snapshot exposes deadline only after detection`() {
         val runtime = runtime(node("boss", 26, BossDelayTrigger(1_200, "1.20"))).openedAt(90)
 

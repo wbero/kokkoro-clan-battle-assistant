@@ -38,7 +38,7 @@ class SwitchAxisValidatorTest {
         assertTrue(AxisValidator.validate(duplicate).issues.any { it.code == "duplicate-switch-opening" })
     }
 
-    @Test fun `reports missing targets invalid roles boss delay and conflicting triggers`() {
+    @Test fun `reports missing targets invalid roles and conflicting triggers`() {
         val axis = AxisParser.parse(
             """
             轴类型=开关
@@ -56,7 +56,6 @@ class SwitchAxisValidatorTest {
             setOf(
                 "switch-target-required",
                 "invalid-character-ub-role",
-                "boss-delay-required",
                 "conflicting-switch-triggers",
                 "pause-frame-target-required"
             ),

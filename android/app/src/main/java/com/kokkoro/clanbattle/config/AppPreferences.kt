@@ -19,11 +19,15 @@ object AppPreferences {
     private const val KEY_ENERGY_FULL = "energy_full_threshold"
     private const val KEY_ENERGY_DROP = "energy_drop_threshold"
     private const val KEY_ROLE_SET_FALLBACK_GRACE_MS = "role_set_fallback_grace_ms"
+    private const val KEY_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS = "boss_ub_early_confirmation_hold_ms"
 
     const val DEFAULT_ENERGY_FULL_PERCENT = 97
     const val DEFAULT_ENERGY_DROP_PERCENT = 30
     const val DEFAULT_ROLE_SET_FALLBACK_GRACE_MS = 0
     const val MAX_ROLE_SET_FALLBACK_GRACE_MS = 30_000
+    const val DEFAULT_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS = 7_000
+    const val MIN_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS = 3_000
+    const val MAX_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS = 15_000
     private const val KEY_PAUSE_FRAME_MS = "pauseframe_frame_ms"
     private const val KEY_PAUSE_PRESET_A = "pauseframe_preset_a"
     private const val KEY_PAUSE_PRESET_B = "pauseframe_preset_b"
@@ -116,6 +120,18 @@ object AppPreferences {
         prefs(context).edit().putInt(KEY_ROLE_SET_FALLBACK_GRACE_MS, value).apply()
     }
 
+    /** 同一倒计时停留多久后，可为无延迟 BOSS 节点发出提前确认。 */
+    fun bossUbEarlyConfirmationHoldMs(context: Context): Int =
+        prefs(context).getInt(
+            KEY_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS,
+            DEFAULT_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS
+        )
+
+    fun setBossUbEarlyConfirmationHoldMs(context: Context, value: Int) {
+        require(value in MIN_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS..MAX_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS)
+        prefs(context).edit().putInt(KEY_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS, value).apply()
+    }
+
     /** 卡帧步进：单帧时长(ms) 与两个"释放N帧"预设档。 */
     fun pauseFrameMs(context: Context): Int = prefs(context).getInt(KEY_PAUSE_FRAME_MS, DEFAULT_PAUSE_FRAME_MS)
     fun pauseFramePresetA(context: Context): Int = prefs(context).getInt(KEY_PAUSE_PRESET_A, DEFAULT_PAUSE_PRESET_A)
@@ -171,3 +187,9 @@ fun parseEnergyThresholdPercents(fullText: String, dropText: String): EnergyThre
 
 fun parseRoleSetFallbackGraceMs(text: String): Int? =
     text.trim().toIntOrNull()?.takeIf { it in 0..AppPreferences.MAX_ROLE_SET_FALLBACK_GRACE_MS }
+
+fun parseBossUbEarlyConfirmationHoldMs(text: String): Int? =
+    text.trim().toIntOrNull()?.takeIf {
+        it in AppPreferences.MIN_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS..
+            AppPreferences.MAX_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS
+    }

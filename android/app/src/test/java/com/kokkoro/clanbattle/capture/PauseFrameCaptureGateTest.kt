@@ -10,4 +10,9 @@ class PauseFrameCaptureGateTest {
         assertFalse(captureProcessingAllowed(CharacterRole.ROLE_3))
         assertTrue(captureProcessingAllowed(null))
     }
+
+    @Test fun `capture processing remains stopped while confirmation menu is closing`() {
+        assertFalse(captureProcessingAllowed(null, pauseFrameProcessingBlocked = true))
+        assertTrue(captureProcessingAllowed(null, pauseFrameProcessingBlocked = false))
+    }
 }

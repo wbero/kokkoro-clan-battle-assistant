@@ -28,6 +28,44 @@ class BossUbDetectorTest {
         assertEquals(event, detector.latestEvent(8_100))
     }
 
+    @Test fun `long hold emits an early event before the clock ticks`() {
+        val detector = BossUbDetector()
+        detector.update(60, emptySet(), 0)
+
+        assertNull(detector.update(60, emptySet(), 4_000))
+        assertNull(detector.update(60, emptySet(), 6_999))
+        assertEquals(
+            BossUbEvent(60, 7_000, 7_000, early = true),
+            detector.update(60, emptySet(), 7_000)
+        )
+        assertNull(detector.update(60, emptySet(), 7_100))
+        assertEquals(
+            BossUbEvent(60, 7_300, 7_300),
+            detector.update(59, emptySet(), 7_300)
+        )
+    }
+
+    @Test fun `single character tp drop suppresses early detection`() {
+        val detector = BossUbDetector()
+        detector.update(60, emptySet(), 0)
+        detector.update(60, setOf(CharacterRole.ROLE_4), 4_000)
+
+        assertNull(detector.update(60, emptySet(), 7_000))
+        assertNull(detector.update(59, emptySet(), 7_300))
+    }
+
+    @Test fun `configured early threshold is used for the current hold`() {
+        val detector = BossUbDetector()
+        detector.configureEarlyConfirmationHoldMs(5_000)
+        detector.update(60, emptySet(), 0)
+
+        assertNull(detector.update(60, emptySet(), 4_999))
+        assertEquals(
+            BossUbEvent(60, 5_000, 5_000, early = true),
+            detector.update(60, emptySet(), 5_000)
+        )
+    }
+
     @Test fun `single character tp drop suppresses boss detection for that hold`() {
         val detector = BossUbDetector()
         detector.update(60, emptySet(), 0)

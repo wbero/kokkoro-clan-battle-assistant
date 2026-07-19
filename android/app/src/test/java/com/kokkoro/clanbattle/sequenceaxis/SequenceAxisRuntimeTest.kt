@@ -95,6 +95,48 @@ class SequenceAxisRuntimeTest {
         assertEquals(setOf(CharacterRole.ROLE_4), command.rolesAlreadySet)
     }
 
+    @Test fun `confirmed pause frame starts preset role lifecycle during ub animation`() {
+        val pause = event(
+            "pause",
+            59,
+            PauseFrameTrigger(CharacterRole.ROLE_1, "角色1"),
+            actions = emptyList()
+        )
+        val runtime = SequenceAxisRuntime(listOf(pause))
+        runtime.update(frame(59))
+        runtime.confirmPauseFrame("pause")
+
+        val command = runtime.update(
+            frame(
+                59,
+                triggered = setOf(CharacterRole.ROLE_1),
+                schedulingAllowed = false,
+                roleChainSchedulingAllowed = true
+            )
+        ) as SequenceRuntimeCommand.Dispatch
+
+        assertEquals(roleClick("角色1"), command.event.actions)
+        assertEquals(setOf(CharacterRole.ROLE_1), command.rolesAlreadySet)
+    }
+
+    @Test fun `confirmed pause frame waits for trustworthy battle controls`() {
+        val pause = event(
+            "pause",
+            59,
+            PauseFrameTrigger(CharacterRole.ROLE_1, "角色1"),
+            actions = emptyList()
+        )
+        val runtime = SequenceAxisRuntime(listOf(pause))
+        runtime.update(frame(59))
+        runtime.confirmPauseFrame("pause")
+
+        assertEquals(
+            SequenceRuntimeCommand.None,
+            runtime.update(frame(59, trustworthy = false))
+        )
+        assertTrue(runtime.update(frame(59, trustworthy = true)) is SequenceRuntimeCommand.Dispatch)
+    }
+
     @Test fun `pause frame deduplicates an explicit click of the same role`() {
         val pause = event(
             "pause",
@@ -139,6 +181,65 @@ class SequenceAxisRuntimeTest {
         )
         assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(29, wallMs = 16_199)))
         assertTrue(runtime.update(frame(29, wallMs = 16_200)) is SequenceRuntimeCommand.Dispatch)
+    }
+
+    @Test fun `boss delay ignores an early hold event and starts from completed detection`() {
+        val boss = event("boss", 30, BossDelayTrigger(1_200, "1.20"))
+        val runtime = SequenceAxisRuntime(listOf(boss))
+        runtime.update(frame(30, wallMs = 10_000))
+
+        assertEquals(
+            SequenceRuntimeCommand.None,
+            runtime.update(
+                frame(
+                    30,
+                    wallMs = 17_000,
+                    boss = BossUbEvent(30, 17_000, 7_000, early = true)
+                )
+            )
+        )
+        assertEquals(
+            SequenceRuntimeCommand.None,
+            runtime.update(frame(29, wallMs = 17_300, boss = bossEvent(30, 17_300)))
+        )
+        assertTrue(runtime.update(frame(29, wallMs = 18_500)) is SequenceRuntimeCommand.Dispatch)
+    }
+
+    @Test fun `boss node without delay dispatches immediately after detection`() {
+        val boss = event("boss-immediate", 56, BossDelayTrigger(null, null))
+        val runtime = SequenceAxisRuntime(listOf(boss))
+        runtime.update(frame(56, wallMs = 10_000))
+
+        assertTrue(
+            runtime.update(
+                frame(
+                    55,
+                    wallMs = 15_000,
+                    boss = bossEvent(56, 15_000),
+                    schedulingAllowed = false,
+                    roleChainSchedulingAllowed = true
+                )
+            )
+                is SequenceRuntimeCommand.Dispatch
+        )
+    }
+
+    @Test fun `boss node without delay accepts early hold confirmation`() {
+        val boss = event("boss-early", 56, BossDelayTrigger(null, null))
+        val runtime = SequenceAxisRuntime(listOf(boss))
+        runtime.update(frame(56, wallMs = 10_000))
+
+        assertTrue(
+            runtime.update(
+                frame(
+                    56,
+                    wallMs = 17_000,
+                    boss = BossUbEvent(56, 17_000, 7_000, early = true),
+                    schedulingAllowed = false,
+                    roleChainSchedulingAllowed = true
+                )
+            ) is SequenceRuntimeCommand.Dispatch
+        )
     }
 
     @Test fun `plain role click chains early after the previous role`() {

@@ -96,16 +96,23 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
                 } else SequenceRuntimeCommand.None
             }
             is BossDelayTrigger -> {
-                val delay = trigger.minimumDelayMs
+                val delay = trigger.minimumDelayMs ?: 0L
                 if (current.bossUbDetectedAtWallMs == null) {
                     frame.bossUbEvent
-                        ?.takeIf { it.isApplicableTo(current.event.timeSeconds) }
+                        ?.takeIf {
+                            it.isApplicableTo(current.event.timeSeconds) &&
+                                (delay == 0L || !it.early)
+                        }
                         ?.let { current.bossUbDetectedAtWallMs = it.detectedAtWallMs }
                 }
                 val detectedAt = current.bossUbDetectedAtWallMs
+                val dispatchAllowed = if (delay == 0L) {
+                    frame.roleChainSchedulingAllowed
+                } else {
+                    frame.schedulingAllowed
+                }
                 if (
-                    frame.schedulingAllowed &&
-                    delay != null &&
+                    dispatchAllowed &&
                     detectedAt != null &&
                     frame.wallMs - detectedAt >= delay
                 ) {
@@ -180,7 +187,11 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
         trigger: PauseFrameTrigger,
         frame: SequenceFrameInput
     ): SequenceRuntimeCommand {
-        if (current.phase == ActivePhase.PAUSE_FRAME_CONFIRMED && frame.schedulingAllowed) {
+        if (
+            current.phase == ActivePhase.PAUSE_FRAME_CONFIRMED &&
+            frame.roleChainSchedulingAllowed &&
+            frame.controlsTrustworthy
+        ) {
             active = null
             activeCharacterUbObserved = false
             lastDispatchWasRole = false

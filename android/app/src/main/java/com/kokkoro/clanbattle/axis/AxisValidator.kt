@@ -85,16 +85,14 @@ object AxisValidator {
             is CharacterUbTrigger -> if (trigger.role == null) {
                 issues += issue(event.sourceLine, "invalid-character-ub-role", "UB后必须指定角色1到角色5")
             }
-            is BossDelayTrigger -> when {
-                trigger.rawDelay == null -> issues += issue(
-                    event.sourceLine,
-                    "boss-delay-required",
-                    "Boss UB后节点必须声明延迟"
-                )
-                trigger.minimumDelayMs == null || trigger.minimumDelayMs !in 1..30_000 -> issues += issue(
+            is BossDelayTrigger -> if (
+                trigger.rawDelay != null &&
+                (trigger.minimumDelayMs == null || trigger.minimumDelayMs !in 0..30_000)
+            ) {
+                issues += issue(
                     event.sourceLine,
                     "invalid-boss-delay",
-                    "Boss延迟必须大于0且不超过30秒"
+                    "Boss延迟必须为0到30秒"
                 )
             }
             is PauseFrameTrigger -> if (trigger.role == null) {
@@ -138,16 +136,14 @@ object AxisValidator {
                 is CharacterUbTrigger -> if (trigger.role == null) {
                     issues += issue(node.sourceLine, "invalid-character-ub-role", "UB后必须指定角色1到角色5")
                 }
-                is BossDelayTrigger -> when {
-                    trigger.rawDelay == null -> issues += issue(
-                        node.sourceLine,
-                        "boss-delay-required",
-                        "Boss UB后节点必须声明延迟"
-                    )
-                    trigger.minimumDelayMs == null || trigger.minimumDelayMs !in 1..30_000 -> issues += issue(
+                is BossDelayTrigger -> if (
+                    trigger.rawDelay != null &&
+                    (trigger.minimumDelayMs == null || trigger.minimumDelayMs !in 0..30_000)
+                ) {
+                    issues += issue(
                         node.sourceLine,
                         "invalid-boss-delay",
-                        "Boss延迟必须大于0且不超过30秒"
+                        "Boss延迟必须为0到30秒"
                     )
                 }
                 is ConflictingSwitchTrigger -> issues += issue(

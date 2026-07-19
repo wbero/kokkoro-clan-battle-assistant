@@ -237,7 +237,9 @@ class FrameProcessor(
     private var sequenceRuntime: SequenceAxisRuntime? = null
     private var switchCoordinator: SwitchControlCoordinator? = null
     private val gameStateDetector = GameStateDetector()
-    private val bossUbDetector = BossUbDetector()
+    private val bossUbDetector = BossUbDetector(
+        earlyConfirmationHoldMs = AppPreferences.bossUbEarlyConfirmationHoldMs(appContext).toLong()
+    )
     private val executor = ActionExecutor(appContext, messageCallback)
     private val sessionGate = BattleSessionGate()
     private var recorder: ClockDebugRecorder? = null
@@ -270,6 +272,9 @@ class FrameProcessor(
         filter.reset()
         energyDetector = null // 置空强制重建，使新战斗读到最新 UB 阈值配置
         gameStateDetector.reset()
+        bossUbDetector.configureEarlyConfirmationHoldMs(
+            AppPreferences.bossUbEarlyConfirmationHoldMs(appContext).toLong()
+        )
         bossUbDetector.reset()
         controlStateMachine.reset()
         controlObservationFilter.reset()
@@ -414,7 +419,7 @@ class FrameProcessor(
             Log.i(
                 BOSS_UB_LOG_TAG,
                 "detected clock=${event.heldClockSeconds} holdMs=${event.holdDurationMs} " +
-                    "detectedAt=${event.detectedAtWallMs}"
+                    "detectedAt=${event.detectedAtWallMs} early=${event.early}"
             )
         }
         val bossUbEvent = bossUbDetector.latestEvent(start)
@@ -424,6 +429,7 @@ class FrameProcessor(
         var controlStep: ControlStep = controlStateMachine.snapshot()
         var activeNodeId: String? = null
         var sequenceProgress: CoordinatedActionStep? = null
+        var openingConfirmedThisFrame = false
         val executionWarning = actionExecutionBlockReason(
             dryRun = AppPreferences.dryRun(appContext),
             accessibilityConnected = KokkoroAccessibilityService.instance != null
@@ -483,6 +489,7 @@ class FrameProcessor(
                 }
             } else {
                 if (controlStep.confirmed && !openingControlsConfirmed) {
+                    openingConfirmedThisFrame = true
                     openingControlsConfirmed = true
                     controlStateMachine.setDesired(null)
                 }
@@ -526,6 +533,7 @@ class FrameProcessor(
                             }
                             is SequenceRuntimeCommand.EnterPauseFrame -> {
                                 activeNodeId = command.nodeId
+                                actionCoordinator.clearRecentRoleUb(command.role)
                                 if (lastPauseFrameNodeId != command.nodeId) {
                                     lastPauseFrameNodeId = command.nodeId
                                     pauseFrameCallback(command.nodeId, command.role)
@@ -591,7 +599,7 @@ class FrameProcessor(
         }
         val source = filtered.source?.name?.lowercase() ?: "-"
         val energyText = EnergyStatusFormatter.format(energy, gameState, scheduleReason)
-        val controlText = ControlStatusFormatter.format(controlStep)
+        val controlText = ControlStatusFormatter.format(controlStep, openingConfirmedThisFrame)
         val actionPreview = if (axis.type == AxisType.SEQUENCE) {
             val runtime = sequenceRuntime?.snapshot()
             val progress = sequenceProgress
@@ -836,7 +844,11 @@ class FrameProcessor(
                 controlStateMachine.updateRecovery(menuScore, controls, nowMs)
             }
             ControlSafetyState.RUNNING -> {
-                val safety = controlObservationSafetyGate.evaluate(filteredControls)
+                val safety = controlObservationSafetyGate.evaluate(
+                    filteredControls,
+                    holdWhileActionBusy = axis.type == AxisType.SEQUENCE &&
+                        actionCoordinator.isRoleLifecycleBusy()
+                )
                 when (safety.decision) {
                     ControlObservationSafetyDecision.USE ->
                         controlStateMachine.update(requireNotNull(controls), nowMs)

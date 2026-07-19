@@ -21,11 +21,25 @@ class ControlObservationSafetyGate(
         require(maxUntrustedFrames >= 1)
     }
 
-    fun evaluate(observation: FilteredControlObservation): ControlObservationSafetyResult {
+    fun evaluate(
+        observation: FilteredControlObservation,
+        holdWhileActionBusy: Boolean = false
+    ): ControlObservationSafetyResult {
         if (observation.trustworthy && observation.observation != null) {
             consecutiveUntrustedFrames = 0
             return ControlObservationSafetyResult(
                 ControlObservationSafetyDecision.USE,
+                consecutiveUntrustedFrames,
+                observation.status
+            )
+        }
+
+        // SET/UB confirmation can temporarily hide every badge under the UB
+        // animation. The verified coordinator owns that lifecycle, so keep the
+        // frame on hold instead of turning an expected transient into SAFETY_PAUSED.
+        if (holdWhileActionBusy) {
+            return ControlObservationSafetyResult(
+                ControlObservationSafetyDecision.HOLD,
                 consecutiveUntrustedFrames,
                 observation.status
             )

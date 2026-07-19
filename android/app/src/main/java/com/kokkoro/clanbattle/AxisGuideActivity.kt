@@ -43,7 +43,7 @@ class AxisGuideActivity : Activity() {
                     "• SET 必须恰好包含五个“开/关”，从左到右对应角色1～角色5。\n" +
                     "• UB后=角色N、卡帧=角色N 只能使用角色1～角色5，不能使用别名。\n" +
                     "• 同一节点不能同时写 UB后 和 卡帧。\n" +
-                    "• UB后=BOSS 必须同时声明 0～30 秒内的正数延迟。"
+                    "• UB后=BOSS 可省略延迟；省略或填写0表示识别到Boss UB后立即执行。"
             ))
 
             addView(heading("3. 顺序轴标准"))
@@ -64,9 +64,9 @@ class AxisGuideActivity : Activity() {
             addView(body(
                 "定时：1:20 | ...\n" +
                     "角色 UB 后：1:20 | UB后=角色3 | ...\n" +
-                    "Boss UB 后：0:30 | UB后=BOSS | 延迟=1.20 | ...\n" +
+                    "Boss UB 后：0:30 | UB后=BOSS | ...（可选 延迟=1.20）\n" +
                     "手动卡帧：1:10 | 卡帧=角色4 | ...（确认后自动等待角色4 UB并关闭SET）\n\n" +
-                    "UB后=BOSS 到时后先等待实际 Boss UB；程序通过异常停表和角色 TP 变化确认，确认后才开始计算延迟。"
+                    "UB后=BOSS 到时后先等待实际 Boss UB；确认后无延迟则立即执行，声明延迟时再开始计时。"
             ))
 
             addView(heading("6. 常见校验错误"))
@@ -76,7 +76,7 @@ class AxisGuideActivity : Activity() {
                     "• 时间写成 01:30、1:5 或超过 1:30。\n" +
                     "• SET 不是五个值，或 AUTO 不是“开/关”。\n" +
                     "• 开关轴节点没有同时填写完整 SET 与 AUTO。\n" +
-                    "• UB后=BOSS 缺少延迟，或同一节点同时声明 UB后 与卡帧。"
+                    "• UB后=BOSS 延迟格式错误，或同一节点同时声明 UB后 与卡帧。"
             ))
             addView(body("推荐流程：复制标准示例 → 在应用中粘贴或导入 → 点击编辑修改 → 根据校验提示修正。"))
             addView(Button(this@AxisGuideActivity).apply {

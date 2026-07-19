@@ -39,6 +39,7 @@ import com.kokkoro.clanbattle.axis.AndroidAxisRepository
 import com.kokkoro.clanbattle.axis.AxisLibrary
 import com.kokkoro.clanbattle.axis.AxisType
 import com.kokkoro.clanbattle.config.AppPreferences
+import com.kokkoro.clanbattle.config.parseBossUbEarlyConfirmationHoldMs
 import com.kokkoro.clanbattle.config.parseEnergyThresholdPercents
 import com.kokkoro.clanbattle.config.parsePauseFrameSettings
 import com.kokkoro.clanbattle.config.parseRoleSetFallbackGraceMs
@@ -281,6 +282,8 @@ class MainActivity : Activity() {
 
         content.addView(buildEnergyThresholdCard(), matchWidth(top = 12))
 
+        content.addView(buildBossUbEarlyConfirmationCard(), matchWidth(top = 12))
+
         content.addView(buildRoleSetFallbackCard(), matchWidth(top = 12))
 
         content.addView(buildPauseFrameCard(), matchWidth(top = 12))
@@ -420,6 +423,43 @@ class MainActivity : Activity() {
                 } else {
                     AppPreferences.setRoleSetFallbackGraceMs(this@MainActivity, parsed)
                     graceInput.setText(parsed.toString())
+                    Toast.makeText(this@MainActivity, "已保存，下一场战斗生效", Toast.LENGTH_SHORT).show()
+                }
+            })
+        }, matchWidth())
+        return card
+    }
+
+    private fun buildBossUbEarlyConfirmationCard(): LinearLayout {
+        val card = UiKit.card(this)
+        card.addView(caption("BOSS UB 提前确认"))
+        card.addView(TextView(this).apply {
+            text = "倒计时连续停留达到该时长时，提前确认无延迟 BOSS 节点。数值越小越快，但过小会增加误判风险。"
+            textSize = 12f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(0, dp(4), 0, dp(6))
+        })
+        val holdInput = thresholdInput(AppPreferences.bossUbEarlyConfirmationHoldMs(this))
+        card.addView(thresholdRow("停表时长", holdInput, suffix = "ms"))
+        card.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, 0)
+            addView(textButton("恢复默认", UiKit.TEXT_SECONDARY, enabled = true) {
+                holdInput.setText(AppPreferences.DEFAULT_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS.toString())
+            })
+            addView(textButton("保存时长", UiKit.ACCENT_DARK, enabled = true) {
+                val parsed = parseBossUbEarlyConfirmationHoldMs(holdInput.text.toString())
+                if (parsed == null) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "停表时长必须为 ${AppPreferences.MIN_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS}~" +
+                            "${AppPreferences.MAX_BOSS_UB_EARLY_CONFIRMATION_HOLD_MS}ms",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    AppPreferences.setBossUbEarlyConfirmationHoldMs(this@MainActivity, parsed)
+                    holdInput.setText(parsed.toString())
                     Toast.makeText(this@MainActivity, "已保存，下一场战斗生效", Toast.LENGTH_SHORT).show()
                 }
             })
