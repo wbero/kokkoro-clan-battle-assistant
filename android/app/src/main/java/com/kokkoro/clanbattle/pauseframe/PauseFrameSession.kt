@@ -2,13 +2,16 @@ package com.kokkoro.clanbattle.pauseframe
 
 import com.kokkoro.clanbattle.recognition.CharacterRole
 
-enum class PauseFrameState { IDLE, SOFT_PAUSED, ADVANCING, CONFIRMING, FAILED }
+enum class PauseFrameState { IDLE, SOFT_PAUSED, ADVANCING, CONFIRMING, MANUAL_MENU, FAILED }
+
+enum class PauseFrameMode { AXIS, MANUAL }
 
 data class PauseFrameSnapshot(
     val state: PauseFrameState,
     val nodeId: String?,
     val role: CharacterRole?,
-    val blocksScheduler: Boolean
+    val blocksScheduler: Boolean,
+    val mode: PauseFrameMode? = null
 )
 
 data class PauseFrameResult(
@@ -16,14 +19,16 @@ data class PauseFrameResult(
     val state: PauseFrameState,
     val nodeId: String? = null,
     val confirmedRole: CharacterRole? = null,
-    val readyForConvergence: Boolean = false
+    val readyForConvergence: Boolean = false,
+    val mode: PauseFrameMode? = null
 )
 
 data class PauseFrameDiagnosticEvent(
     val nodeId: String?,
     val role: CharacterRole?,
     val action: String,
-    val result: String
+    val result: String,
+    val mode: PauseFrameMode? = null
 )
 
 class PauseFrameSession(
@@ -38,13 +43,24 @@ class PauseFrameSession(
     private var state = PauseFrameState.IDLE
     private var nodeId: String? = null
     private var role: CharacterRole? = null
+    private var mode: PauseFrameMode? = null
     private var generation = 0L
 
-    fun enter(nodeId: String, role: CharacterRole): PauseFrameResult {
+    fun enter(nodeId: String, role: CharacterRole): PauseFrameResult =
+        enter(PauseFrameMode.AXIS, nodeId, role)
+
+    fun enterManual(): PauseFrameResult = enter(PauseFrameMode.MANUAL, null, null)
+
+    private fun enter(
+        mode: PauseFrameMode,
+        nodeId: String?,
+        role: CharacterRole?
+    ): PauseFrameResult {
         if (state != PauseFrameState.IDLE) return result(accepted = false)
         generation++
         this.nodeId = nodeId
         this.role = role
+        this.mode = mode
         diagnose("enter", "requested")
         val acquired = focusPort.acquireFocus()
         diagnose("focus-acquire", if (acquired) "success" else "failed")
@@ -85,7 +101,9 @@ class PauseFrameSession(
     }
 
     fun confirm(onComplete: (PauseFrameResult) -> Unit): PauseFrameResult {
-        if (state != PauseFrameState.SOFT_PAUSED) return result(accepted = false)
+        if (state != PauseFrameState.SOFT_PAUSED || mode != PauseFrameMode.AXIS) {
+            return result(accepted = false)
+        }
         val confirmedNode = nodeId
         val confirmedRole = role ?: return fail()
         diagnose("confirm", "requested")
@@ -114,18 +132,53 @@ class PauseFrameSession(
                 state = PauseFrameState.IDLE
                 nodeId = null
                 role = null
+                mode = null
                 onComplete(
                     PauseFrameResult(
                         accepted = true,
                         state = state,
                         nodeId = confirmedNode,
                         confirmedRole = confirmedRole,
-                        readyForConvergence = true
+                        readyForConvergence = true,
+                        mode = PauseFrameMode.AXIS
                     )
                 )
             }
         }
         return result(accepted = true)
+    }
+
+    /**
+     * Manual confirmation only returns focus to the game, which exposes its pause
+     * menu. The user owns every menu click; recognition remains blocked until
+     * [resumeManual] is explicitly requested.
+     */
+    fun confirmManual(): PauseFrameResult {
+        if (state != PauseFrameState.SOFT_PAUSED || mode != PauseFrameMode.MANUAL) {
+            return result(accepted = false)
+        }
+        diagnose("manual-menu", "requested")
+        val released = focusPort.releaseFocus()
+        diagnose("focus-release", if (released) "success" else "failed")
+        if (!released) return fail()
+        state = PauseFrameState.MANUAL_MENU
+        return result(accepted = true)
+    }
+
+    fun resumeManual(): PauseFrameResult {
+        if (state != PauseFrameState.MANUAL_MENU || mode != PauseFrameMode.MANUAL) {
+            return result(accepted = false)
+        }
+        diagnose("manual-resume", "requested")
+        state = PauseFrameState.IDLE
+        nodeId = null
+        role = null
+        mode = null
+        return PauseFrameResult(
+            accepted = true,
+            state = PauseFrameState.IDLE,
+            mode = PauseFrameMode.MANUAL
+        )
     }
 
     fun reset() {
@@ -138,13 +191,15 @@ class PauseFrameSession(
         state = PauseFrameState.IDLE
         nodeId = null
         role = null
+        mode = null
     }
 
     fun snapshot() = PauseFrameSnapshot(
         state = state,
         nodeId = nodeId,
         role = role,
-        blocksScheduler = state != PauseFrameState.IDLE
+        blocksScheduler = state != PauseFrameState.IDLE,
+        mode = mode
     )
 
     private fun fail(): PauseFrameResult {
@@ -155,10 +210,11 @@ class PauseFrameSession(
     private fun result(accepted: Boolean) = PauseFrameResult(
         accepted = accepted,
         state = state,
-        nodeId = nodeId
+        nodeId = nodeId,
+        mode = mode
     )
 
     private fun diagnose(action: String, result: String) {
-        diagnosticCallback(PauseFrameDiagnosticEvent(nodeId, role, action, result))
+        diagnosticCallback(PauseFrameDiagnosticEvent(nodeId, role, action, result, mode))
     }
 }

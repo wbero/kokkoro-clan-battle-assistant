@@ -2,10 +2,19 @@ package com.kokkoro.clanbattle.capture
 
 class BattleSessionGate(
     private val openingSeconds: IntRange = 88..90,
-    private val requiredBattleHudMatches: Int = 2
+    private val requiredBattleHudMatches: Int = 2,
+    openingGraceSeconds: Int = 0
 ) {
+    private val acceptedOpeningSeconds =
+        (openingSeconds.first - openingGraceSeconds).coerceAtLeast(0)..openingSeconds.last
     private var stage = Stage.RUNNING
     private var battleHudMatches = 0
+
+    init {
+        require(openingSeconds.first <= openingSeconds.last)
+        require(requiredBattleHudMatches >= 1)
+        require(openingGraceSeconds >= 0)
+    }
 
     fun prepare() {
         stage = Stage.WAIT_START
@@ -33,12 +42,12 @@ class BattleSessionGate(
     }
 
     fun shouldEvaluate(timeSeconds: Int?): Boolean =
-        stage == Stage.RUNNING || (stage == Stage.WAIT_CLOCK && timeSeconds in openingSeconds)
+        stage == Stage.RUNNING || (stage == Stage.WAIT_CLOCK && timeSeconds in acceptedOpeningSeconds)
 
     fun onAccepted(timeSeconds: Int?): Boolean {
         if (stage == Stage.RUNNING) return true
         if (stage != Stage.WAIT_CLOCK) return false
-        if (timeSeconds !in openingSeconds) return false
+        if (timeSeconds !in acceptedOpeningSeconds) return false
         stage = Stage.RUNNING
         return true
     }

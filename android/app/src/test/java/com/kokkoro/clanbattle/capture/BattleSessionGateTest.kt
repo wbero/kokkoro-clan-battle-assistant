@@ -52,6 +52,18 @@ class BattleSessionGateTest {
     }
 
     @Test
+    fun `configured opening grace accepts a late first trusted clock`() {
+        val gate = BattleSessionGate(openingGraceSeconds = 5)
+        gate.prepare()
+        gate.onStartMatched()
+        gate.onLoadingMatched()
+
+        assertTrue(gate.shouldEvaluate(85))
+        assertTrue(gate.onAccepted(85))
+        assertFalse(gate.isWaiting())
+    }
+
+    @Test
     fun `first trusted clock inside opening window starts session`() {
         val gate = BattleSessionGate()
         gate.prepare()

@@ -133,6 +133,13 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
         }
     }
 
+    /** Discard TP evidence captured before a user-owned menu interaction. */
+    fun clearRecognitionEvidence() {
+        activeCharacterUbObserved = false
+        active?.bossUbDetectedAtWallMs = null
+        lastDispatchWasRole = false
+    }
+
     fun confirmPauseFrame(nodeId: String) {
         val current = active ?: return
         if (current.event.id == nodeId && current.phase == ActivePhase.PAUSE_FRAME_ENTERED) {

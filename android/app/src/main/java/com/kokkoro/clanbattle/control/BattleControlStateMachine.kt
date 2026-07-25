@@ -7,12 +7,14 @@ class BattleControlStateMachine {
     private var desired: OpeningControlTarget? = null
     private var expected: BattleControlState? = null
     private var pendingAction: ControlAction? = null
+    private var pendingRoleSetWaitsForUb = false
     private var actionStartedMs = 0L
     private var confirmationFrames = 0
     private var retryCount = 0
     private var safety = ControlSafetyState.RUNNING
     private var pauseReason: String? = null
     private var recoveryFrames = 0
+    private var recoveryRequested = false
     private var inconsistentFrames = 0
 
     fun setDesired(target: OpeningControlTarget?) {
@@ -21,6 +23,17 @@ class BattleControlStateMachine {
 
     fun clearDesired() {
         desired = null
+    }
+
+    /**
+     * A manual menu interaction can change SET/AUTO outside the executor. Drop
+     * only the in-flight click expectation while retaining the axis target so the
+     * next trustworthy frame can plan from the user's actual state.
+     */
+    fun abandonPendingAction(reason: String = "manual-pause-resume"): ControlStep {
+        clearPending()
+        observed = null
+        return step(ControlAction.None, reason)
     }
 
     fun requestToggle(action: ControlAction, nowMs: Long): ControlStep {
@@ -41,13 +54,25 @@ class BattleControlStateMachine {
     }
 
     fun requestRoleSet(role: CharacterRole, nowMs: Long): ControlStep {
-        return requestRoleState(role, VisualToggleState.ON, nowMs)
+        return requestRoleState(
+            role = role,
+            wanted = VisualToggleState.ON,
+            nowMs = nowMs,
+            waitForUbConfirmation = true
+        )
     }
 
     fun requestRoleState(
         role: CharacterRole,
         wanted: VisualToggleState,
         nowMs: Long
+    ): ControlStep = requestRoleState(role, wanted, nowMs, waitForUbConfirmation = false)
+
+    private fun requestRoleState(
+        role: CharacterRole,
+        wanted: VisualToggleState,
+        nowMs: Long,
+        waitForUbConfirmation: Boolean
     ): ControlStep {
         require(wanted != VisualToggleState.UNKNOWN) { "角色目标状态不能为未知" }
         if (safety != ControlSafetyState.RUNNING) return step(ControlAction.None, "safety-paused")
@@ -62,7 +87,12 @@ class BattleControlStateMachine {
             )
             else -> {
                 desired = null
-                begin(ControlAction.TapRole(role), current, nowMs)
+                begin(
+                    action = ControlAction.TapRole(role),
+                    current = current,
+                    nowMs = nowMs,
+                    waitForUbConfirmation = waitForUbConfirmation && wanted == VisualToggleState.ON
+                )
             }
         }
     }
@@ -76,6 +106,7 @@ class BattleControlStateMachine {
         val pending = pendingAction
         val target = expected
         if (
+            !pendingRoleSetWaitsForUb ||
             pending != ControlAction.TapRole(role) ||
             target?.roles?.get(role) != VisualToggleState.ON
         ) {
@@ -109,6 +140,7 @@ class BattleControlStateMachine {
         val pending = pendingAction
         val target = expected
         if (
+            !pendingRoleSetWaitsForUb ||
             pending != ControlAction.TapRole(role) ||
             target?.roles?.get(role) != VisualToggleState.ON
         ) {
@@ -148,7 +180,7 @@ class BattleControlStateMachine {
                 expected?.roles?.get(pending.role) == VisualToggleState.ON
             // UB animations can hide the ON badge for several seconds. The sequence
             // coordinator resolves this pending action from TP drop or axis-time progress.
-            if (confirmingRoleSetOn) {
+            if (pendingRoleSetWaitsForUb && confirmingRoleSetOn) {
                 return step(ControlAction.None, "waiting-role-set-ub-or-clock")
             }
             if (nowMs - actionStartedMs >= CONFIRM_TIMEOUT_MS) {
@@ -179,8 +211,17 @@ class BattleControlStateMachine {
     }
 
     fun forceSafety(reason: String) {
-        safety = ControlSafetyState.SAFETY_PAUSING
-        pauseReason = reason
+        // Safety is deliberately latched.  A transient recognition failure must
+        // never be able to bounce the machine back to RUNNING on its own, and a
+        // second failure must not replace the original reason while the menu is
+        // being shown.
+        if (safety == ControlSafetyState.RUNNING) {
+            safety = ControlSafetyState.SAFETY_PAUSING
+            pauseReason = reason
+        } else if (pauseReason == null) {
+            pauseReason = reason
+        }
+        recoveryRequested = false
         recoveryFrames = 0
     }
 
@@ -195,7 +236,27 @@ class BattleControlStateMachine {
             return step(ControlAction.None, "menu-button-untrusted")
         }
         safety = ControlSafetyState.SAFETY_PAUSED
+        recoveryRequested = false
+        recoveryFrames = 0
         return step(ControlAction.TapMenu, pauseReason ?: "safety-pause")
+    }
+
+    /**
+     * Arms a recovery attempt after the user has closed the game menu and
+     * explicitly pressed the overlay's recovery button.  Merely seeing a few
+     * trustworthy frames is not enough to leave a safety pause.
+     */
+    fun requestSafetyRecovery(): Boolean {
+        if (safety != ControlSafetyState.SAFETY_PAUSED) return false
+        recoveryRequested = true
+        recoveryFrames = 0
+        return true
+    }
+
+    /** Clears a partially completed recovery attempt when recognition drops out. */
+    fun holdSafetyPause(): ControlStep {
+        if (safety == ControlSafetyState.SAFETY_PAUSED) recoveryFrames = 0
+        return step(ControlAction.None, pauseReason ?: "waiting-user-recovery")
     }
 
     fun updateRecovery(
@@ -205,6 +266,10 @@ class BattleControlStateMachine {
     ): ControlStep {
         if (safety != ControlSafetyState.SAFETY_PAUSED) {
             return step(ControlAction.None, "not-safety-paused")
+        }
+        if (!recoveryRequested) {
+            recoveryFrames = 0
+            return step(ControlAction.None, pauseReason ?: "waiting-user-recovery")
         }
         if (menuButtonScore < MENU_MIN_SCORE || !observation.isTrustworthy()) {
             recoveryFrames = 0
@@ -217,6 +282,7 @@ class BattleControlStateMachine {
 
         safety = ControlSafetyState.RUNNING
         pauseReason = null
+        recoveryRequested = false
         recoveryFrames = 0
         inconsistentFrames = 0
         clearPending()
@@ -230,11 +296,13 @@ class BattleControlStateMachine {
         desired = null
         expected = null
         pendingAction = null
+        pendingRoleSetWaitsForUb = false
         actionStartedMs = 0L
         confirmationFrames = 0
         retryCount = 0
         safety = ControlSafetyState.RUNNING
         pauseReason = null
+        recoveryRequested = false
         recoveryFrames = 0
         inconsistentFrames = 0
     }
@@ -274,9 +342,15 @@ class BattleControlStateMachine {
         return step(ControlAction.None, "control-target-confirmed", confirmed = true)
     }
 
-    private fun begin(action: ControlAction, current: BattleControlState, nowMs: Long): ControlStep {
+    private fun begin(
+        action: ControlAction,
+        current: BattleControlState,
+        nowMs: Long,
+        waitForUbConfirmation: Boolean = false
+    ): ControlStep {
         pendingAction = action
         expected = expectedAfter(current, action)
+        pendingRoleSetWaitsForUb = waitForUbConfirmation
         actionStartedMs = nowMs
         confirmationFrames = 0
         retryCount = 0
@@ -321,6 +395,7 @@ class BattleControlStateMachine {
     private fun clearPending() {
         expected = null
         pendingAction = null
+        pendingRoleSetWaitsForUb = false
         confirmationFrames = 0
         retryCount = 0
     }

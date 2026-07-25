@@ -120,6 +120,7 @@ class VerifiedActionCoordinatorTest {
         machine.forceSafety("test")
         coordinator.update(machine.snapshot(), 20)
         coordinator.update(machine.updateMenu(0.9), 30)
+        assertTrue(machine.requestSafetyRecovery())
         coordinator.update(machine.updateRecovery(0.9, unchanged, 40), 40)
         val recovered = machine.updateRecovery(0.9, unchanged, 50)
 
@@ -179,7 +180,7 @@ class VerifiedActionCoordinatorTest {
         assertEquals("CONFIRMING_ROLE_OFF", cleanup.phase)
     }
 
-    @Test fun `pause-frame fallback waits until preset set is visually on`() {
+    @Test fun `pause-frame fallback requires a node-local full tp then drop`() {
         val machine = BattleControlStateMachine()
         val coordinator = VerifiedActionCoordinator(machine, roleSetFallbackGraceMs = 0)
         machine.update(observation(), 0)
@@ -223,11 +224,30 @@ class VerifiedActionCoordinatorTest {
             machine.update(role1On, 13),
             13,
             clockSeconds = 59,
+            tpFullRoles = setOf(CharacterRole.ROLE_1)
+        )
+        assertEquals(ControlAction.None, cleanup.newControlAction)
+        coordinator.update(
+            machine.snapshot(),
+            14,
+            clockSeconds = 59,
+            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_1)
+        )
+        coordinator.update(
+            machine.snapshot(),
+            15,
+            clockSeconds = 59,
+            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_1)
+        )
+        val afterDrop = coordinator.update(
+            machine.snapshot(),
+            16,
+            clockSeconds = 59,
             tpBelowThresholdRoles = setOf(CharacterRole.ROLE_1)
         )
 
-        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_1), cleanup.newControlAction)
-        assertEquals("CONFIRMING_ROLE_OFF", cleanup.phase)
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_1), afterDrop.newControlAction)
+        assertEquals("CONFIRMING_ROLE_OFF", afterDrop.phase)
     }
 
     @Test fun `written time passing clears a stale role set when tp trigger is missed`() {
@@ -239,6 +259,12 @@ class VerifiedActionCoordinatorTest {
 
         val waiting = coordinator.update(machine.snapshot(), 10, clockSeconds = 60)
         assertEquals("WAITING_ROLE_UB", waiting.phase)
+        coordinator.update(
+            machine.snapshot(),
+            11,
+            clockSeconds = 60,
+            tpFullRoles = setOf(CharacterRole.ROLE_2)
+        )
 
         val clearing = coordinator.update(
             machine.snapshot(),
@@ -268,6 +294,12 @@ class VerifiedActionCoordinatorTest {
         machine.update(role2On, 0)
         coordinator.enqueue(listOf(event(AxisAction(ActionType.CLICK_ROLE, role = "角色2"))))
         coordinator.update(machine.snapshot(), 10, clockSeconds = 60)
+        coordinator.update(
+            machine.snapshot(),
+            15,
+            clockSeconds = 60,
+            tpFullRoles = setOf(CharacterRole.ROLE_2)
+        )
 
         val started = coordinator.update(
             machine.snapshot(),
@@ -331,7 +363,7 @@ class VerifiedActionCoordinatorTest {
             nowMs = 5
         )
         coordinator.enqueue(
-            listOf(event(AxisAction(ActionType.CLICK_ROLE, role = "角色1"))),
+            listOf(eventAt(69, AxisAction(ActionType.CLICK_ROLE, role = "角色1"))),
             rolesAlreadySet = setOf(CharacterRole.ROLE_1),
             nowMs = 10
         )
@@ -369,7 +401,12 @@ class VerifiedActionCoordinatorTest {
         coordinator.update(machine.snapshot(), 10, clockSeconds = 60)
         val role2On = observation(role2 = VisualToggleState.ON)
         coordinator.update(machine.update(role2On, 20), 20, clockSeconds = 60)
-        coordinator.update(machine.update(role2On, 30), 30, clockSeconds = 60)
+        coordinator.update(
+            machine.update(role2On, 30),
+            30,
+            clockSeconds = 60,
+            tpFullRoles = setOf(CharacterRole.ROLE_2)
+        )
 
         coordinator.observeFrame(
             triggeredRoles = setOf(CharacterRole.ROLE_2),
@@ -420,6 +457,12 @@ class VerifiedActionCoordinatorTest {
         coordinator.update(machine.update(role2Off, 40), 40, clockSeconds = 59)
 
         val role3Waiting = coordinator.update(machine.snapshot(), 50, clockSeconds = 59)
+        coordinator.update(
+            machine.snapshot(),
+            60,
+            clockSeconds = 59,
+            tpFullRoles = setOf(CharacterRole.ROLE_3)
+        )
         coordinator.update(
             machine.snapshot(),
             698,
@@ -524,7 +567,7 @@ class VerifiedActionCoordinatorTest {
             firstVisible,
             1_200,
             clockSeconds = 59,
-            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_2)
+            tpFullRoles = setOf(CharacterRole.ROLE_2)
         )
         assertEquals(ControlAction.None, confirming.newControlAction)
         val confirmed = machine.update(role2On, 1_210)
@@ -540,8 +583,15 @@ class VerifiedActionCoordinatorTest {
             clockSeconds = 59,
             tpBelowThresholdRoles = setOf(CharacterRole.ROLE_2)
         )
-        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_2), cleanup.newControlAction)
-        assertEquals("CONFIRMING_ROLE_OFF", cleanup.phase)
+        assertEquals(ControlAction.None, cleanup.newControlAction)
+        val afterDrop = coordinator.update(
+            confirmed,
+            1_230,
+            clockSeconds = 59,
+            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_2)
+        )
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_2), afterDrop.newControlAction)
+        assertEquals("CONFIRMING_ROLE_OFF", afterDrop.phase)
         assertEquals(ControlSafetyState.RUNNING, confirming.controlStep.safety)
     }
 
@@ -554,7 +604,12 @@ class VerifiedActionCoordinatorTest {
 
         val role2On = observation(role2 = VisualToggleState.ON)
         coordinator.update(machine.update(role2On, 20), 20, clockSeconds = 60)
-        coordinator.update(machine.update(role2On, 30), 30, clockSeconds = 60)
+        coordinator.update(
+            machine.update(role2On, 30),
+            30,
+            clockSeconds = 60,
+            tpFullRoles = setOf(CharacterRole.ROLE_2)
+        )
 
         val low = observation(role2 = VisualToggleState.OFF)
         val firstLow = coordinator.update(
@@ -599,7 +654,12 @@ class VerifiedActionCoordinatorTest {
 
         val role2On = observation(role2 = VisualToggleState.ON)
         coordinator.update(machine.update(role2On, 20), 20, clockSeconds = 60)
-        coordinator.update(machine.update(role2On, 30), 30, clockSeconds = 60)
+        coordinator.update(
+            machine.update(role2On, 30),
+            30,
+            clockSeconds = 60,
+            tpFullRoles = setOf(CharacterRole.ROLE_2)
+        )
 
         val obscuredOff = observation(role2 = VisualToggleState.OFF)
         coordinator.update(
@@ -623,6 +683,40 @@ class VerifiedActionCoordinatorTest {
 
         assertEquals(ControlAction.TapRole(CharacterRole.ROLE_2), cleanup.newControlAction)
         assertEquals("CONFIRMING_ROLE_OFF", cleanup.phase)
+    }
+
+    @Test fun `low tp without a node-local full reading never confirms a requested set`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = VerifiedActionCoordinator(machine, roleSetFallbackGraceMs = 0)
+        machine.update(observation(), 0)
+        coordinator.enqueue(listOf(event(AxisAction(ActionType.CLICK_ROLE, role = "角色2"))))
+
+        val requested = coordinator.update(machine.snapshot(), 10, clockSeconds = 60)
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_2), requested.newControlAction)
+
+        val obscured = observation(role2 = VisualToggleState.OFF)
+        coordinator.update(
+            machine.update(obscured, 20),
+            20,
+            clockSeconds = 59,
+            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_2)
+        )
+        coordinator.update(
+            machine.update(obscured, 21),
+            21,
+            clockSeconds = 59,
+            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_2)
+        )
+        val cleanup = coordinator.update(
+            machine.update(obscured, 22),
+            22,
+            clockSeconds = 59,
+            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_2)
+        )
+
+        assertEquals(ControlAction.None, cleanup.newControlAction)
+        assertEquals("CONFIRMING_ROLE_ON", cleanup.phase)
+        assertTrue(cleanup.busy)
     }
 
     @Test fun `same time role actions stay serialized in source order`() {
@@ -671,7 +765,10 @@ class VerifiedActionCoordinatorTest {
         assertEquals(ControlAction.TapRole(CharacterRole.ROLE_3), step.newControlAction)
     }
 
-    private fun event(vararg actions: AxisAction) = AxisEvent("event", 1, 60, actions.toList())
+    private fun event(vararg actions: AxisAction) = eventAt(60, *actions)
+
+    private fun eventAt(timeSeconds: Int, vararg actions: AxisAction) =
+        AxisEvent("event", 1, timeSeconds, actions.toList())
 
     private fun observation(
         auto: VisualToggleState = VisualToggleState.OFF,

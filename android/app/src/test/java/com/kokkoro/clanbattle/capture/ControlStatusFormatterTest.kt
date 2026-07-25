@@ -47,7 +47,7 @@ class ControlStatusFormatterTest {
         )
 
         assertEquals(
-            "游戏已暂停：控制状态连续不可信\n请手动点击菜单外区域恢复",
+            "游戏已暂停：控制状态连续不可信\n请关闭菜单后点击“恢复识别”",
             ControlStatusFormatter.format(step)
         )
     }

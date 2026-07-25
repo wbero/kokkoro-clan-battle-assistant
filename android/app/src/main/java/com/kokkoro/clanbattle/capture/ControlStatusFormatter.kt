@@ -9,7 +9,7 @@ import com.kokkoro.clanbattle.recognition.CharacterRole
 object ControlStatusFormatter {
     fun format(step: ControlStep, showOpeningConfirmed: Boolean = false): String {
         if (step.safety == ControlSafetyState.SAFETY_PAUSED) {
-            return "游戏已暂停：${step.reason}\n请手动点击菜单外区域恢复"
+            return "游戏已暂停：${step.reason}\n请关闭菜单后点击“恢复识别”"
         }
         if (step.safety == ControlSafetyState.SAFETY_PAUSING) {
             return "正在安全暂停：${step.reason}"

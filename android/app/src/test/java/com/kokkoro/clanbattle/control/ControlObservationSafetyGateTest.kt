@@ -63,6 +63,18 @@ class ControlObservationSafetyGateTest {
         assertEquals(0, second.consecutiveUntrustedFrames)
     }
 
+    @Test
+    fun `busy animation clears a partial failure streak before recognition resumes`() {
+        val gate = ControlObservationSafetyGate(maxUntrustedFrames = 3)
+
+        gate.evaluate(filtered(ControlObservationStatus.RAW_UNTRUSTWORTHY))
+        gate.evaluate(filtered(ControlObservationStatus.RAW_UNTRUSTWORTHY), holdWhileActionBusy = true)
+        val after = gate.evaluate(filtered(ControlObservationStatus.RAW_UNTRUSTWORTHY))
+
+        assertEquals(ControlObservationSafetyDecision.HOLD, after.decision)
+        assertEquals(1, after.consecutiveUntrustedFrames)
+    }
+
     private fun filtered(status: ControlObservationStatus): FilteredControlObservation =
         FilteredControlObservation(
             observation = if (status == ControlObservationStatus.TRUSTWORTHY) observation() else null,

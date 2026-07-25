@@ -125,6 +125,47 @@ class PauseFrameSessionTest {
         assertEquals(PauseFrameState.IDLE, session.snapshot().state)
     }
 
+    @Test fun `manual confirm only hands focus to the game menu`() {
+        val log = mutableListOf<String>()
+        val session = PauseFrameSession(
+            FakePort(log),
+            FakeScheduler(log),
+            perFrameMs = 40,
+            focusTransitionMs = 1_000
+        )
+        val entered = session.enterManual()
+
+        val confirmed = session.confirmManual()
+
+        assertTrue(entered.accepted)
+        assertTrue(confirmed.accepted)
+        assertEquals(PauseFrameMode.MANUAL, session.snapshot().mode)
+        assertEquals(PauseFrameState.MANUAL_MENU, session.snapshot().state)
+        assertEquals(listOf("focus:on", "focus:off"), log)
+        assertFalse(log.contains("back"))
+        assertFalse(log.any { it.startsWith("menu-tap:") })
+        assertFalse(log.contains("dismiss"))
+    }
+
+    @Test fun `manual menu remains blocked until explicit recognition resume`() {
+        val log = mutableListOf<String>()
+        val session = PauseFrameSession(
+            FakePort(log),
+            FakeScheduler(log),
+            perFrameMs = 40,
+            focusTransitionMs = 1_000
+        )
+        session.enterManual()
+        session.confirmManual()
+
+        val resumed = session.resumeManual()
+
+        assertTrue(resumed.accepted)
+        assertEquals(PauseFrameState.IDLE, session.snapshot().state)
+        assertFalse(session.snapshot().blocksScheduler)
+        assertEquals(listOf("focus:on", "focus:off"), log)
+    }
+
     private class FakePort(
         private val log: MutableList<String>,
         private val acquireResult: Boolean = true,

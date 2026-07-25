@@ -183,6 +183,17 @@ class SequenceAxisRuntimeTest {
         assertTrue(runtime.update(frame(29, wallMs = 16_200)) is SequenceRuntimeCommand.Dispatch)
     }
 
+    @Test fun `manual recognition pause discards a pending boss delay`() {
+        val boss = event("boss", 30, BossDelayTrigger(1_200, "1.20"))
+        val runtime = SequenceAxisRuntime(listOf(boss))
+        runtime.update(frame(30, wallMs = 10_000))
+        runtime.update(frame(29, wallMs = 15_000, boss = bossEvent(30, 15_000)))
+
+        runtime.clearRecognitionEvidence()
+
+        assertEquals(SequenceRuntimeCommand.None, runtime.update(frame(29, wallMs = 20_000)))
+    }
+
     @Test fun `boss delay ignores an early hold event and starts from completed detection`() {
         val boss = event("boss", 30, BossDelayTrigger(1_200, "1.20"))
         val runtime = SequenceAxisRuntime(listOf(boss))

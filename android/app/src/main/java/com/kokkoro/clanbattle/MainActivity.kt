@@ -33,6 +33,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.view.WindowManager
+import android.content.res.Configuration
 import com.kokkoro.clanbattle.automation.KokkoroAccessibilityService
 import com.kokkoro.clanbattle.capture.ScreenCaptureService
 import com.kokkoro.clanbattle.axis.AndroidAxisRepository
@@ -83,7 +85,7 @@ class MainActivity : Activity() {
         if (!receiverRegistered) {
             val filter = IntentFilter(ScreenCaptureService.ACTION_STATUS)
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(statusReceiver, filter, RECEIVER_NOT_EXPORTED)
-            else @Suppress("DEPRECATION") registerReceiver(statusReceiver, filter)
+            else @Suppress("DEPRECATION", "UnspecifiedRegisterReceiverFlag") registerReceiver(statusReceiver, filter)
             receiverRegistered = true
         }
     }
@@ -235,7 +237,9 @@ class MainActivity : Activity() {
     }
 
     private fun buildAxisPage(): ScrollView {
-        val content = sectionContent("轴库", "导入、创建和维护战斗轴；战斗运行期间轴库会锁定。")
+        val content = sectionContent("轴库", "导入、创建和维护战斗轴；战斗运行期间轴库会锁定。") {
+            showPage(0)
+        }
         content.addView(secondaryButton("可视化制作开关轴") {
             startActivity(Intent(this, SwitchAxisEditorActivity::class.java))
         }, matchWidth(top = 8))
@@ -261,7 +265,9 @@ class MainActivity : Activity() {
     }
 
     private fun buildSettingsPage(): ScrollView {
-        val content = sectionContent("设置", "配置点击权限、悬浮窗和开发诊断功能。")
+        val content = sectionContent("设置", "配置点击权限、悬浮窗和开发诊断功能。") {
+            showPage(0)
+        }
 
         content.addView(buildPermissionCard(), matchWidth(top = 4))
 
@@ -305,7 +311,7 @@ class MainActivity : Activity() {
         val card = UiKit.card(this)
         card.addView(caption("UB 识别阈值"))
         card.addView(TextView(this).apply {
-            text = "某角色 TP 上一帧≥满 TP 值、这一帧掉到释放后 TP 以下，判定其释放了 UB。两值越接近越灵敏，但越易误判。"
+            text = "某角色曾达到满 TP 后，后续掉到“释放后 TP”以下即判定释放 UB；中间一两帧动画抖动不会丢失。两值越接近越灵敏，但越易误判。"
             textSize = 12f
             setTextColor(UiKit.TEXT_SECONDARY)
             setPadding(0, dp(4), 0, dp(6))
@@ -345,7 +351,7 @@ class MainActivity : Activity() {
         val card = UiKit.card(this)
         card.addView(caption("卡帧步进"))
         card.addView(TextView(this).apply {
-            text = "卡帧时用两个“释放N帧”按钮微调目标帧。单帧时长按游戏帧率估算，两档帧数各自可配。"
+            text = "悬浮窗可随时手动卡帧，并用两个“释放N帧”按钮微调。手动卡帧的“进入菜单”只负责切换到游戏菜单，由你操作；关闭菜单后点击“恢复识别”。轴内卡帧仍按原逻辑执行指定角色。"
             textSize = 12f
             setTextColor(UiKit.TEXT_SECONDARY)
             setPadding(0, dp(4), 0, dp(6))
@@ -595,15 +601,23 @@ class MainActivity : Activity() {
         (statusDot.background as? GradientDrawable)?.setColor(if (success) UiKit.SUCCESS else UiKit.ERROR)
     }
 
-    private fun sectionContent(title: String, subtitle: String) = LinearLayout(this).apply {
+    private fun sectionContent(
+        title: String,
+        subtitle: String,
+        onBack: (() -> Unit)? = null
+    ) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(20), dp(20), dp(20), dp(28))
-        addView(TextView(this@MainActivity).apply {
-            text = title
-            textSize = 24f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(UiKit.TEXT_PRIMARY)
-        })
+        if (onBack == null) {
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 24f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(UiKit.TEXT_PRIMARY)
+            })
+        } else {
+            addView(UiKit.pageHeader(this@MainActivity, title, onBack))
+        }
         addView(TextView(this@MainActivity).apply {
             text = subtitle
             textSize = 14f
@@ -716,8 +730,13 @@ class MainActivity : Activity() {
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             gravity = Gravity.TOP or Gravity.START
-            minLines = 10
-            maxLines = 18
+            // A fixed, bounded editor prevents the dialog's positive button from
+            // being pushed below the viewport on short landscape screens.  The
+            // editor itself remains vertically scrollable for long axes.
+            minLines = 5
+            maxLines = Int.MAX_VALUE
+            isVerticalScrollBarEnabled = true
+            setHorizontallyScrolling(false)
             setText(initialText)
             setSelection(text.length)
         }
@@ -725,12 +744,19 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), 0, dp(20), 0)
             addView(nameInput, matchWidth())
-            addView(textInput, matchWidth())
+            addView(textInput, matchWidth().apply {
+                height = axisEditorTextHeight()
+            })
+        }
+        val editorScroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            addView(fields, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, axisEditorContentHeight())
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle(title)
-            .setMessage("支持顺序轴和开关轴；内容会经过与文件导入相同的解析和校验。")
-            .setView(fields)
+            .setView(editorScroll)
             .setNegativeButton("取消", null)
             .setPositiveButton(actionLabel, null)
             .create()
@@ -746,7 +772,27 @@ class MainActivity : Activity() {
             }
         }
         dialog.show()
+        dialog.window?.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+        )
     }
+
+    /** Height budget for the custom axis editor, leaving AlertDialog buttons visible. */
+    private fun axisEditorContentHeight(): Int {
+        val heightPx = resources.displayMetrics.heightPixels
+        val fraction = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            0.42f
+        } else {
+            0.48f
+        }
+        val safeMax = minOf(dp(420), (heightPx * 0.65f).toInt())
+        val safeMin = minOf(dp(150), safeMax)
+        return (heightPx * fraction).toInt().coerceIn(safeMin, safeMax)
+    }
+
+    private fun axisEditorTextHeight(): Int =
+        (axisEditorContentHeight() - dp(48)).coerceIn(dp(120), dp(360))
 
     private fun importAxis(name: String, text: String) {
         val imported = axisLibrary.import(name, text)

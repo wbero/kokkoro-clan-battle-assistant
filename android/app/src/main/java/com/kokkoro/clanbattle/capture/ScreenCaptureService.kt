@@ -34,6 +34,7 @@ import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.control.ControlSafetyState
 import com.kokkoro.clanbattle.overlay.OverlayActions
 import com.kokkoro.clanbattle.overlay.OverlayController
+import com.kokkoro.clanbattle.overlay.ManualPauseUiMode
 import com.kokkoro.clanbattle.overlay.resolveOverlayUiState
 import com.kokkoro.clanbattle.pauseframe.AndroidOverlayFocusPort
 import com.kokkoro.clanbattle.pauseframe.PauseFrameScheduler
@@ -62,8 +63,9 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     // Keep recognition paused until the confirmation menu interaction has fully
     // completed; the menu covers the TP HUD and can look like a false UB.
     @Volatile private var pauseFrameProcessingBlocked = false
+    @Volatile private var manualPauseMode = ManualPauseUiMode.INACTIVE
     @Volatile private var stopRequested = false
-    private var latestFrameStatus: FrameStatus? = null
+    @Volatile private var latestFrameStatus: FrameStatus? = null
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -88,7 +90,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                 releaseB = { requestRelease(AppPreferences.pauseFramePresetB(this)) },
                 confirm = ::confirmPauseFrame,
                 safetyMenu = ::requestSafetyMenu,
-                reset = { captureHandler.post { prepareNewBattle() } }
+                reset = { captureHandler.post { prepareNewBattle() } },
+                manualPause = ::requestManualPause
             )
         )
         pauseFrameSession = PauseFrameSession(
@@ -304,6 +307,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         battleLocked = false
         pauseFrameRole = null
         pauseFrameProcessingBlocked = false
+        manualPauseMode = ManualPauseUiMode.INACTIVE
         mainHandler.post { pauseFrameSession.reset() }
         axisLibrary.unlock()
         val selected = axisLibrary.selectedDocument()
@@ -334,14 +338,29 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     }
 
     private fun requestSafetyMenu() {
+        // In the latched safety state the same overlay button becomes the
+        // explicit recovery action.  Recognition is never resumed merely
+        // because a trustworthy frame happened to arrive.
+        if (latestFrameStatus?.controlSafety == ControlSafetyState.SAFETY_PAUSED) {
+            captureHandler.post {
+                frameProcessor?.requestSafetyRecovery()
+                mainHandler.post { renderOverlay() }
+            }
+            return
+        }
         pauseFrameSession.reset()
         pauseFrameRole = null
         pauseFrameProcessingBlocked = false
+        manualPauseMode = ManualPauseUiMode.INACTIVE
         captureHandler.post { frameProcessor?.requestSafetyPause() }
         renderOverlay()
     }
 
     private fun confirmPauseFrame() {
+        if (manualPauseMode == ManualPauseUiMode.STEPPING) {
+            confirmManualPause()
+            return
+        }
         val accepted = pauseFrameSession.confirm { result ->
             // Serialize reopening capture with the runtime transition so no menu
             // transition image can feed the energy detector first.
@@ -368,8 +387,72 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         renderOverlay()
     }
 
+    private fun requestManualPause() {
+        when (manualPauseMode) {
+            ManualPauseUiMode.INACTIVE -> enterManualPause()
+            ManualPauseUiMode.MENU_HANDOFF -> resumeManualPause()
+            ManualPauseUiMode.STEPPING -> Unit
+        }
+    }
+
+    private fun enterManualPause() {
+        if (
+            pauseFrameProcessingBlocked ||
+            pauseFrameRole != null ||
+            pauseFrameSession.snapshot().state != PauseFrameState.IDLE
+        ) return
+        pauseFrameProcessingBlocked = true
+        val entered = pauseFrameSession.enterManual()
+        if (!entered.accepted) {
+            pauseFrameSession.reset()
+            pauseFrameProcessingBlocked = false
+            manualPauseMode = ManualPauseUiMode.INACTIVE
+            overlay.showPrompt("手动卡帧失败：无法获取悬浮窗焦点")
+            renderOverlay()
+            return
+        }
+        manualPauseMode = ManualPauseUiMode.STEPPING
+        renderOverlay()
+    }
+
+    private fun confirmManualPause() {
+        val confirmed = pauseFrameSession.confirmManual()
+        if (!confirmed.accepted) {
+            if (confirmed.state == PauseFrameState.FAILED) {
+                pauseFrameSession.reset()
+                manualPauseMode = ManualPauseUiMode.INACTIVE
+                overlay.showPrompt("进入游戏菜单失败，识别已恢复")
+                captureHandler.post {
+                    frameProcessor?.resumeAfterManualPause()
+                    pauseFrameProcessingBlocked = false
+                }
+            }
+            renderOverlay()
+            return
+        }
+        // Keep capture blocked while the menu covers TP/SET. The user performs
+        // every menu click and explicitly resumes recognition afterwards.
+        manualPauseMode = ManualPauseUiMode.MENU_HANDOFF
+        renderOverlay()
+    }
+
+    private fun resumeManualPause() {
+        val resumed = pauseFrameSession.resumeManual()
+        if (!resumed.accepted) return
+        manualPauseMode = ManualPauseUiMode.INACTIVE
+        captureHandler.post {
+            frameProcessor?.resumeAfterManualPause()
+            pauseFrameProcessingBlocked = false
+        }
+        renderOverlay()
+    }
+
     private fun onPauseFrameRequested(nodeId: String, role: CharacterRole) {
         mainHandler.post {
+            if (manualPauseMode != ManualPauseUiMode.INACTIVE) {
+                pauseFrameSession.reset()
+                manualPauseMode = ManualPauseUiMode.INACTIVE
+            }
             pauseFrameProcessingBlocked = true
             pauseFrameRole = role
             val entered = pauseFrameSession.enter(nodeId, role)
@@ -405,15 +488,31 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             .ifBlank { "等待截图状态" }
         val currentAction = idlePreview?.current ?: status?.currentAction ?: "当前：等待触发"
         val nextAction = idlePreview?.next ?: status?.nextAction ?: "下一：无"
+        val displayStatus = when (manualPauseMode) {
+            ManualPauseUiMode.STEPPING -> "手动卡帧中（识别已暂停）"
+            ManualPauseUiMode.MENU_HANDOFF -> "菜单操作中（识别已暂停）"
+            ManualPauseUiMode.INACTIVE -> statusText
+        }
+        val displayCurrent = when (manualPauseMode) {
+            ManualPauseUiMode.STEPPING -> "当前：逐帧观察"
+            ManualPauseUiMode.MENU_HANDOFF -> "当前：请在游戏菜单中手动操作"
+            ManualPauseUiMode.INACTIVE -> currentAction
+        }
+        val displayNext = when (manualPauseMode) {
+            ManualPauseUiMode.STEPPING -> "下一：点击进入菜单后由你操作"
+            ManualPauseUiMode.MENU_HANDOFF -> "下一：关闭菜单后点击恢复识别"
+            ManualPauseUiMode.INACTIVE -> nextAction
+        }
         overlay.render(
             resolveOverlayUiState(
                 axisName = name,
                 battleLocked = battleLocked,
                 pauseFrameRoleLabel = pauseFrameRole?.let { "角色${it.ordinal + 1}" },
+                manualPauseMode = manualPauseMode,
                 safetyPaused = safety == ControlSafetyState.SAFETY_PAUSED,
-                statusText = statusText,
-                currentAction = currentAction,
-                nextAction = nextAction,
+                statusText = displayStatus,
+                currentAction = displayCurrent,
+                nextAction = displayNext,
                 presetA = AppPreferences.pauseFramePresetA(this),
                 presetB = AppPreferences.pauseFramePresetB(this)
             )

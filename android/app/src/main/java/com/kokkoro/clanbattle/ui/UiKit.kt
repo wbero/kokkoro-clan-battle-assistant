@@ -8,6 +8,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.StateListDrawable
 import android.view.Gravity
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -91,6 +92,41 @@ object UiKit {
             maxOf(1, dp(context, 1))
         )
     }
+
+    /**
+     * A small, native-looking page header for activities/pages that are not the
+     * application's root screen.  The project intentionally does not use an
+     * ActionBar, so every secondary page needs an explicit, discoverable back
+     * affordance (especially in landscape where the system navigation bar may
+     * be hidden).
+     */
+    fun pageHeader(context: Context, title: String, onBack: () -> Unit): LinearLayout =
+        LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(Button(context).apply {
+                text = "←"
+                contentDescription = "返回"
+                isAllCaps = false
+                textSize = 20f
+                stateListAnimator = null
+                minWidth = dp(context, 44)
+                minimumWidth = dp(context, 44)
+                minHeight = dp(context, 44)
+                minimumHeight = dp(context, 44)
+                setPadding(0, 0, 0, 0)
+                setTextColor(ACCENT_DARK)
+                background = rippleOver(context, Color.TRANSPARENT, null)
+                setOnClickListener { onBack() }
+            }, LinearLayout.LayoutParams(dp(context, 48), dp(context, 48)))
+            addView(TextView(context).apply {
+                this.text = title
+                textSize = 24f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(TEXT_PRIMARY)
+                setPadding(dp(context, 4), 0, 0, 0)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
 
     private fun rippleOver(context: Context, fillColor: Int, strokeColor: Int?): RippleDrawable {
         fun rounded(color: Int, stroke: Int?) = GradientDrawable().apply {
