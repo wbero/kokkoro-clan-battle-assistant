@@ -21,6 +21,7 @@ class OverlayUiStateTest {
         assertTrue(state.selectAxis.enabled)
         assertFalse(state.releaseA.enabled)
         assertFalse(state.confirm.enabled)
+        assertTrue(state.manualPause.enabled)
         assertTrue(state.reset.enabled)
         assertEquals(OverlayPanelColor.GRAY, state.panelColor)
     }
@@ -43,6 +44,8 @@ class OverlayUiStateTest {
         assertEquals("当前：1:12 角色5 UB后 → AUTO开 SET:XXXXX", state.currentAction)
         assertEquals("下一：0:26 BOSS UB后+1.20s → AUTO开 SET:XOXXO", state.nextAction)
         assertEquals(OverlayPanelColor.GREEN, state.panelColor)
+        assertEquals("手动卡帧", state.manualPause.label)
+        assertTrue(state.manualPause.enabled)
     }
 
     @Test fun `missing accessibility blocks real execution with visible reason`() {
@@ -167,13 +170,45 @@ class OverlayUiStateTest {
         assertEquals(OverlayPanelColor.AMBER, state.panelColor)
     }
 
-    @Test fun `safety paused disables actions until manual recovery or reset`() {
+    @Test fun `manual pause exposes stepping controls and menu handoff`() {
+        val stepping = resolveOverlayUiState(
+            axisName = "E5刀1",
+            battleLocked = true,
+            pauseFrameRoleLabel = null,
+            manualPauseMode = ManualPauseUiMode.STEPPING,
+            safetyPaused = false,
+            statusText = "ignored",
+            currentAction = "ignored",
+            nextAction = "ignored"
+        )
+        assertTrue(stepping.releaseA.enabled)
+        assertTrue(stepping.confirm.enabled)
+        assertEquals("进入菜单", stepping.confirm.label)
+        assertFalse(stepping.manualPause.enabled)
+
+        val menu = resolveOverlayUiState(
+            axisName = "E5刀1",
+            battleLocked = true,
+            pauseFrameRoleLabel = null,
+            manualPauseMode = ManualPauseUiMode.MENU_HANDOFF,
+            safetyPaused = false,
+            statusText = "ignored",
+            currentAction = "ignored",
+            nextAction = "ignored"
+        )
+        assertFalse(menu.releaseA.enabled)
+        assertEquals("恢复识别", menu.manualPause.label)
+        assertTrue(menu.manualPause.enabled)
+    }
+
+    @Test fun `safety paused exposes explicit recovery until reset`() {
         val state = OverlayUiState.safetyPaused("E5刀1")
 
         assertFalse(state.selectAxis.enabled)
         assertFalse(state.releaseA.enabled)
         assertFalse(state.confirm.enabled)
-        assertFalse(state.safetyMenu.enabled)
+        assertTrue(state.safetyMenu.enabled)
+        assertEquals("恢复识别", state.safetyMenu.label)
         assertTrue(state.reset.enabled)
         assertEquals(OverlayPanelColor.RED, state.panelColor)
     }

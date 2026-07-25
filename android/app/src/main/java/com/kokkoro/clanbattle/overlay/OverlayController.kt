@@ -71,7 +71,8 @@ data class OverlayActions(
     val releaseB: () -> Unit,
     val confirm: () -> Unit,
     val safetyMenu: () -> Unit,
-    val reset: () -> Unit
+    val reset: () -> Unit,
+    val manualPause: () -> Unit = {}
 )
 
 class OverlayController(
@@ -90,6 +91,7 @@ class OverlayController(
     private var releaseAButton: Button? = null
     private var releaseBButton: Button? = null
     private var confirmButton: Button? = null
+    private var manualPauseButton: Button? = null
     private var safetyButton: Button? = null
     private var minimizeButton: Button? = null
     private var resetButton: Button? = null
@@ -127,6 +129,9 @@ class OverlayController(
             }
             val secondRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
+                addView(button().also { manualPauseButton = it }.apply {
+                    setOnClickListener { actions.manualPause() }
+                }, weighted())
                 addView(button().also { releaseAButton = it }.apply {
                     setOnClickListener { actions.releaseA() }
                 }, weighted())
@@ -245,6 +250,7 @@ class OverlayController(
             releaseAButton = null
             releaseBButton = null
             confirmButton = null
+            manualPauseButton = null
             safetyButton = null
             minimizeButton = null
             resetButton = null
@@ -298,6 +304,7 @@ class OverlayController(
         apply(releaseAButton, state.releaseA)
         apply(releaseBButton, state.releaseB)
         apply(confirmButton, state.confirm)
+        apply(manualPauseButton, state.manualPause)
         apply(safetyButton, state.safetyMenu)
         apply(minimizeButton, state.minimize)
         apply(resetButton, state.reset)
@@ -326,6 +333,7 @@ class OverlayController(
             releaseAButton,
             releaseBButton,
             confirmButton,
+            manualPauseButton,
             safetyButton,
             minimizeButton,
             resetButton
@@ -337,6 +345,7 @@ class OverlayController(
         releaseAButton?.layoutParams = weighted()
         releaseBButton?.layoutParams = weighted()
         confirmButton?.layoutParams = weighted()
+        manualPauseButton?.layoutParams = weighted()
         safetyButton?.layoutParams = compact()
         minimizeButton?.layoutParams = compact()
         resetButton?.layoutParams = compact()

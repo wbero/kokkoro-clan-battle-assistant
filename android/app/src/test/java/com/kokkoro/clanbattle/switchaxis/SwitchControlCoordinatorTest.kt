@@ -1,16 +1,20 @@
 package com.kokkoro.clanbattle.switchaxis
 
 import com.kokkoro.clanbattle.axis.AxisToggleState
+import com.kokkoro.clanbattle.axis.CharacterUbTrigger
 import com.kokkoro.clanbattle.axis.SwitchAxisNode
 import com.kokkoro.clanbattle.axis.SwitchControlTarget
+import com.kokkoro.clanbattle.axis.SwitchNodeTrigger
 import com.kokkoro.clanbattle.axis.TimedTrigger
 import com.kokkoro.clanbattle.control.BattleControlObservation
 import com.kokkoro.clanbattle.control.BattleControlStateMachine
 import com.kokkoro.clanbattle.control.ControlAction
+import com.kokkoro.clanbattle.control.ControlSafetyState
 import com.kokkoro.clanbattle.control.ToggleObservation
 import com.kokkoro.clanbattle.control.VisualToggleState
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -61,6 +65,20 @@ class SwitchControlCoordinatorTest {
         assertNull(machine.snapshot().desired)
     }
 
+    @Test fun `safety pause freezes runtime and preserves the original reason`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = coordinator(machine, node("first", 60, target(auto = AxisToggleState.ON)))
+        machine.forceSafety("control-recognition-failed:raw_untrustworthy")
+
+        val result = coordinator.update(frame(60), machine.snapshot("control-recognition-failed:raw_untrustworthy"))
+
+        assertEquals(ControlSafetyState.SAFETY_PAUSING, result.controlStep.safety)
+        assertEquals("control-recognition-failed:raw_untrustworthy", result.controlStep.reason)
+        assertFalse(result.busy)
+        assertNull(result.activeNodeId)
+        assertNull(machine.snapshot().desired)
+    }
+
     @Test fun `reset replaces pending nodes with the new axis`() {
         val machine = BattleControlStateMachine()
         val coordinator = coordinator(machine, node("old", 60, target()))
@@ -72,13 +90,40 @@ class SwitchControlCoordinatorTest {
         assertEquals("new", result.activeNodeId)
     }
 
+     @Test fun `role ub pulse during a safety pause is not lost once safety recovers`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = coordinator(
+            machine,
+            node("role1", 60, target(), CharacterUbTrigger(CharacterRole.ROLE_1, "角色1"))
+        )
+        // 先让节点进入 Armed 状态，且这一帧不带触发，排除 armedNow 的干扰
+        coordinator.update(frame(60), machine.update(observation(), 0))
+
+        // 安全门误报期间，恰好这一帧收到了角色1的UB脉冲
+        machine.forceSafety("control-recognition-failed:raw_untrustworthy")
+        val duringSafety = coordinator.update(
+            frame(60, triggered = setOf(CharacterRole.ROLE_1)),
+            machine.snapshot("control-recognition-failed:raw_untrustworthy")
+        )
+        assertEquals(ControlSafetyState.SAFETY_PAUSING, duringSafety.controlStep.safety)
+
+        // safety 恢复 RUNNING 之后，这次脉冲不应该已经彻底丢失
+        val recovered = coordinator.update(frame(60), machine.update(observation(), 100))
+        assertEquals("role1", recovered.activeNodeId)
+        assertTrue(recovered.busy)
+    }
+
     private fun coordinator(
         machine: BattleControlStateMachine,
         vararg nodes: SwitchAxisNode
     ) = SwitchControlCoordinator(machine, opening = null, nodes = nodes.toList())
 
-    private fun node(id: String, time: Int, target: SwitchControlTarget) =
-        SwitchAxisNode(id, 1, time, TimedTrigger, target)
+    private fun node(
+        id: String,
+        time: Int,
+        target: SwitchControlTarget,
+        trigger: SwitchNodeTrigger = TimedTrigger
+    ) = SwitchAxisNode(id, 1, time, trigger, target)
 
     private fun target(auto: AxisToggleState = AxisToggleState.OFF) = SwitchControlTarget(
         auto = auto,
@@ -87,9 +132,13 @@ class SwitchControlCoordinatorTest {
         rawRoles = List(5) { "关" }
     )
 
-    private fun frame(clock: Int, trustworthy: Boolean = true) = SwitchFrameInput(
+    private fun frame(
+        clock: Int,
+        trustworthy: Boolean = true,
+        triggered: Set<CharacterRole> = emptySet()
+    ) = SwitchFrameInput(
         clockSeconds = clock,
-        triggeredRoles = emptySet(),
+        triggeredRoles = triggered,
         controlsTrustworthy = trustworthy,
         wallMs = 0
     )
@@ -104,4 +153,5 @@ class SwitchControlCoordinatorTest {
     )
 
     private fun all(state: VisualToggleState) = CharacterRole.entries.associateWith { state }
+   
 }

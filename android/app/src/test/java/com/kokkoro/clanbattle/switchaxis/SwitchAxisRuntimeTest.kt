@@ -25,6 +25,19 @@ class SwitchAxisRuntimeTest {
         assertEquals(SwitchRuntimeCommand.None, runtime.update(frame(clock = 89)))
     }
 
+    @Test fun `opening waits past the old window for the first trustworthy controls`() {
+        val runtime = runtime(openingGraceSeconds = 5)
+
+        assertEquals(
+            SwitchRuntimeCommand.None,
+            runtime.update(frame(clock = 90, trustworthy = false))
+        )
+        assertEquals(
+            "opening-1",
+            (runtime.update(frame(clock = 86, trustworthy = true)) as SwitchRuntimeCommand.Converge).nodeId
+        )
+    }
+
     @Test fun `clock skip queues crossed nodes in source order`() {
         val first = node("first", 72, TimedTrigger)
         val second = node("second", 71, TimedTrigger)
@@ -71,6 +84,45 @@ class SwitchAxisRuntimeTest {
         )
     }
 
+    @Test fun `character ub survives a temporarily untrustworthy control frame`() {
+        val runtime = runtime(node("role1", 69, CharacterUbTrigger(CharacterRole.ROLE_1, "角色1"))).openedAt(90)
+        runtime.update(frame(clock = 69))
+
+        assertEquals(
+            SwitchRuntimeCommand.None,
+            runtime.update(
+                frame(
+                    clock = 69,
+                    triggered = setOf(CharacterRole.ROLE_1),
+                    trustworthy = false
+                )
+            )
+        )
+        assertTrue(
+            runtime.update(frame(clock = 69, trustworthy = true))
+                is SwitchRuntimeCommand.Converge
+        )
+    }
+
+    @Test fun `manual recognition pause discards a pending character ub`() {
+        val runtime = runtime(node("role1", 69, CharacterUbTrigger(CharacterRole.ROLE_1, "角色1"))).openedAt(90)
+        runtime.update(frame(clock = 69))
+        runtime.update(
+            frame(
+                clock = 69,
+                triggered = setOf(CharacterRole.ROLE_1),
+                trustworthy = false
+            )
+        )
+
+        runtime.clearRecognitionEvidence()
+
+        assertEquals(
+            SwitchRuntimeCommand.None,
+            runtime.update(frame(clock = 69, trustworthy = true))
+        )
+    }
+
     @Test fun `boss node never emits without a boss ub detection`() {
         val runtime = runtime(node("boss", 26, BossDelayTrigger(1_200, "1.20"))).openedAt(90)
         runtime.update(frame(clock = 26, wallMs = 10_000))
@@ -94,6 +146,16 @@ class SwitchAxisRuntimeTest {
             runtime.update(frame(clock = 25, wallMs = 16_300, trustworthy = true))
                 is SwitchRuntimeCommand.Converge
         )
+    }
+
+    @Test fun `manual recognition pause discards a pending switch boss delay`() {
+        val runtime = runtime(node("boss", 26, BossDelayTrigger(1_200, "1.20"))).openedAt(90)
+        runtime.update(frame(clock = 26, wallMs = 10_000))
+        runtime.update(frame(clock = 25, wallMs = 15_000, boss = bossEvent(26, 15_000)))
+
+        runtime.clearRecognitionEvidence()
+
+        assertEquals(SwitchRuntimeCommand.None, runtime.update(frame(clock = 25, wallMs = 20_000)))
     }
 
     @Test fun `boss node without delay converges immediately after detection`() {
@@ -167,9 +229,13 @@ class SwitchAxisRuntimeTest {
         )
     }
 
-    private fun runtime(vararg nodes: SwitchAxisNode) = SwitchAxisRuntime(
+    private fun runtime(
+        vararg nodes: SwitchAxisNode,
+        openingGraceSeconds: Int = 0
+    ) = SwitchAxisRuntime(
         opening = SwitchAxisOpening(1, target()),
-        nodes = nodes.toList()
+        nodes = nodes.toList(),
+        openingGraceSeconds = openingGraceSeconds
     )
 
     private fun SwitchAxisRuntime.openedAt(clock: Int): SwitchAxisRuntime = apply {

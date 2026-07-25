@@ -38,14 +38,25 @@ data class EnergyDetectionResult(
 class EnergyDetector(
     private val regions: Map<CharacterRole, EnergyRegion>,
     private val fullThreshold: Float = 0.97f,
-    private val triggeredBelowThreshold: Float = 0.3f
+    private val triggeredBelowThreshold: Float = 0.3f,
+    private val minConsecutiveFullFrames: Int = 1
 ) {
     private var previousRatios: Map<CharacterRole, Float>? = null
+    private val armedForRelease = mutableMapOf<CharacterRole, Boolean>()
+    private val consecutiveFullFrames = mutableMapOf<CharacterRole, Int>()
+    /**
+     * Tracks whether a role has achieved the required consecutive full frames
+     * since the last trigger or reset.  Once confirmed, the role remains
+     * eligible to trigger on a subsequent drop even if the drop occurs on the
+     * very next frame (fast UB scenario).
+     */
+    private val everConfirmed = mutableMapOf<CharacterRole, Boolean>()
 
     init {
         require(regions.keys == CharacterRole.entries.toSet())
         require(fullThreshold in 0f..1f)
         require(triggeredBelowThreshold in 0f..1f)
+        require(minConsecutiveFullFrames >= 1)
     }
 
     fun detect(image: PixelImage): EnergyDetectionResult {
@@ -53,9 +64,47 @@ class EnergyDetector(
         val previous = previousRatios
         val characters = ratios.mapValues { (role, ratio) ->
             val previousRatio = previous?.get(role)
-            val triggered = previousRatio != null &&
-                previousRatio >= fullThreshold &&
-                ratio < triggeredBelowThreshold
+            val wasArmed = armedForRelease[role] == true
+
+            // Update consecutive full-frame counter
+            val fullCount = if (ratio >= fullThreshold) {
+                (consecutiveFullFrames[role] ?: 0) + 1
+            } else {
+                0
+            }
+            consecutiveFullFrames[role] = fullCount
+
+            // Mark as confirmed once the required consecutive frames are met
+            if (fullCount >= minConsecutiveFullFrames) {
+                everConfirmed[role] = true
+            }
+
+            // A role is eligible to trigger if it was armed and has ever been
+            // confirmed (reached the required consecutive full frames) since
+            // the last trigger/reset.  This allows fast UBs where the drop
+            // happens immediately after the brief full-TP window.
+            val trulyArmed = wasArmed && everConfirmed[role] == true
+            val triggered = trulyArmed && ratio < triggeredBelowThreshold
+
+            when {
+                triggered -> {
+                    armedForRelease[role] = false
+                    consecutiveFullFrames[role] = 0
+                    everConfirmed[role] = false
+                }
+                ratio >= fullThreshold -> {
+                    armedForRelease[role] = true
+                }
+                wasArmed -> {
+                    armedForRelease[role] = true
+                }
+                else -> {
+                    armedForRelease[role] = false
+                    consecutiveFullFrames[role] = 0
+                    everConfirmed[role] = false
+                }
+            }
+
             CharacterEnergyState(
                 blueRatio = ratio,
                 isFull = ratio >= fullThreshold,
@@ -81,6 +130,9 @@ class EnergyDetector(
 
     fun reset() {
         previousRatios = null
+        armedForRelease.clear()
+        consecutiveFullFrames.clear()
+        everConfirmed.clear()
     }
 
     private fun fillExtentRatio(image: PixelImage, region: EnergyRegion): Float {

@@ -11,6 +11,7 @@ import com.kokkoro.clanbattle.control.ControlSafetyState.SAFETY_PAUSED
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BattleControlStateMachineTest {
@@ -104,6 +105,26 @@ class BattleControlStateMachineTest {
         assertEquals(1, retry.retryCount)
     }
 
+    @Test fun `opening role set uses normal visual retry instead of waiting for ub`() {
+        val machine = machine(
+            roles = roles(
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF
+            )
+        )
+        val unchanged = observation(roles = all(VisualToggleState.OFF))
+
+        assertEquals(TapRole(CharacterRole.ROLE_1), machine.update(unchanged, 0).action)
+        val retry = machine.update(unchanged, 1_001)
+
+        assertEquals(TapRole(CharacterRole.ROLE_1), retry.action)
+        assertEquals("retry-click", retry.reason)
+        assertEquals(1, retry.retryCount)
+    }
+
     @Test fun `second timeout enters safety pausing`() {
         val machine = machine(auto = VisualToggleState.ON)
         val unchanged = observation(auto = VisualToggleState.OFF)
@@ -124,6 +145,19 @@ class BattleControlStateMachineTest {
         assertNull(snapshot.expected)
         assertEquals(0, snapshot.retryCount)
         assertEquals(RUNNING, snapshot.safety)
+    }
+
+    @Test fun `manual pause invalidates pending click and waits for a fresh observation`() {
+        val machine = machine(auto = VisualToggleState.ON)
+        assertEquals(TapAuto, machine.update(observation(auto = VisualToggleState.OFF), 0).action)
+        assertEquals(None, machine.update(observation(auto = VisualToggleState.OFF), 10).action)
+
+        val abandoned = machine.abandonPendingAction()
+
+        assertEquals(None, abandoned.action)
+        assertNull(abandoned.observed)
+        assertNull(abandoned.expected)
+        assertEquals(RUNNING, abandoned.safety)
     }
 
     @Test fun `safety pausing clicks menu once only when menu is trustworthy`() {
@@ -148,13 +182,16 @@ class BattleControlStateMachineTest {
         assertEquals("menu-button-untrusted", step.reason)
     }
 
-    @Test fun `manual recovery discards expected state and requires two trustworthy frames`() {
+    @Test fun `safety pause stays latched until explicit recovery then requires two trustworthy frames`() {
         val machine = machine(auto = VisualToggleState.ON)
         machine.update(observation(auto = VisualToggleState.OFF), 0)
         machine.forceSafety("state-mismatch")
         machine.updateMenu(0.82)
         val recovered = observation(auto = VisualToggleState.OFF)
 
+        assertEquals(SAFETY_PAUSED, machine.updateRecovery(0.82, recovered, 900).safety)
+        assertEquals(SAFETY_PAUSED, machine.updateRecovery(0.84, recovered, 950).safety)
+        assertTrue(machine.requestSafetyRecovery())
         assertEquals(SAFETY_PAUSED, machine.updateRecovery(0.82, recovered, 1000).safety)
         val running = machine.updateRecovery(0.84, recovered, 1050)
 

@@ -44,8 +44,14 @@ data class SwitchRuntimeSnapshot(
 
 class SwitchAxisRuntime(
     private val opening: SwitchAxisOpening?,
-    nodes: List<SwitchAxisNode>
+    nodes: List<SwitchAxisNode>,
+    openingGraceSeconds: Int = 0
 ) {
+    private val openingEarliestSeconds = (OPENING_MIN_SECONDS - openingGraceSeconds).coerceAtLeast(0)
+
+    init {
+        require(openingGraceSeconds >= 0)
+    }
     private sealed interface ActiveState {
         data object Armed : ActiveState
         data object PauseFrameEntered : ActiveState
@@ -57,7 +63,8 @@ class SwitchAxisRuntime(
         val node: SwitchAxisNode,
         var state: ActiveState = ActiveState.Armed,
         val armedAtWallMs: Long,
-        var bossUbDetectedAtWallMs: Long? = null
+        var bossUbDetectedAtWallMs: Long? = null,
+        var characterUbObserved: Boolean = false
     )
 
     private val remainingNodes = nodes.toMutableList()
@@ -88,6 +95,12 @@ class SwitchAxisRuntime(
         if (current.node.id == nodeId && current.state == ActiveState.PauseFrameEntered) {
             current.state = ActiveState.PauseFrameConfirmed
         }
+    }
+
+    /** Drop UB/delay evidence that predates a user-owned menu interaction. */
+    fun clearRecognitionEvidence() {
+        active?.bossUbDetectedAtWallMs = null
+        active?.characterUbObserved = false
     }
 
     fun confirmConvergence(nodeId: String) {
@@ -148,7 +161,14 @@ class SwitchAxisRuntime(
         if (openingConverging) {
             return SwitchRuntimeCommand.Converge(OPENING_NODE_ID, target)
         }
-        if (frame.clockSeconds !in OPENING_WINDOW || !frame.controlsTrustworthy) {
+        val clockSeconds = frame.clockSeconds ?: return SwitchRuntimeCommand.None
+        // Once the battle session has been accepted, opening convergence must stay
+        // pending until the first trustworthy control snapshot. Restricting this to
+        // 1:30..1:28 permanently blocked the whole switch axis on slower devices.
+        if (
+            clockSeconds !in openingEarliestSeconds..OPENING_MAX_SECONDS ||
+            !frame.controlsTrustworthy
+        ) {
             return SwitchRuntimeCommand.None
         }
         openingConverging = true
@@ -177,6 +197,9 @@ class SwitchAxisRuntime(
             is CharacterUbTrigger -> {
                 val role = trigger.role
                 if (!armedNow && role != null && role in frame.triggeredRoles) {
+                    active.characterUbObserved = true
+                }
+                if (active.characterUbObserved) {
                     convergeWhenTrustworthy(active, frame)
                 } else {
                     SwitchRuntimeCommand.None
@@ -235,7 +258,8 @@ class SwitchAxisRuntime(
 
     private companion object {
         const val OPENING_NODE_ID = "opening-1"
-        val OPENING_WINDOW = 88..90
+        const val OPENING_MIN_SECONDS = 88
+        const val OPENING_MAX_SECONDS = 90
     }
 
     private fun BossUbEvent.isApplicableTo(nodeTimeSeconds: Int): Boolean =

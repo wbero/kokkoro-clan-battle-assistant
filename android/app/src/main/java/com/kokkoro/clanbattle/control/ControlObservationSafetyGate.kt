@@ -38,6 +38,10 @@ class ControlObservationSafetyGate(
         // animation. The verified coordinator owns that lifecycle, so keep the
         // frame on hold instead of turning an expected transient into SAFETY_PAUSED.
         if (holdWhileActionBusy) {
+            // A known animation boundary also invalidates any partial failure
+            // streak from the preceding frame; do not resume at frame 7/8 and
+            // pause immediately when the animation ends.
+            consecutiveUntrustedFrames = 0
             return ControlObservationSafetyResult(
                 ControlObservationSafetyDecision.HOLD,
                 consecutiveUntrustedFrames,

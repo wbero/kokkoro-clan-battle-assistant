@@ -133,6 +133,22 @@ class EnergyDetectorTest {
     }
 
     @Test
+    fun `near full animation frame does not disarm a pending ub release`() {
+        val regions = CharacterRole.entries.associateWith { role ->
+            EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
+        }
+        val detector = EnergyDetector(regions)
+
+        detector.detect(roleOneWideRatio(100))
+        val animationDip = detector.detect(roleOneWideRatio(95))
+        val released = detector.detect(roleOneWideRatio(0))
+
+        assertFalse(animationDip.characters.getValue(CharacterRole.ROLE_1).isFull)
+        assertTrue(animationDip.triggeredRoles.isEmpty())
+        assertEquals(setOf(CharacterRole.ROLE_1), released.triggeredRoles)
+    }
+
+    @Test
     fun `ninety percent energy is not ready and does not arm a UB trigger`() {
         val regions = CharacterRole.entries.associateWith { role ->
             EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)

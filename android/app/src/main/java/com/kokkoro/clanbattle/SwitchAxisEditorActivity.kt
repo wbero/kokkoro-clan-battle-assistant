@@ -27,6 +27,7 @@ import com.kokkoro.clanbattle.axis.VisualSwitchNode
 import com.kokkoro.clanbattle.axis.VisualSwitchTarget
 import com.kokkoro.clanbattle.axis.VisualSwitchTrigger
 import com.kokkoro.clanbattle.config.AppPreferences
+import com.kokkoro.clanbattle.ui.UiKit
 
 class SwitchAxisEditorActivity : Activity() {
     private lateinit var library: AxisLibrary
@@ -41,6 +42,9 @@ class SwitchAxisEditorActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         title = "表格制轴"
+        window.setSoftInputMode(
+            android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
         library = AxisLibrary(AndroidAxisRepository(this))
         editingAxisId = intent.getStringExtra(EXTRA_AXIS_ID)
         val draft = loadDraft() ?: return
@@ -77,7 +81,9 @@ class SwitchAxisEditorActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(6), dp(12), dp(6), dp(28))
 
-            addView(title("开关轴表格编辑器"))
+            addView(UiKit.pageHeader(this@SwitchAxisEditorActivity, "开关轴表格编辑器") {
+                onBackPressedDispatcherCompat()
+            })
             addView(note("共用表头，勾选表示 SET/AUTO 开。点击每行时间格可设置定时、角色 UB 后、Boss 延迟或卡帧。"))
             nameInput = edit("轴名称", draft.name)
             addView(nameInput, matchWidth())
@@ -359,6 +365,9 @@ class SwitchAxisEditorActivity : Activity() {
     private fun column(weight: Float) = LinearLayout.LayoutParams(0, dp(48), weight)
     private fun matchWidth() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    /** Keep the existing unsaved-draft confirmation when the in-page back button is used. */
+    private fun onBackPressedDispatcherCompat() = onBackPressed()
 
     companion object {
         const val EXTRA_AXIS_ID = "axis_id"

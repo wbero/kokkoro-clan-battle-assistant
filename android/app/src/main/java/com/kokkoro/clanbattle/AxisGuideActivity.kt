@@ -12,6 +12,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import com.kokkoro.clanbattle.ui.UiKit
 
 /** In-app authoring reference derived from docs/axis-format-standard.md. */
 class AxisGuideActivity : Activity() {
@@ -26,7 +27,7 @@ class AxisGuideActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(16), dp(20), dp(32))
 
-            addView(title("轴文件编写指南"))
+            addView(UiKit.pageHeader(this@AxisGuideActivity, "轴文件编写指南") { finish() })
             addView(body("本页用于帮助轴创造者写出可导入、可校验、行为明确的标准轴。完整规范来源：docs/axis-format-standard.md。"))
 
             addView(heading("1. 选择轴模式"))
@@ -65,7 +66,7 @@ class AxisGuideActivity : Activity() {
                 "定时：1:20 | ...\n" +
                     "角色 UB 后：1:20 | UB后=角色3 | ...\n" +
                     "Boss UB 后：0:30 | UB后=BOSS | ...（可选 延迟=1.20）\n" +
-                    "手动卡帧：1:10 | 卡帧=角色4 | ...（确认后自动等待角色4 UB并关闭SET）\n\n" +
+                    "轴内卡帧：1:10 | 卡帧=角色4 | ...（确认后自动等待角色4 UB并关闭SET）\n\n" +
                     "UB后=BOSS 到时后先等待实际 Boss UB；确认后无延迟则立即执行，声明延迟时再开始计时。"
             ))
 

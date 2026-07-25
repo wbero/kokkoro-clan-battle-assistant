@@ -36,6 +36,7 @@ import com.kokkoro.clanbattle.recognition.AndroidTemplateLoader
 import com.kokkoro.clanbattle.recognition.ClockRecognizer
 import com.kokkoro.clanbattle.recognition.EnergyDetector
 import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
+import com.kokkoro.clanbattle.recognition.PixelImage
 import com.kokkoro.clanbattle.recognition.RecognitionFilter
 import com.kokkoro.clanbattle.recognition.RecognitionResult
 import com.kokkoro.clanbattle.scheduler.GameStateDetector
@@ -48,6 +49,13 @@ import com.kokkoro.clanbattle.sequenceaxis.SequenceRuntimeCommand
 import com.kokkoro.clanbattle.switchaxis.SwitchControlCoordinator
 import com.kokkoro.clanbattle.switchaxis.SwitchFrameInput
 import java.util.Locale
+import java.util.concurrent.CancellationException
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 data class FrameStatus(
     val text: String,
@@ -198,6 +206,12 @@ private data class ControlDetection(
     val crops: ControlCrops
 )
 
+private data class ParallelFrameRecognition(
+    val clock: RecognitionResult,
+    val energy: EnergyDetectionResult?,
+    val controls: ControlDetection?
+)
+
 private data class SwitchDiagnosticContext(
     val clockSeconds: Int?,
     val triggeredRoles: Set<com.kokkoro.clanbattle.recognition.CharacterRole>,
@@ -241,7 +255,17 @@ class FrameProcessor(
         earlyConfirmationHoldMs = AppPreferences.bossUbEarlyConfirmationHoldMs(appContext).toLong()
     )
     private val executor = ActionExecutor(appContext, messageCallback)
-    private val sessionGate = BattleSessionGate()
+    private val recognitionThreadId = AtomicInteger(0)
+    private val recognitionExecutor = Executors.newFixedThreadPool(RECOGNITION_WORKER_COUNT) { task ->
+        Thread(task, "kokkoro-recognition-${recognitionThreadId.incrementAndGet()}").apply {
+            isDaemon = true
+        }
+    }
+    private val closed = AtomicBoolean(false)
+    // Loading/control confirmation can consume the first few countdown seconds on
+    // slower devices. Keep evaluating long enough for the opening target to be
+    // installed instead of leaving a switch axis permanently blocked at opening.
+    private val sessionGate = BattleSessionGate(openingGraceSeconds = OPENING_GRACE_SECONDS)
     private var recorder: ClockDebugRecorder? = null
     private var frameId = 0L
     private var debugEnabled = false
@@ -253,7 +277,15 @@ class FrameProcessor(
     private var lastSwitchDebugKey: String? = null
     private var lastSwitchDiagnosticContext: SwitchDiagnosticContext? = null
     private var lastPromptNodeId: String? = null
+    // UB animation can cover all SET/AUTO badges for a short, expected window.
+    // Hold the last trustworthy control state during that window instead of
+    // turning the animation into an automatic safety pause.
+    private var controlTransientHoldUntilMs = 0L
     @Volatile private var roleTapSafe = false
+    // Tracks whether the switch-axis runtime is currently busy (node armed,
+    // converging, or pause-frame entered) so that the safety gate can hold
+    // instead of counting untrusted frames during a legitimate wait.
+    private var switchAxisBusy = false
 
     init {
         installAxis(loadSelectedAxis())
@@ -279,6 +311,7 @@ class FrameProcessor(
         controlStateMachine.reset()
         controlObservationFilter.reset()
         controlObservationSafetyGate.reset()
+        controlTransientHoldUntilMs = 0L
         actionCoordinator.configureRoleSetFallbackGraceMs(
             AppPreferences.roleSetFallbackGraceMs(appContext).toLong()
         )
@@ -288,6 +321,7 @@ class FrameProcessor(
         openingControlsConfirmed = openingControlTarget == null
         lastPauseFrameNodeId = null
         lastPromptNodeId = null
+        switchAxisBusy = false
         sessionGate.prepare()
         val wasDebugEnabled = debugEnabled
         refreshDebugPreference(SystemClock.elapsedRealtime(), force = true)
@@ -295,6 +329,7 @@ class FrameProcessor(
     }
 
     fun process(image: Image) {
+        if (closed.get()) return
         val start = SystemClock.elapsedRealtime()
         refreshDebugPreference(start)
         val currentFrameId = ++frameId
@@ -355,21 +390,16 @@ class FrameProcessor(
         )
         // Calibrate the right anchor from the menu before cropping the clock;
         // otherwise the first battle frame can read a shifted clock once.
-        val region = ImageRoiExtractor.scaleReferenceRegion(image.width, image.height)
-        val roi = ImageRoiExtractor.extract(image, region)
-        val recognition = recognizer.recognize(
-            roi,
-            minConfidence = REAL_DEVICE_CLOCK_MIN_CONFIDENCE,
-            includeDiagnostics = debugEnabled
-        )
-        val energy = detectEnergy(image)
-        val controlDetection = detectControls(image)
+        val parallelRecognition = recognizeFrameInParallel(image)
+        if (closed.get()) return
+        val recognition = parallelRecognition.clock
+        val energy = parallelRecognition.energy
+        val controlDetection = parallelRecognition.controls
         val filteredControls = controlDetection?.observation?.let(controlObservationFilter::update)
             ?: controlObservationFilter.missing()
         val controls = filteredControls.observation
         val trustworthyControls = controls.takeIf { filteredControls.trustworthy }
         roleTapSafe = filteredControls.trustworthy && menuScore >= MENU_TRUST_THRESHOLD
-        gameStateDetector.observeEnergy(energy)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
             if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null, energy)
             val elapsed = SystemClock.elapsedRealtime() - start
@@ -395,13 +425,37 @@ class FrameProcessor(
             ?.filterValues { it.blueRatio < AppPreferences.energyDropThreshold(appContext) }
             ?.keys
             .orEmpty()
+        val tpFullRoles = energy?.characters
+            ?.filterValues { it.isFull }
+            ?.keys
+            .orEmpty()
         val acceptedClockSeconds = filtered.timeSeconds.takeIf { usable }
+        val gameState = if (battleRunning) {
+            gameStateDetector.update(acceptedClockSeconds, energy)
+        } else {
+            null
+        }
+        // Arm the bounded recognition hold only on the first frame that starts a
+        // character-UB lifecycle. Repeated noisy TP triggers during the same
+        // animation must not keep extending the safety exemption forever.
+        if (triggeredRoles.isNotEmpty() && gameState == GameState.CHARACTER_UB) {
+            controlTransientHoldUntilMs = start + UB_CONTROL_MAX_HOLD_MS
+        }
+        val holdControlsForCharacterUb = shouldHoldControlRecognitionForCharacterUb(
+            gameState,
+            start,
+            controlTransientHoldUntilMs
+        )
+        if (gameState != null && !gameState.isCharacterUbActive()) {
+            controlTransientHoldUntilMs = 0L
+        }
         if (battleRunning && axis.type == AxisType.SEQUENCE) {
             actionCoordinator.observeFrame(
                 triggeredRoles,
                 acceptedClockSeconds,
                 start,
-                tpBelowThresholdRoles
+                tpBelowThresholdRoles,
+                tpFullRoles
             )
             sequenceRuntime?.observeRoleUbEvents(triggeredRoles)
         }
@@ -424,7 +478,6 @@ class FrameProcessor(
         }
         val bossUbEvent = bossUbDetector.latestEvent(start)
 
-        var gameState: GameState? = null
         var scheduleReason: String? = null
         var controlStep: ControlStep = controlStateMachine.snapshot()
         var activeNodeId: String? = null
@@ -435,7 +488,13 @@ class FrameProcessor(
             accessibilityConnected = KokkoroAccessibilityService.instance != null
         )
         if (battleRunning && executionWarning == null) {
-            controlStep = updateControls(filteredControls, menuScore, start, image)
+            controlStep = updateControls(
+                filteredControls,
+                menuScore,
+                start,
+                image,
+                holdControlsForCharacterUb
+            )
             if (axis.type == AxisType.SWITCH) {
                 if (sessionReady) {
                     val controlsTrustworthy = roleTapSafe &&
@@ -450,6 +509,7 @@ class FrameProcessor(
                         ),
                         controlStep
                     )
+                    switchAxisBusy = coordinated.busy
                     activeNodeId = coordinated.activeNodeId
                     activeNodeId?.let { nodeId ->
                         if (nodeId != lastPromptNodeId) {
@@ -494,13 +554,13 @@ class FrameProcessor(
                     controlStateMachine.setDesired(null)
                 }
                 if (openingControlsConfirmed && controlStep.safety == ControlSafetyState.RUNNING) {
-                    if (sessionReady) gameState = gameStateDetector.update(filtered.timeSeconds, null)
                     var coordinated = actionCoordinator.update(
                         controlStep,
                         start,
                         triggeredRoles,
                         acceptedClockSeconds,
-                        tpBelowThresholdRoles
+                        tpBelowThresholdRoles,
+                        tpFullRoles
                     )
                     sequenceProgress = coordinated
                     executeControlAction(coordinated.newControlAction, image.width, image.height)
@@ -551,7 +611,8 @@ class FrameProcessor(
                                     start,
                                     triggeredRoles,
                                     filtered.timeSeconds,
-                                    tpBelowThresholdRoles
+                                    tpBelowThresholdRoles,
+                                    tpFullRoles
                                 )
                                 sequenceProgress = coordinated
                                 executeControlAction(coordinated.newControlAction, image.width, image.height)
@@ -644,12 +705,37 @@ class FrameProcessor(
     }
 
     fun requestSafetyPause(reason: String = "manual-safety-menu") {
+        Log.w(SAFETY_LOG_TAG, "source=request reason=$reason")
         controlStateMachine.forceSafety(reason)
     }
+
+    /** Arms the latched safety pause for an explicit user recovery attempt. */
+    fun requestSafetyRecovery(): Boolean = controlStateMachine.requestSafetyRecovery()
 
     fun confirmPauseFrame(nodeId: String) {
         switchCoordinator?.confirmPauseFrame(nodeId)
         sequenceRuntime?.confirmPauseFrame(nodeId)
+    }
+
+    /**
+     * Rebuild recognition baselines after the user has operated the game menu
+     * while manual card-frame mode was active. Axis runtimes stay in place, but
+     * stale TP/control/menu evidence must not be interpreted as a new event.
+     */
+    fun resumeAfterManualPause() {
+        filter.reset()
+        energyDetector?.reset()
+        controlObservationFilter.reset()
+        controlObservationSafetyGate.reset()
+        controlTransientHoldUntilMs = 0L
+        bossUbDetector.reset()
+        gameStateDetector.reset()
+        controlStateMachine.abandonPendingAction()
+        actionCoordinator.restartAfterRecognitionPause()
+        sequenceRuntime?.clearRecognitionEvidence()
+        switchCoordinator?.clearRecognitionEvidence()
+        switchAxisBusy = false
+        roleTapSafe = false
     }
 
     fun recordPauseFrameDiagnostic(event: PauseFrameDiagnosticEvent) {
@@ -673,6 +759,10 @@ class FrameProcessor(
     fun isRoleTapSafe(): Boolean = roleTapSafe
 
     fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        // Let the at-most-three current ROI tasks finish. shutdownNow() can remove
+        // a queued Future before it starts and leave the capture thread waiting on it.
+        recognitionExecutor.shutdown()
         executor.close()
         recorder?.close()
         recorder = null
@@ -702,7 +792,8 @@ class FrameProcessor(
             SwitchControlCoordinator(
                 stateMachine = controlStateMachine,
                 opening = document.switchOpenings.singleOrNull(),
-                nodes = document.switchNodes
+                nodes = document.switchNodes,
+                openingGraceSeconds = OPENING_GRACE_SECONDS
             )
         } else {
             null
@@ -800,12 +891,60 @@ class FrameProcessor(
         return bestScore
     }
 
-    private fun detectEnergy(image: Image): EnergyDetectionResult? = runCatching {
+    /**
+     * Clock OCR, TP detection and SET/AUTO recognition only consume immutable ROI
+     * copies. Run them on separate workers, then merge once on the ordered capture
+     * thread so detector history and battle state can never be applied out of order.
+     */
+    private fun recognizeFrameInParallel(image: Image): ParallelFrameRecognition {
+        val clockRegion = ImageRoiExtractor.scaleReferenceRegion(image.width, image.height)
+        val clockImage = ImageRoiExtractor.extract(image, clockRegion)
+        val energyHud = extractEnergyHud(image)
+        val controlCrops = extractControlCrops(image)
+        val includeDiagnostics = debugEnabled
+
+        val clockFuture: Future<RecognitionResult>
+        val energyFuture: Future<EnergyDetectionResult?>
+        val controlsFuture: Future<ControlDetection?>
+        try {
+            clockFuture = recognitionExecutor.submit<RecognitionResult> {
+                recognizer.recognize(
+                    clockImage,
+                    minConfidence = REAL_DEVICE_CLOCK_MIN_CONFIDENCE,
+                    includeDiagnostics = includeDiagnostics
+                )
+            }
+            energyFuture = recognitionExecutor.submit<EnergyDetectionResult?> {
+                energyHud?.let(::detectEnergy)
+            }
+            controlsFuture = recognitionExecutor.submit<ControlDetection?> {
+                controlCrops?.let(::detectControls)
+            }
+        } catch (_: RejectedExecutionException) {
+            return ParallelFrameRecognition(
+                clock = RecognitionResult(ok = false, reason = "recognition-closed"),
+                energy = null,
+                controls = null
+            )
+        }
+
+        return ParallelFrameRecognition(
+            clock = awaitOrNull(clockFuture)
+                ?: RecognitionResult(ok = false, reason = "clock-worker-failed"),
+            energy = awaitOrNull(energyFuture),
+            controls = awaitOrNull(controlsFuture)
+        )
+    }
+
+    private fun extractEnergyHud(image: Image): PixelImage? = runCatching {
         val region = BattleReferenceRegions.ENERGY_HUD
         val scaled = ImageRoiExtractor.scaleRegion(
             image.width, image.height, region.x, region.y, region.width, region.height
         )
-        val hud = ImageRoiExtractor.extract(image, scaled)
+        ImageRoiExtractor.extract(image, scaled)
+    }.getOrNull()
+
+    private fun detectEnergy(hud: PixelImage): EnergyDetectionResult? = runCatching {
         val size = hud.width to hud.height
         if (energyDetector == null || energyHudSize != size) {
             energyDetector = EnergyDetector(
@@ -818,36 +957,58 @@ class FrameProcessor(
         energyDetector!!.detect(hud)
     }.getOrNull()
 
-    private fun detectControls(image: Image): ControlDetection? = runCatching {
-        val crops = ControlCrops(
+    private fun extractControlCrops(image: Image): ControlCrops? = runCatching {
+        ControlCrops(
             auto = extractRegion(image, BattleReferenceRegions.AUTO_BUTTON, HorizontalAnchor.RIGHT),
             globalSet = extractRegion(image, BattleReferenceRegions.GLOBAL_SET_BUTTON, HorizontalAnchor.RIGHT),
             roles = BattleReferenceRegions.ROLE_SET_BADGES.mapValues { (_, region) ->
                 extractRegion(image, region)
             }
         )
+    }.getOrNull()
+
+    private fun detectControls(crops: ControlCrops): ControlDetection? = runCatching {
         ControlDetection(controlRecognizer.recognize(crops), crops)
     }.getOrNull()
+
+    private fun <T> awaitOrNull(future: Future<T>): T? = try {
+        future.get()
+    } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        null
+    } catch (_: ExecutionException) {
+        null
+    } catch (_: CancellationException) {
+        null
+    }
 
     private fun updateControls(
         filteredControls: FilteredControlObservation,
         menuScore: Double,
         nowMs: Long,
-        image: Image
+        image: Image,
+        holdControlsForCharacterUb: Boolean
     ): ControlStep {
         val before = controlStateMachine.snapshot()
         val controls = filteredControls.observation
         val step = when (before.safety) {
             ControlSafetyState.SAFETY_PAUSING -> controlStateMachine.updateMenu(menuScore)
-            ControlSafetyState.SAFETY_PAUSED -> if (!filteredControls.trustworthy || controls == null) before else {
-                controlObservationSafetyGate.reset()
-                controlStateMachine.updateRecovery(menuScore, controls, nowMs)
+            ControlSafetyState.SAFETY_PAUSED -> if (!filteredControls.trustworthy || controls == null) {
+                controlStateMachine.holdSafetyPause()
+            } else {
+                val recovery = controlStateMachine.updateRecovery(menuScore, controls, nowMs)
+                if (recovery.safety == ControlSafetyState.RUNNING) {
+                    controlObservationSafetyGate.reset()
+                }
+                recovery
             }
             ControlSafetyState.RUNNING -> {
                 val safety = controlObservationSafetyGate.evaluate(
                     filteredControls,
-                    holdWhileActionBusy = axis.type == AxisType.SEQUENCE &&
-                        actionCoordinator.isRoleLifecycleBusy()
+                    holdWhileActionBusy =
+                        (axis.type == AxisType.SEQUENCE && actionCoordinator.isRoleLifecycleBusy()) ||
+                        (axis.type == AxisType.SWITCH && switchAxisBusy) ||
+                        holdControlsForCharacterUb
                 )
                 when (safety.decision) {
                     ControlObservationSafetyDecision.USE ->
@@ -860,6 +1021,11 @@ class FrameProcessor(
 
                     ControlObservationSafetyDecision.PAUSE -> {
                         val reason = "control-recognition-failed:${safety.status.name.lowercase()}"
+                        Log.w(
+                            SAFETY_LOG_TAG,
+                            "source=control-gate reason=$reason " +
+                                "untrustedFrames=${safety.consecutiveUntrustedFrames}"
+                        )
                         controlStateMachine.forceSafety(reason)
                         controlStateMachine.snapshot(reason)
                     }
@@ -1011,6 +1177,7 @@ class FrameProcessor(
 
     private companion object {
         const val BOSS_UB_LOG_TAG = "KokkoroBossUb"
+        const val SAFETY_LOG_TAG = "KokkoroSafety"
         const val REAL_DEVICE_CLOCK_MIN_CONFIDENCE = 0.75
         const val TEMPLATE_THRESHOLD = 0.72
         const val DEBUG_PREFERENCE_POLL_MS = 1_000L
@@ -1019,7 +1186,19 @@ class FrameProcessor(
         const val CALIBRATION_COARSE_STEP = 12
         const val CALIBRATION_MIN_SCORE = 0.55
         const val MENU_TRUST_THRESHOLD = 0.70
+        const val OPENING_GRACE_SECONDS = 5
+        const val UB_CONTROL_MAX_HOLD_MS = 8_000L
+        const val RECOGNITION_WORKER_COUNT = 3
 
         fun emptyAxis() = AxisDocument(AxisType.SEQUENCE, 100, emptyMap(), emptyList())
     }
 }
+
+internal fun GameState?.isCharacterUbActive(): Boolean =
+    this == GameState.CHARACTER_UB || this == GameState.UB_ANIMATION
+
+internal fun shouldHoldControlRecognitionForCharacterUb(
+    gameState: GameState?,
+    nowMs: Long,
+    holdUntilMs: Long
+): Boolean = gameState.isCharacterUbActive() && nowMs < holdUntilMs
