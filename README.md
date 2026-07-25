@@ -1,5 +1,7 @@
 # Kokkoro Clan Battle Assistant
 
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](#)
+
 一个基于 Android 无障碍服务与屏幕识别的《公主连结！Re:Dive》（Princess Connect! Re:Dive）公会战辅助工具。通过实时捕获屏幕、识别战斗时钟与能量状态，按照玩家预设的“轴”自动执行点击操作，帮助稳定复现复杂的手动轴。
 
 > ⚠️ **免责声明**
@@ -65,7 +67,7 @@
 1. 克隆仓库：
 
    ```bash
-   git clone https://github.com/<your-username>/kokkoro-clan-battle-assistant.git
+   git clone https://github.com/wbero/kokkoro-clan-battle-assistant.git
    cd kokkoro-clan-battle-assistant/android
    ```
 
