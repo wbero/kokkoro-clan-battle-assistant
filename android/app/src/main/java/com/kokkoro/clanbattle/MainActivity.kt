@@ -331,7 +331,7 @@ class MainActivity : Activity() {
         val aboutCard = UiKit.card(this)
         aboutCard.addView(caption("关于"))
         aboutCard.addView(TextView(this).apply {
-            text = "可可萝自动会战助手\n版本：v${BuildConfig.VERSION_NAME}\n作者：wbero"
+            text = "可可萝自动会战助手\n${installedVersionName()}\n作者：wbero"
             textSize = 15f
             setTextColor(UiKit.TEXT_PRIMARY)
             setLineSpacing(dp(3).toFloat(), 1f)
@@ -339,6 +339,15 @@ class MainActivity : Activity() {
         })
         content.addView(aboutCard, matchWidth(top = 12))
         return ScrollView(this).apply { addView(content) }
+    }
+
+    private fun installedVersionName(): String {
+        val versionName = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: PackageManager.NameNotFoundException) {
+            null
+        }
+        return getString(R.string.about_version_format, versionName ?: BuildConfig.VERSION_NAME)
     }
 
     private fun buildEnergyThresholdCard(): LinearLayout {

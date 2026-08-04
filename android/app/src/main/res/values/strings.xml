@@ -4,4 +4,5 @@
     <string name="accessibility_service_name">可可萝助手点击服务</string>
     <string name="capture_channel_name">战斗识别</string>
     <string name="capture_notification_title">可可萝助手正在识别</string>
+    <string name="about_version_format">版本 %1$s</string>
 </resources>
