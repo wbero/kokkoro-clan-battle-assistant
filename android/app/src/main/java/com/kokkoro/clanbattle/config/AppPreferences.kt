@@ -9,6 +9,7 @@ object AppPreferences {
     private const val KEY_AXIS_NAME = "axis_name"
     private const val KEY_DRY_RUN = "dry_run"
     private const val KEY_CLOCK_DEBUG = "clock_debug"
+    private const val KEY_REGION_OVERLAY = "region_overlay"
     private const val KEY_SELECTED_AXIS_ID = "selected_axis_id"
     private const val KEY_AXIS_SELECTION_LOCKED = "axis_selection_locked"
     private const val KEY_OVERLAY_X = "overlay_x"
@@ -32,11 +33,25 @@ object AppPreferences {
     private const val KEY_PAUSE_PRESET_A = "pauseframe_preset_a"
     private const val KEY_PAUSE_PRESET_B = "pauseframe_preset_b"
     private const val KEY_PAUSE_MENU_WAIT_MS = "pauseframe_menu_wait_ms"
+    private const val KEY_STANDALONE_PAUSE_ENABLED = "standalone_pause_enabled"
+    private const val KEY_STANDALONE_PAUSE_TIER1_RATE = "standalone_pause_tier1_rate_ms"
+    private const val KEY_STANDALONE_PAUSE_TIER1_FRAMES = "standalone_pause_tier1_frames"
+    private const val KEY_STANDALONE_PAUSE_TIER2_RATE = "standalone_pause_tier2_rate_ms"
+    private const val KEY_STANDALONE_PAUSE_TIER2_FRAMES = "standalone_pause_tier2_frames"
+    private const val KEY_STANDALONE_PAUSE_TIER3_RATE = "standalone_pause_tier3_rate_ms"
+    private const val KEY_STANDALONE_PAUSE_TIER3_FRAMES = "standalone_pause_tier3_frames"
+    private const val KEY_STANDALONE_PAUSE_X = "standalone_pause_x"
+    private const val KEY_STANDALONE_PAUSE_Y = "standalone_pause_y"
+    private const val KEY_STANDALONE_PAUSE_SCALE = "standalone_pause_scale"
+    private const val KEY_STANDALONE_PAUSE_MIN_X = "standalone_pause_min_x"
+    private const val KEY_STANDALONE_PAUSE_MIN_Y = "standalone_pause_min_y"
 
     const val DEFAULT_PAUSE_FRAME_MS = 40
     const val DEFAULT_PAUSE_PRESET_A = 5
     const val DEFAULT_PAUSE_PRESET_B = 20
     const val DEFAULT_PAUSE_MENU_WAIT_MS = 700
+    const val DEFAULT_STANDALONE_PAUSE_RATE_MS = 40
+    const val DEFAULT_STANDALONE_PAUSE_FRAMES = 20
 
     fun axisText(context: Context): String = prefs(context).getString(KEY_AXIS_TEXT, "").orEmpty()
     fun axisName(context: Context): String = prefs(context).getString(KEY_AXIS_NAME, "未选择").orEmpty()
@@ -56,6 +71,14 @@ object AppPreferences {
 
     fun setClockDebugEnabled(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean(KEY_CLOCK_DEBUG, value).apply()
+    }
+
+    /** 在游戏画面上层描出识别 ROI 与 TP 刻度，用于肉眼确认裁剪位置。 */
+    fun regionOverlayEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_REGION_OVERLAY, false)
+
+    fun setRegionOverlayEnabled(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_REGION_OVERLAY, value).apply()
     }
 
     fun setSelectedAxisId(context: Context, value: String?) {
@@ -150,12 +173,85 @@ object AppPreferences {
             .apply()
     }
 
+    /** 独立卡帧悬浮窗：三档各自独立的帧率(ms/帧)与帧数，与主面板卡帧步进设置互不影响。 */
+    fun standalonePauseEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_STANDALONE_PAUSE_ENABLED, false)
+
+    fun setStandalonePauseEnabled(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_STANDALONE_PAUSE_ENABLED, value).apply()
+    }
+
+    fun standalonePauseTiers(context: Context): StandalonePauseSettings {
+        val prefs = prefs(context)
+        fun tier(rateKey: String, framesKey: String) = StandalonePauseTier(
+            rateMs = prefs.getInt(rateKey, DEFAULT_STANDALONE_PAUSE_RATE_MS),
+            frames = prefs.getInt(framesKey, DEFAULT_STANDALONE_PAUSE_FRAMES)
+        )
+        return StandalonePauseSettings(
+            tier1 = tier(KEY_STANDALONE_PAUSE_TIER1_RATE, KEY_STANDALONE_PAUSE_TIER1_FRAMES),
+            tier2 = tier(KEY_STANDALONE_PAUSE_TIER2_RATE, KEY_STANDALONE_PAUSE_TIER2_FRAMES),
+            tier3 = tier(KEY_STANDALONE_PAUSE_TIER3_RATE, KEY_STANDALONE_PAUSE_TIER3_FRAMES)
+        )
+    }
+
+    fun saveStandalonePauseTiers(context: Context, settings: StandalonePauseSettings) {
+        prefs(context).edit()
+            .putInt(KEY_STANDALONE_PAUSE_TIER1_RATE, settings.tier1.rateMs)
+            .putInt(KEY_STANDALONE_PAUSE_TIER1_FRAMES, settings.tier1.frames)
+            .putInt(KEY_STANDALONE_PAUSE_TIER2_RATE, settings.tier2.rateMs)
+            .putInt(KEY_STANDALONE_PAUSE_TIER2_FRAMES, settings.tier2.frames)
+            .putInt(KEY_STANDALONE_PAUSE_TIER3_RATE, settings.tier3.rateMs)
+            .putInt(KEY_STANDALONE_PAUSE_TIER3_FRAMES, settings.tier3.frames)
+            .apply()
+    }
+
+    fun standalonePauseX(context: Context, fallback: Int): Int =
+        prefs(context).getInt(KEY_STANDALONE_PAUSE_X, fallback)
+
+    fun standalonePauseY(context: Context, fallback: Int): Int =
+        prefs(context).getInt(KEY_STANDALONE_PAUSE_Y, fallback)
+
+    fun standalonePauseScale(context: Context, fallback: Float): Float =
+        prefs(context).getFloat(KEY_STANDALONE_PAUSE_SCALE, fallback)
+
+    fun standalonePauseMinimizedX(context: Context): Int? =
+        prefs(context).takeIf { it.contains(KEY_STANDALONE_PAUSE_MIN_X) }
+            ?.getInt(KEY_STANDALONE_PAUSE_MIN_X, 0)
+
+    fun standalonePauseMinimizedY(context: Context): Int? =
+        prefs(context).takeIf { it.contains(KEY_STANDALONE_PAUSE_MIN_Y) }
+            ?.getInt(KEY_STANDALONE_PAUSE_MIN_Y, 0)
+
+    fun saveStandalonePausePanel(context: Context, x: Int, y: Int, scale: Float) {
+        prefs(context).edit()
+            .putInt(KEY_STANDALONE_PAUSE_X, x)
+            .putInt(KEY_STANDALONE_PAUSE_Y, y)
+            .putFloat(KEY_STANDALONE_PAUSE_SCALE, scale)
+            .apply()
+    }
+
+    fun saveStandalonePauseMinimized(context: Context, x: Int, y: Int) {
+        prefs(context).edit()
+            .putInt(KEY_STANDALONE_PAUSE_MIN_X, x)
+            .putInt(KEY_STANDALONE_PAUSE_MIN_Y, y)
+            .apply()
+    }
+
     private fun prefs(context: Context) = context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
 }
 
 data class EnergyThresholdPercents(val full: Int, val drop: Int)
 
 data class PauseFrameSettings(val frameMs: Int, val presetA: Int, val presetB: Int, val menuWaitMs: Int)
+
+/** 独立卡帧悬浮窗的一档：帧率(ms/帧) 与前进帧数。 */
+data class StandalonePauseTier(val rateMs: Int, val frames: Int)
+
+data class StandalonePauseSettings(
+    val tier1: StandalonePauseTier,
+    val tier2: StandalonePauseTier,
+    val tier3: StandalonePauseTier
+)
 
 /**
  * 校验卡帧设置：单帧时长 5~500ms、两档帧数各 1~600、菜单等待 100~3000ms。合法返回 [PauseFrameSettings]，否则 null。
@@ -170,6 +266,17 @@ fun parsePauseFrameSettings(msText: String, aText: String, bText: String, menuWa
     if (b !in 1..600) return null
     if (menuWait !in 100..3000) return null
     return PauseFrameSettings(ms, a, b, menuWait)
+}
+
+/**
+ * 校验独立卡帧悬浮窗的一档设置：帧率 5~500ms、帧数 1~600。合法返回 [StandalonePauseTier]，否则 null。
+ */
+fun parseStandalonePauseTier(rateText: String, framesText: String): StandalonePauseTier? {
+    val rate = rateText.trim().toIntOrNull() ?: return null
+    val frames = framesText.trim().toIntOrNull() ?: return null
+    if (rate !in 5..500) return null
+    if (frames !in 1..600) return null
+    return StandalonePauseTier(rate, frames)
 }
 
 /**

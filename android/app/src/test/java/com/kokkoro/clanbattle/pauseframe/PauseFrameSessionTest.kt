@@ -36,6 +36,18 @@ class PauseFrameSessionTest {
         assertTrue(log.contains("delay:800"))
     }
 
+    @Test fun `release honors a per-call frame rate override`() {
+        val log = mutableListOf<String>()
+        val scheduler = FakeScheduler(log)
+        val session = PauseFrameSession(FakePort(log), scheduler, perFrameMs = 40, focusTransitionMs = 1_000)
+        session.enter("node-1", CharacterRole.ROLE_3)
+
+        session.release(5, frameMs = 100)
+        scheduler.runNext()
+
+        assertTrue(log.contains("delay:500"))
+    }
+
     @Test fun `confirm taps the avatar in the existing pause menu then dismisses it`() {
         val log = mutableListOf<String>()
         val diagnostics = mutableListOf<PauseFrameDiagnosticEvent>()
