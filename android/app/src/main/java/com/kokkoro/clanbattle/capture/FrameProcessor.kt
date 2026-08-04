@@ -1031,8 +1031,8 @@ class FrameProcessor(
     }
 
     /** 启用后 [process] 不再自行检测 TP，改为消费 [sampleEnergy] 的结果。 */
-    fun setExternalEnergySampling(enabled: Boolean) {
-        if (externalEnergySampling == enabled) return
+    fun setExternalEnergySampling(enabled: Boolean, reset: Boolean = false) {
+        if (externalEnergySampling == enabled && !reset) return
         externalEnergySampling = enabled
         // 采样通道切换意味着 HUD 尺寸与历史比例都不再可信，重建检测器。
         resetEnergySampling()

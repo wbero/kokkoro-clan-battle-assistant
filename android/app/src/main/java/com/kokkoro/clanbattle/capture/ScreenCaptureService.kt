@@ -59,12 +59,11 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private var projection: MediaProjection? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private var energyReader: ImageReader? = null
-    private var energyDisplay: VirtualDisplay? = null
     private var frameProcessor: FrameProcessor? = null
     private var captureWidth = 0
     private var captureHeight = 0
-    private var lastProcessedNanos = 0L
+    private var captureGeneration = 0L
+    private val frameDispatchGate = CaptureFrameDispatchGate(FRAME_INTERVAL_NANOS)
     private var battleLocked = false
     private val captureSessionGate = CaptureSessionGate()
     @Volatile private var captureState = CaptureState.IDLE
@@ -260,7 +259,6 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             // A battle reset belongs to a successfully established capture session.
             // Keeping it after display creation prevents an invalid/short-lived
             // authorization from wiping an already running battle state.
-            lastProcessedNanos = 0L
             prepareNewBattle()
             Log.i("KokkoroCapture", "virtual display created, showing overlay")
             captureState = CaptureState.ACTIVE
@@ -280,21 +278,18 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
 
         val newWidth = metrics.widthPixels
         val newHeight = metrics.heightPixels
-        val reader = ImageReader.newInstance(newWidth, newHeight, PixelFormat.RGBA_8888, 2)
-        reader.setOnImageAvailableListener({ source ->
-            val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
-            try {
-                if (!captureProcessingAllowed(pauseFrameRole, pauseFrameProcessingBlocked)) {
-                    return@setOnImageAvailableListener
-                }
-                val now = SystemClock.elapsedRealtimeNanos()
-                if (now - lastProcessedNanos < FRAME_INTERVAL_NANOS) return@setOnImageAvailableListener
-                lastProcessedNanos = now
-                frameProcessor?.process(image)
-            } finally {
-                image.close()
-            }
-        }, captureHandler)
+        frameDispatchGate.reset()
+        val generation = ++captureGeneration
+        val reader = ImageReader.newInstance(
+            newWidth,
+            newHeight,
+            PixelFormat.RGBA_8888,
+            IMAGE_READER_MAX_IMAGES
+        )
+        reader.setOnImageAvailableListener(
+            { source -> drainCapturedFrames(source, generation) },
+            energyHandler
+        )
 
         val previousReader = imageReader
         try {
@@ -326,39 +321,69 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             stopSelf()
             return false
         }
-        recreateEnergyDisplay(mediaProjection, newWidth, newHeight, metrics.densityDpi)
+        frameProcessor?.setExternalEnergySampling(enabled = true, reset = true)
+        Log.i(
+            ENERGY_LOG_TAG,
+            "same-display TP fast path enabled maxImages=$IMAGE_READER_MAX_IMAGES"
+        )
         publishStatus(FrameStatus("捕获 ${captureWidth}×${captureHeight}", captureWidth > captureHeight, 0, captureWidth, captureHeight))
         return true
     }
 
     /**
-     * TP 专用采集通道。满 TP 在快充 UB 里可能只存在一帧，而完整识别一轮约 60ms，
-     * 与它共用采集线程就必然漏采。这里另开一路镜像，只裁能量条、只算填充比例，
-     * 因此可以按显示帧率运行。创建失败时回退到完整识别内部检测，功能不受影响。
+     * Drain frames in presentation order. Every frame is sampled for TP on the
+     * lightweight TP thread. At most one image is retained and handed to the
+     * original capture thread for full recognition, so slow OCR cannot block TP
+     * acquisition or create a growing queue.
      */
-    private fun recreateEnergyDisplay(
-        mediaProjection: MediaProjection,
-        width: Int,
-        height: Int,
-        densityDpi: Int
-    ) {
-        releaseEnergyDisplay()
-        val processor = frameProcessor ?: return
-        processor.setExternalEnergySampling(false)
-        Log.w(ENERGY_LOG_TAG, "energy display disabled (single VirtualDisplay per projection); using in-frame TP sampling")
-    }
+    private fun drainCapturedFrames(source: ImageReader, generation: Long) {
+        while (true) {
+            val image = try {
+                source.acquireNextImage()
+            } catch (error: IllegalStateException) {
+                Log.w(ENERGY_LOG_TAG, "unable to acquire next capture frame", error)
+                return
+            } ?: return
 
-    private fun releaseEnergyDisplay() {
-        frameProcessor?.setExternalEnergySampling(false)
-        energyReader?.setOnImageAvailableListener(null, null)
-        energyDisplay?.release()
-        energyReader?.close()
-        energyDisplay = null
-        energyReader = null
+            var handedToSlowProcessor = false
+            try {
+                if (!captureProcessingAllowed(pauseFrameRole, pauseFrameProcessingBlocked)) {
+                    continue
+                }
+
+                // This only copies/scans the narrow TP HUD and is designed to run
+                // for every delivered display frame.
+                frameProcessor?.sampleEnergy(image)
+
+                val now = SystemClock.elapsedRealtimeNanos()
+                val slowFrameLease = frameDispatchGate.tryBeginSlowFrame(now) ?: continue
+
+                handedToSlowProcessor = captureHandler.post {
+                    try {
+                        if (
+                            generation == captureGeneration &&
+                            captureProcessingAllowed(pauseFrameRole, pauseFrameProcessingBlocked)
+                        ) {
+                            frameProcessor?.process(image)
+                        }
+                    } catch (error: RuntimeException) {
+                        Log.e("KokkoroCapture", "full-frame recognition failed", error)
+                    } finally {
+                        image.close()
+                        frameDispatchGate.completeSlowFrame(slowFrameLease)
+                    }
+                }
+                if (!handedToSlowProcessor) frameDispatchGate.completeSlowFrame(slowFrameLease)
+            } finally {
+                if (!handedToSlowProcessor) image.close()
+            }
+        }
     }
 
     private fun releaseDisplay() {
-        releaseEnergyDisplay()
+        ++captureGeneration
+        frameDispatchGate.reset()
+        frameProcessor?.setExternalEnergySampling(false)
         imageReader?.setOnImageAvailableListener(null, null)
         virtualDisplay?.release()
         imageReader?.close()
@@ -640,10 +665,21 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                 .addAction(Notification.Action.Builder(null, "停止", stop).build())
                 .setOngoing(true)
                 .build()
-            val fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            Log.i("KokkoroCapture", "startForeground fgsType=$fgsType (0x${fgsType.toString(16)}) sdk=${Build.VERSION.SDK_INT}")
-            startForeground(NOTIFICATION_ID, notification, fgsType)
-            Log.i("KokkoroCapture", "startForeground succeeded, actualFgsType=0x${getForegroundServiceType().toString(16)}")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                Log.i(
+                    "KokkoroCapture",
+                    "startForeground fgsType=$fgsType (0x${fgsType.toString(16)}) sdk=${Build.VERSION.SDK_INT}"
+                )
+                startForeground(NOTIFICATION_ID, notification, fgsType)
+                Log.i(
+                    "KokkoroCapture",
+                    "startForeground succeeded, actualFgsType=0x${foregroundServiceType.toString(16)}"
+                )
+            } else {
+                Log.i("KokkoroCapture", "startForeground legacy sdk=${Build.VERSION.SDK_INT}")
+                startForeground(NOTIFICATION_ID, notification)
+            }
             return true
         } catch (e: Exception) {
             Log.e("KokkoroCapture", "Failed to start foreground service", e)
@@ -673,6 +709,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         private const val CHANNEL_ID = "kokkoro_capture"
         private const val NOTIFICATION_ID = 1001
         private const val FRAME_INTERVAL_NANOS = 50_000_000L
+        private const val IMAGE_READER_MAX_IMAGES = 4
         private const val PAUSE_FRAME_LOG_TAG = "KokkoroPauseFrame"
         private const val ENERGY_LOG_TAG = "KokkoroEnergy"
     }
