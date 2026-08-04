@@ -45,6 +45,9 @@ import com.kokkoro.clanbattle.config.parseBossUbEarlyConfirmationHoldMs
 import com.kokkoro.clanbattle.config.parseEnergyThresholdPercents
 import com.kokkoro.clanbattle.config.parsePauseFrameSettings
 import com.kokkoro.clanbattle.config.parseRoleSetFallbackGraceMs
+import com.kokkoro.clanbattle.config.parseStandalonePauseTier
+import com.kokkoro.clanbattle.config.StandalonePauseSettings
+import com.kokkoro.clanbattle.pauseframe.PauseFrameOverlay
 import com.kokkoro.clanbattle.ui.UiKit
 
 class MainActivity : Activity() {
@@ -52,6 +55,7 @@ class MainActivity : Activity() {
     private lateinit var statusDot: View
     private lateinit var axisView: TextView
     private lateinit var dryRunCheckBox: CheckBox
+    private lateinit var standalonePauseButton: Button
     private lateinit var projectionManager: MediaProjectionManager
     private lateinit var axisLibrary: AxisLibrary
     private lateinit var axisList: LinearLayout
@@ -82,6 +86,8 @@ class MainActivity : Activity() {
         super.onStart()
         refreshAxisLabel()
         refreshPermissionStatus()
+        refreshStandalonePauseButton()
+        if (AppPreferences.standalonePauseEnabled(this)) PauseFrameOverlay.show(this)
         if (!receiverRegistered) {
             val filter = IntentFilter(ScreenCaptureService.ACTION_STATUS)
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(statusReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -232,6 +238,10 @@ class MainActivity : Activity() {
             packageManager.getLaunchIntentForPackage(GAME_PACKAGE)?.let(::startActivity)
                 ?: Toast.makeText(this, "未找到游戏", Toast.LENGTH_SHORT).show()
         }, matchWidth(top = 8))
+        content.addView(secondaryButton("") { toggleStandalonePause() }.also {
+            standalonePauseButton = it
+            refreshStandalonePauseButton()
+        }, matchWidth(top = 8))
 
         return ScrollView(this).apply { addView(content) }
     }
@@ -284,6 +294,19 @@ class MainActivity : Activity() {
             textSize = 12f
             setTextColor(UiKit.TEXT_SECONDARY)
         })
+        diagnosticsCard.addView(CheckBox(this).apply {
+            text = "显示识别区域与 TP 刻度"
+            setTextColor(UiKit.TEXT_PRIMARY)
+            isChecked = AppPreferences.regionOverlayEnabled(this@MainActivity)
+            setOnCheckedChangeListener { _, checked ->
+                AppPreferences.setRegionOverlayEnabled(this@MainActivity, checked)
+            }
+        })
+        diagnosticsCard.addView(TextView(this).apply {
+            text = "在游戏画面上层描出时钟、AUTO、SET、TP 等识别框，并在每条 TP 下方画出识别到的能量刻度。开关立即生效，无需重启录屏。"
+            textSize = 12f
+            setTextColor(UiKit.TEXT_SECONDARY)
+        })
         content.addView(diagnosticsCard, matchWidth(top = 12))
 
         content.addView(buildEnergyThresholdCard(), matchWidth(top = 12))
@@ -293,6 +316,8 @@ class MainActivity : Activity() {
         content.addView(buildRoleSetFallbackCard(), matchWidth(top = 12))
 
         content.addView(buildPauseFrameCard(), matchWidth(top = 12))
+
+        content.addView(buildStandalonePauseCard(), matchWidth(top = 12))
 
         val aboutCard = UiKit.card(this)
         aboutCard.addView(caption("关于"))
@@ -398,6 +423,118 @@ class MainActivity : Activity() {
             })
         }, matchWidth())
         return card
+    }
+
+    private fun buildStandalonePauseCard(): LinearLayout {
+        val card = UiKit.card(this)
+        card.addView(caption("独立卡帧悬浮窗"))
+        card.addView(TextView(this).apply {
+            text = "在战斗页开启独立的卡帧悬浮窗，可在游戏中手动逐帧卡帧。三档各自设置帧率(ms/帧)与帧数，与上方主面板卡帧设置完全独立。悬浮窗仅需悬浮窗与无障碍权限，不依赖截图识别。"
+            textSize = 12f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(0, dp(4), 0, dp(6))
+        })
+        val tiers = AppPreferences.standalonePauseTiers(this)
+        val rateInputs = (1..3).map { i -> thresholdInput(standaloneTierRate(tiers, i)) }
+        val framesInputs = (1..3).map { i -> thresholdInput(standaloneTierFrames(tiers, i)) }
+        (1..3).forEach { i ->
+            card.addView(standaloneTierRow("档位$i", rateInputs[i - 1], framesInputs[i - 1]))
+        }
+        card.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, 0)
+            addView(textButton("恢复默认", UiKit.TEXT_SECONDARY, enabled = true) {
+                rateInputs.forEach { it.setText(AppPreferences.DEFAULT_STANDALONE_PAUSE_RATE_MS.toString()) }
+                framesInputs.forEach { it.setText(AppPreferences.DEFAULT_STANDALONE_PAUSE_FRAMES.toString()) }
+            })
+            addView(textButton("保存卡帧", UiKit.ACCENT_DARK, enabled = true) {
+                val levels = (0 until 3).map { i ->
+                    parseStandalonePauseTier(rateInputs[i].text.toString(), framesInputs[i].text.toString())
+                }
+                if (levels.any { it == null }) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "每档帧率 5~500ms、帧数 1~600",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    val settings = StandalonePauseSettings(levels[0]!!, levels[1]!!, levels[2]!!)
+                    AppPreferences.saveStandalonePauseTiers(this@MainActivity, settings)
+                    PauseFrameOverlay.refreshTiers()
+                    listOf(settings.tier1, settings.tier2, settings.tier3).forEachIndexed { index, tier ->
+                        rateInputs[index].setText(tier.rateMs.toString())
+                        framesInputs[index].setText(tier.frames.toString())
+                    }
+                    Toast.makeText(this@MainActivity, "已保存，悬浮窗按钮即时更新", Toast.LENGTH_SHORT).show()
+                }
+            })
+        }, matchWidth())
+        return card
+    }
+
+    private fun standaloneTierRate(tiers: StandalonePauseSettings, index: Int): Int = when (index) {
+        1 -> tiers.tier1.rateMs
+        2 -> tiers.tier2.rateMs
+        else -> tiers.tier3.rateMs
+    }
+
+    private fun standaloneTierFrames(tiers: StandalonePauseSettings, index: Int): Int = when (index) {
+        1 -> tiers.tier1.frames
+        2 -> tiers.tier2.frames
+        else -> tiers.tier3.frames
+    }
+
+    private fun standaloneTierRow(
+        label: String,
+        rateInput: EditText,
+        framesInput: EditText
+    ): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, dp(6), 0, dp(6))
+        addView(TextView(this@MainActivity).apply {
+            text = label
+            textSize = 15f
+            setTextColor(UiKit.TEXT_PRIMARY)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        addView(rateInput)
+        addView(TextView(this@MainActivity).apply {
+            text = "ms/帧"
+            textSize = 13f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(dp(4), 0, dp(8), 0)
+        })
+        addView(framesInput)
+        addView(TextView(this@MainActivity).apply {
+            text = "帧"
+            textSize = 13f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(dp(4), 0, 0, 0)
+        })
+    }
+
+    private fun toggleStandalonePause() {
+        val enabling = !AppPreferences.standalonePauseEnabled(this)
+        if (enabling && !Settings.canDrawOverlays(this)) {
+            setStatus("请先授予悬浮窗权限，再开启卡帧悬浮窗", false)
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            )
+            return
+        }
+        if (enabling) {
+            PauseFrameOverlay.show(this)
+        } else {
+            PauseFrameOverlay.hide(this)
+        }
+        refreshStandalonePauseButton()
+    }
+
+    private fun refreshStandalonePauseButton() {
+        if (!::standalonePauseButton.isInitialized) return
+        val enabled = AppPreferences.standalonePauseEnabled(this)
+        standalonePauseButton.text = if (enabled) "关闭卡帧悬浮窗" else "开启卡帧悬浮窗"
     }
 
     private fun buildRoleSetFallbackCard(): LinearLayout {

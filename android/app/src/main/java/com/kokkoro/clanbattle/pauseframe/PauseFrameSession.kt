@@ -68,8 +68,11 @@ class PauseFrameSession(
         return result(accepted = state == PauseFrameState.SOFT_PAUSED)
     }
 
-    /** 释放 [frameCount] 帧：解除卡帧、运行 frameCount×perFrameMs 后重新卡住。frameCount<1 视为 1。 */
-    fun release(frameCount: Int): PauseFrameResult {
+    /**
+     * 释放 [frameCount] 帧：解除卡帧、运行 frameCount×[frameMs] 后重新卡住。frameCount<1 视为 1。
+     * 默认按会话构造时的 [perFrameMs] 步进；也可传入独立帧率（如独立卡帧悬浮窗各档自己的 ms/帧）。
+     */
+    fun release(frameCount: Int, frameMs: Long = perFrameMs): PauseFrameResult {
         if (state != PauseFrameState.SOFT_PAUSED) return result(accepted = false)
         diagnose("advance", "requested")
         state = PauseFrameState.ADVANCING
@@ -77,7 +80,7 @@ class PauseFrameSession(
         diagnose("focus-release", if (released) "success" else "failed")
         if (!released) return fail()
         val advanceGeneration = generation
-        val releaseMs = perFrameMs * frameCount.coerceAtLeast(1)
+        val releaseMs = frameMs.coerceAtLeast(1L) * frameCount.coerceAtLeast(1)
         scheduler.schedule(focusTransitionMs) outer@{
             if (generation != advanceGeneration || state != PauseFrameState.ADVANCING) return@outer
             val back = focusPort.sendBack()
