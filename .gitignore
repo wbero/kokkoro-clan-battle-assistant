@@ -1,4 +1,5 @@
 dist/*.apk
+release/
 *.log
 *.tmp
 __pycache__/
@@ -22,6 +23,11 @@ android/energy-*-live.png
 .idea/
 .worktrees/
 *.iml
+
+# 实机/模拟器拉取的识别诊断会话（体积大且与代码无关）
+log/
+device-logs/
+session-*/
 
 # Signing material must never be committed.
 *.jks

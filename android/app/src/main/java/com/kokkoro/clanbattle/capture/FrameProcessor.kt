@@ -42,6 +42,10 @@ import com.kokkoro.clanbattle.recognition.RecognitionResult
 import com.kokkoro.clanbattle.scheduler.GameStateDetector
 import com.kokkoro.clanbattle.scheduler.GameState
 import com.kokkoro.clanbattle.scheduler.BossUbDetector
+import com.kokkoro.clanbattle.overlay.DebugBoxTint
+import com.kokkoro.clanbattle.overlay.DebugOverlayFrame
+import com.kokkoro.clanbattle.overlay.DebugRegionBox
+import com.kokkoro.clanbattle.overlay.DebugTpBar
 import com.kokkoro.clanbattle.pauseframe.PauseFrameDiagnosticEvent
 import com.kokkoro.clanbattle.sequenceaxis.SequenceAxisRuntime
 import com.kokkoro.clanbattle.sequenceaxis.SequenceFrameInput
@@ -224,7 +228,8 @@ class FrameProcessor(
     private val statusCallback: (FrameStatus) -> Unit,
     private val pauseFrameCallback: (String, com.kokkoro.clanbattle.recognition.CharacterRole) -> Unit = { _, _ -> },
     private val battleLockCallback: () -> Unit = {},
-    private val messageCallback: (String) -> Unit = {}
+    private val messageCallback: (String) -> Unit = {},
+    private val debugOverlayCallback: (DebugOverlayFrame?) -> Unit = {}
 ) {
     private val appContext = context.applicationContext
     private val recognizer = ClockRecognizer(AndroidTemplateLoader.load(appContext))
@@ -245,6 +250,11 @@ class FrameProcessor(
     )
     private var energyDetector: EnergyDetector? = null
     private var energyHudSize: Pair<Int, Int>? = null
+    // TP 采样与完整识别解耦：满 TP 可能只存在一帧（快充 UB），
+    // 而完整识别一轮约 60ms，靠它采样会漏掉大部分快充事件。
+    private val energyLock = Any()
+    @Volatile private var externalEnergySampling = false
+    private val energySamples = EnergySampleBuffer()
     private var axis: AxisDocument = emptyAxis()
     private var activeAxisId: String = ""
     private var openingControlTarget: OpeningControlTarget? = null
@@ -269,6 +279,7 @@ class FrameProcessor(
     private var recorder: ClockDebugRecorder? = null
     private var frameId = 0L
     private var debugEnabled = false
+    private var regionOverlayEnabled = false
     private var centerAnchorCalibrated = false
     private var rightAnchorCalibrated = false
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
@@ -302,7 +313,7 @@ class FrameProcessor(
         centerAnchorCalibrated = false
         rightAnchorCalibrated = false
         filter.reset()
-        energyDetector = null // 置空强制重建，使新战斗读到最新 UB 阈值配置
+        resetEnergySampling() // 置空强制重建，使新战斗读到最新 UB 阈值配置
         gameStateDetector.reset()
         bossUbDetector.configureEarlyConfirmationHoldMs(
             AppPreferences.bossUbEarlyConfirmationHoldMs(appContext).toLong()
@@ -342,23 +353,48 @@ class FrameProcessor(
 
         if (sessionGate.isWaitingForStart()) {
             roleTapSafe = false
-            val score = matchRegion(
+            // 编组/结算等非战斗画面里能量条位置放的是别的 UI，采样线程读出的
+            // 比例毫无意义。丢掉这期间累积的事件，避免开战第一帧收到一批假 UB。
+            energySamples.reset()
+            val battleScore = matchRegion(
                 image, BattleReferenceRegions.START_BUTTON, battleTemplates.startBattle,
                 HorizontalAnchor.CENTER,
                 calibrate = true,
                 calibrationThreshold = TEMPLATE_THRESHOLD
             )
+            // 公会战更新后模拟战的按钮文字变成"模拟战开始"，正式战斗模板不再命中。
+            // 正式模板没命中时再试模拟战文字模板，命中任意一个都算进入战斗。
+            val simulationScore = if (battleScore >= TEMPLATE_THRESHOLD) {
+                Double.NEGATIVE_INFINITY
+            } else {
+                matchRegion(
+                    image,
+                    BattleReferenceRegions.SIMULATION_START_BUTTON,
+                    battleTemplates.simulationStartBattle,
+                    HorizontalAnchor.CENTER,
+                    calibrate = true,
+                    calibrationThreshold = TEMPLATE_THRESHOLD
+                )
+            }
+            val score = maxOf(battleScore, simulationScore)
             if (score >= TEMPLATE_THRESHOLD) {
                 sessionGate.onStartMatched()
                 battleLockCallback()
             }
-            if (debugEnabled) recordEarlyFailure(currentFrameId, "waiting-start-template score=${"%.4f".format(Locale.US, score)}")
+            if (debugEnabled) {
+                recordEarlyFailure(
+                    currentFrameId,
+                    "waiting-start-template score=${"%.4f".format(Locale.US, battleScore)}" +
+                        " sim=${"%.4f".format(Locale.US, simulationScore)}"
+                )
+            }
+            publishDebugOverlay(image, null, null)
             publishWaitingStatus("等待战斗开始按钮", score, start, image)
             return
         }
-
         if (sessionGate.isWaitingForLoading()) {
             roleTapSafe = false
+            energySamples.reset()
             val score = matchRegion(
                 image, BattleReferenceRegions.LOADING, battleTemplates.loading, HorizontalAnchor.RIGHT
             )
@@ -377,6 +413,7 @@ class FrameProcessor(
                 // completed between two 50 ms samples on faster devices.
             } else {
                 if (debugEnabled) recordEarlyFailure(currentFrameId, "waiting-loading-template score=${"%.4f".format(Locale.US, score)}")
+                publishDebugOverlay(image, null, null)
                 publishWaitingStatus("等待加载界面", score, start, image)
                 return
             }
@@ -393,13 +430,16 @@ class FrameProcessor(
         val parallelRecognition = recognizeFrameInParallel(image)
         if (closed.get()) return
         val recognition = parallelRecognition.clock
-        val energy = parallelRecognition.energy
+        val energy = if (externalEnergySampling) energySamples.take() else parallelRecognition.energy
         val controlDetection = parallelRecognition.controls
         val filteredControls = controlDetection?.observation?.let(controlObservationFilter::update)
             ?: controlObservationFilter.missing()
         val controls = filteredControls.observation
         val trustworthyControls = controls.takeIf { filteredControls.trustworthy }
         roleTapSafe = filteredControls.trustworthy && menuScore >= MENU_TRUST_THRESHOLD
+        // 画未经跨帧过滤的原始观察：调试时需要看到识别器当帧真正读到什么，
+        // 而不是被过滤器锁住的旧稳定状态。
+        publishDebugOverlay(image, controlDetection?.observation, energy)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
             if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null, energy)
             val elapsed = SystemClock.elapsedRealtime() - start
@@ -724,7 +764,7 @@ class FrameProcessor(
      */
     fun resumeAfterManualPause() {
         filter.reset()
-        energyDetector?.reset()
+        resetEnergySampling()
         controlObservationFilter.reset()
         controlObservationSafetyGate.reset()
         controlTransientHoldUntilMs = 0L
@@ -816,6 +856,12 @@ class FrameProcessor(
     private fun refreshDebugPreference(nowMs: Long, force: Boolean = false) {
         if (!force && lastDebugPreferenceCheckMs != Long.MIN_VALUE && nowMs - lastDebugPreferenceCheckMs < DEBUG_PREFERENCE_POLL_MS) return
         lastDebugPreferenceCheckMs = nowMs
+        val overlayEnabled = AppPreferences.regionOverlayEnabled(appContext)
+        if (overlayEnabled != regionOverlayEnabled) {
+            regionOverlayEnabled = overlayEnabled
+            // 关闭时立刻清空，避免最后一帧的框停留在画面上。
+            if (!overlayEnabled) debugOverlayCallback(null)
+        }
         val enabled = AppPreferences.clockDebugEnabled(appContext)
         if (enabled == debugEnabled) return
         debugEnabled = enabled
@@ -915,7 +961,8 @@ class FrameProcessor(
                 )
             }
             energyFuture = recognitionExecutor.submit<EnergyDetectionResult?> {
-                energyHud?.let(::detectEnergy)
+                // 已有独立高频采样通道时不再重复检测，避免同一次 UB 被消费两次。
+                if (externalEnergySampling) null else energyHud?.let(::detectEnergy)
             }
             controlsFuture = recognitionExecutor.submit<ControlDetection?> {
                 controlCrops?.let(::detectControls)
@@ -945,17 +992,51 @@ class FrameProcessor(
     }.getOrNull()
 
     private fun detectEnergy(hud: PixelImage): EnergyDetectionResult? = runCatching {
-        val size = hud.width to hud.height
-        if (energyDetector == null || energyHudSize != size) {
-            energyDetector = EnergyDetector(
-                BattleReferenceRegions.energyRegionsForHud(hud.width, hud.height),
-                fullThreshold = AppPreferences.energyFullThreshold(appContext),
-                triggeredBelowThreshold = AppPreferences.energyDropThreshold(appContext)
-            )
-            energyHudSize = size
+        synchronized(energyLock) {
+            val size = hud.width to hud.height
+            if (energyDetector == null || energyHudSize != size) {
+                energyDetector = EnergyDetector(
+                    BattleReferenceRegions.energyRegionsForHud(hud.width, hud.height),
+                    fullThreshold = AppPreferences.energyFullThreshold(appContext),
+                    triggeredBelowThreshold = AppPreferences.energyDropThreshold(appContext)
+                )
+                energyHudSize = size
+            }
+            energyDetector!!.detect(hud)
         }
-        energyDetector!!.detect(hud)
     }.getOrNull()
+
+    /**
+     * 独立 TP 采样通道的入口，由专用采集线程按显示帧率调用。
+     * 只裁能量条并算填充比例，开销远低于完整识别，因此可以高频运行。
+     */
+    fun sampleEnergy(image: Image) {
+        if (closed.get() || !externalEnergySampling) return
+        if (image.width <= image.height) return
+        val hud = extractEnergyHud(image) ?: return
+        val result = detectEnergy(hud) ?: return
+        energySamples.submit(result)
+    }
+
+    /**
+     * 清空 TP 检测状态。采样线程与识别线程都会碰这些字段，必须在同一把锁下重置，
+     * 否则重置期间到达的采样帧可能把上一场的比例带进新战斗。
+     */
+    private fun resetEnergySampling() {
+        synchronized(energyLock) {
+            energyDetector = null
+            energyHudSize = null
+        }
+        energySamples.reset()
+    }
+
+    /** 启用后 [process] 不再自行检测 TP，改为消费 [sampleEnergy] 的结果。 */
+    fun setExternalEnergySampling(enabled: Boolean) {
+        if (externalEnergySampling == enabled) return
+        externalEnergySampling = enabled
+        // 采样通道切换意味着 HUD 尺寸与历史比例都不再可信，重建检测器。
+        resetEnergySampling()
+    }
 
     private fun extractControlCrops(image: Image): ControlCrops? = runCatching {
         ControlCrops(
@@ -999,6 +1080,9 @@ class FrameProcessor(
                 val recovery = controlStateMachine.updateRecovery(menuScore, controls, nowMs)
                 if (recovery.safety == ControlSafetyState.RUNNING) {
                     controlObservationSafetyGate.reset()
+                    // 恢复时画面往往还盖着菜单，锁定的稳定状态可能已经过期。
+                    // 一并清掉基线，让菜单关闭后的第一帧重新建立稳定状态。
+                    controlObservationFilter.reset()
                 }
                 recovery
             }
@@ -1143,6 +1227,116 @@ class FrameProcessor(
             ControlAction.TapMenu -> executor.tapMenu(width, height)
             ControlAction.None -> Unit
         }
+    }
+
+    /** 叠加层关闭时不做任何几何计算，保证正常运行路径零额外开销。 */
+    private fun publishDebugOverlay(
+        image: Image,
+        observation: BattleControlObservation?,
+        energy: EnergyDetectionResult?
+    ) {
+        if (!regionOverlayEnabled) return
+        runCatching { buildDebugOverlayFrame(image, observation, energy) }
+            .getOrNull()
+            ?.let(debugOverlayCallback)
+    }
+
+    /**
+     * 用识别器实际使用的 ROI 拼出一帧调试叠加内容。这里必须复用
+     * [ImageRoiExtractor.scaleRegion]，否则画出来的框会和真正裁剪的区域脱节，
+     * 反而掩盖坐标映射问题。
+     */
+    private fun buildDebugOverlayFrame(
+        image: Image,
+        observation: BattleControlObservation?,
+        energy: EnergyDetectionResult?
+    ): DebugOverlayFrame {
+        fun rect(region: ReferenceRegion, anchor: HorizontalAnchor) = ImageRoiExtractor.scaleRegion(
+            image.width, image.height, region.x, region.y, region.width, region.height, anchor
+        )
+        fun tint(state: VisualToggleState?) = when (state) {
+            VisualToggleState.ON -> DebugBoxTint.ON
+            VisualToggleState.OFF -> DebugBoxTint.OFF
+            else -> DebugBoxTint.UNKNOWN
+        }
+
+        val boxes = buildList {
+            add(
+                DebugRegionBox(
+                    "时钟",
+                    ImageRoiExtractor.scaleReferenceRegion(image.width, image.height),
+                    DebugBoxTint.NEUTRAL
+                )
+            )
+            add(DebugRegionBox("菜单", rect(BattleReferenceRegions.MENU_BUTTON, HorizontalAnchor.RIGHT)))
+            add(
+                DebugRegionBox(
+                    "AUTO",
+                    rect(BattleReferenceRegions.AUTO_BUTTON, HorizontalAnchor.RIGHT),
+                    tint(observation?.auto?.state)
+                )
+            )
+            add(
+                DebugRegionBox(
+                    "全局SET",
+                    rect(BattleReferenceRegions.GLOBAL_SET_BUTTON, HorizontalAnchor.RIGHT),
+                    tint(observation?.globalSet?.state)
+                )
+            )
+            if (sessionGate.isWaitingForStart()) {
+                add(DebugRegionBox("开始", rect(BattleReferenceRegions.START_BUTTON, HorizontalAnchor.CENTER)))
+                add(
+                    DebugRegionBox(
+                        "模拟战开始",
+                        rect(BattleReferenceRegions.SIMULATION_START_BUTTON, HorizontalAnchor.CENTER)
+                    )
+                )
+            }
+            if (sessionGate.isWaitingForLoading()) {
+                add(DebugRegionBox("加载", rect(BattleReferenceRegions.LOADING, HorizontalAnchor.RIGHT)))
+            }
+            BattleReferenceRegions.ROLE_SET_BADGES.forEach { (role, region) ->
+                add(
+                    DebugRegionBox(
+                        "SET${role.ordinal + 1}",
+                        rect(region, HorizontalAnchor.CENTER),
+                        tint(observation?.roles?.get(role)?.state)
+                    )
+                )
+            }
+        }
+
+        val hudRect = rect(BattleReferenceRegions.ENERGY_HUD, HorizontalAnchor.CENTER)
+        val hudWidth = hudRect.width()
+        val hudHeight = hudRect.height()
+        val tpBars = if (hudWidth > 0 && hudHeight > 0 && energy != null) {
+            BattleReferenceRegions.energyRegionsForHud(hudWidth, hudHeight).map { (role, region) ->
+                val state = energy.characters[role]
+                DebugTpBar(
+                    label = "TP${role.ordinal + 1}",
+                    rect = Rect(
+                        hudRect.left + region.x,
+                        hudRect.top + region.y,
+                        hudRect.left + region.x + region.width,
+                        hudRect.top + region.y + region.height
+                    ),
+                    ratio = state?.blueRatio ?: 0f,
+                    full = state?.isFull == true,
+                    triggered = state?.triggered == true
+                )
+            }
+        } else {
+            emptyList()
+        }
+
+        return DebugOverlayFrame(
+            captureWidth = image.width,
+            captureHeight = image.height,
+            boxes = boxes,
+            tpBars = tpBars,
+            fullThreshold = AppPreferences.energyFullThreshold(appContext),
+            dropThreshold = AppPreferences.energyDropThreshold(appContext)
+        )
     }
 
     private fun extractRegion(

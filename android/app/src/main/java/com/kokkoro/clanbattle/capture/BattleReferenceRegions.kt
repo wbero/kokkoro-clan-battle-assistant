@@ -5,8 +5,39 @@ import com.kokkoro.clanbattle.recognition.EnergyRegion
 
 data class ReferenceRegion(val x: Int, val y: Int, val width: Int, val height: Int)
 
+/**
+ * 按素材与整体控件的尺寸比例，取 [outer] 内部居中的子矩形。
+ * 用于"素材只裁了控件内部一部分"的模板，避免手工写死一组无来源的坐标。
+ */
+fun centeredSubRegion(
+    outer: ReferenceRegion,
+    templateWidth: Int,
+    templateHeight: Int,
+    fullTemplateWidth: Int,
+    fullTemplateHeight: Int
+): ReferenceRegion {
+    require(templateWidth in 1..fullTemplateWidth)
+    require(templateHeight in 1..fullTemplateHeight)
+    val width = (outer.width.toLong() * templateWidth / fullTemplateWidth).toInt().coerceAtLeast(1)
+    val height = (outer.height.toLong() * templateHeight / fullTemplateHeight).toInt().coerceAtLeast(1)
+    return ReferenceRegion(
+        x = outer.x + (outer.width - width) / 2,
+        y = outer.y + (outer.height - height) / 2,
+        width = width,
+        height = height
+    )
+}
+
 object BattleReferenceRegions {
     val START_BUTTON = ReferenceRegion(1565, 850, 275, 115)
+
+    /**
+     * 模拟战开始按钮的文字区域。素材是按钮内的文字裁剪（216×51），不含按钮边框，
+     * 因此这里取 [START_BUTTON] 内部等比居中的子矩形，而不是整颗按钮。
+     * 前提是模拟战按钮与正式战斗按钮占据同一块屏幕位置——需要用调试叠加层实测确认。
+     */
+    val SIMULATION_START_BUTTON = centeredSubRegion(START_BUTTON, 216, 51, 277, 118)
+
     val LOADING = ReferenceRegion(1545, 955, 190, 60)
     val MENU_BUTTON = ReferenceRegion(1761, 33, 87, 37)
     val GLOBAL_SET_BUTTON = ReferenceRegion(1788, 644, 87, 86)

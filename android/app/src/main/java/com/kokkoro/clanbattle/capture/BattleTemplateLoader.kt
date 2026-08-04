@@ -6,12 +6,15 @@ import com.kokkoro.clanbattle.recognition.PixelImage
 
 data class BattleTemplates(
     val startBattle: PixelImage,
+    /** 模拟战的开始按钮文字与正式战斗不同（"模拟战开始" 而非 "战斗开始"）。 */
+    val simulationStartBattle: PixelImage,
     val loading: PixelImage
 )
 
 object BattleTemplateLoader {
     fun load(context: Context): BattleTemplates = BattleTemplates(
         startBattle = loadImage(context, "battle/start_battle.bmp"),
+        simulationStartBattle = loadImage(context, "battle/sim_start_battle.bmp"),
         loading = loadImage(context, "battle/loading.bmp")
     )
 
