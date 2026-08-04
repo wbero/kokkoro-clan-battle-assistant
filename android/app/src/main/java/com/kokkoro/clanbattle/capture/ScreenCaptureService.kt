@@ -67,6 +67,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private var lastProcessedNanos = 0L
     private var battleLocked = false
     private val captureSessionGate = CaptureSessionGate()
+    @Volatile private var captureState = CaptureState.IDLE
     @Volatile private var pauseFrameRole: CharacterRole? = null
     // Keep recognition paused until the confirmation menu interaction has fully
     // completed; the menu covers the TP HUD and can look like a false UB.
@@ -77,9 +78,24 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            captureSessionGate.clear()
-            stopSelf()
+            Log.w("KokkoroCapture", "MediaProjection stopped by system")
+            captureState = CaptureState.STOPPED
+            captureHandler.post { handleProjectionStopped() }
+            mainHandler.post {
+                overlay.hide()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
+    }
+
+    private fun handleProjectionStopped() {
+        releaseDisplay()
+        val proj = projection
+        proj?.unregisterCallback(projectionCallback)
+        proj?.stop()
+        projection = null
+        captureSessionGate.clear()
     }
 
     override fun onCreate() {
@@ -134,10 +150,12 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i("KokkoroCapture", "onStartCommand action=${intent?.action} state=$captureState")
         if (intent?.action == ACTION_STOP) {
             // 先关闸再广播最终状态：采集线程可能还有最后一帧在路上，
             // 不能让它把“已停止”覆盖回帧状态文本。
             stopRequested = true
+            captureState = CaptureState.STOPPED
             publishStatus(FrameStatus("已停止", false, 0, captureWidth, captureHeight), force = true)
             stopSelf()
             return START_NOT_STICKY
@@ -148,8 +166,17 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         }
         if (intent?.action != ACTION_START) return START_NOT_STICKY
 
+        if (captureState != CaptureState.IDLE) {
+            Log.w("KokkoroCapture", "Ignoring duplicate capture start: $captureState")
+            return START_NOT_STICKY
+        }
+        captureState = CaptureState.STARTING
+
         stopRequested = false
-        startCaptureForeground()
+        if (!startCaptureForeground()) {
+            captureState = CaptureState.IDLE
+            return START_NOT_STICKY
+        }
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         val data = if (Build.VERSION.SDK_INT >= 33) {
             intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
@@ -159,22 +186,29 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         }
         if (resultCode != Activity.RESULT_OK || data == null) {
             publishStatus(FrameStatus("截图授权无效", false, 0, 0, 0))
+            captureState = CaptureState.IDLE
             stopSelf()
             return START_NOT_STICKY
         }
         val sessionId = intent.getLongExtra(EXTRA_CAPTURE_SESSION_ID, 0L)
         if (sessionId <= 0L) {
             publishStatus(FrameStatus("截图会话无效，请重新授权", false, 0, captureWidth, captureHeight))
+            captureState = CaptureState.IDLE
             stopSelf()
             return START_NOT_STICKY
         }
-        if (!captureSessionGate.begin(sessionId)) return START_NOT_STICKY
+        if (!captureSessionGate.begin(sessionId)) {
+            captureState = CaptureState.IDLE
+            return START_NOT_STICKY
+        }
 
         captureHandler.post { startCaptureSession(resultCode, data, sessionId) }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        Log.w("KokkoroCapture", "onDestroy state=$captureState")
+        captureState = CaptureState.STOPPED
         displayManager.unregisterDisplayListener(this)
         captureHandler.post {
             releaseDisplay()
@@ -205,15 +239,18 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     }
 
     private fun startCaptureSession(resultCode: Int, data: Intent, sessionId: Long) {
+        Log.i("KokkoroCapture", "startCaptureSession resultCode=$resultCode sessionId=$sessionId")
         val newProjection = try {
             getSystemService(MediaProjectionManager::class.java)
                 .getMediaProjection(resultCode, data)
                 .also { it.registerCallback(projectionCallback, captureHandler) }
         } catch (error: RuntimeException) {
+            Log.e("KokkoroCapture", "getMediaProjection failed", error)
             captureSessionGate.fail(sessionId)
             publishStatus(FrameStatus("截图授权启动失败，请重新授权", false, 0, captureWidth, captureHeight))
             return
         }
+        Log.i("KokkoroCapture", "projection obtained, creating virtual display")
 
         releaseDisplay()
         projection?.unregisterCallback(projectionCallback)
@@ -225,10 +262,13 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             // authorization from wiping an already running battle state.
             lastProcessedNanos = 0L
             prepareNewBattle()
+            Log.i("KokkoroCapture", "virtual display created, showing overlay")
+            captureState = CaptureState.ACTIVE
             mainHandler.post { overlay.show() }
             renderOverlay()
             captureSessionGate.activate(sessionId)
         } else {
+            captureState = CaptureState.IDLE
             captureSessionGate.fail(sessionId)
         }
     }
@@ -304,43 +344,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     ) {
         releaseEnergyDisplay()
         val processor = frameProcessor ?: return
-        val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        reader.setOnImageAvailableListener({ source ->
-            val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
-            try {
-                if (!captureProcessingAllowed(pauseFrameRole, pauseFrameProcessingBlocked)) {
-                    return@setOnImageAvailableListener
-                }
-                processor.sampleEnergy(image)
-            } finally {
-                image.close()
-            }
-        }, energyHandler)
-
-        val created = runCatching {
-            mediaProjection.createVirtualDisplay(
-                "KokkoroEnergyCapture",
-                width,
-                height,
-                densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.surface,
-                null,
-                energyHandler
-            )
-        }.getOrNull()
-
-        if (created == null) {
-            reader.setOnImageAvailableListener(null, null)
-            reader.close()
-            processor.setExternalEnergySampling(false)
-            Log.w(ENERGY_LOG_TAG, "energy display unavailable; falling back to in-frame TP sampling")
-            return
-        }
-        energyDisplay = created
-        energyReader = reader
-        processor.setExternalEnergySampling(true)
-        Log.i(ENERGY_LOG_TAG, "energy display ready ${width}x$height")
+        processor.setExternalEnergySampling(false)
+        Log.w(ENERGY_LOG_TAG, "energy display disabled (single VirtualDisplay per projection); using in-frame TP sampling")
     }
 
     private fun releaseEnergyDisplay() {
@@ -613,31 +618,38 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         )
     }
 
-    private fun startCaptureForeground() {
-        val openApp = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val stop = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, ScreenCaptureService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_view)
-            .setContentTitle(getString(R.string.capture_notification_title))
-            .setContentText("等待游戏横屏")
-            .setContentIntent(openApp)
-            .addAction(Notification.Action.Builder(null, "停止", stop).build())
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+    private fun startCaptureForeground(): Boolean {
+        try {
+            val openApp = PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val stop = PendingIntent.getService(
+                this,
+                1,
+                Intent(this, ScreenCaptureService::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_menu_view)
+                .setContentTitle(getString(R.string.capture_notification_title))
+                .setContentText("等待游戏横屏")
+                .setContentIntent(openApp)
+                .addAction(Notification.Action.Builder(null, "停止", stop).build())
+                .setOngoing(true)
+                .build()
+            val fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            Log.i("KokkoroCapture", "startForeground fgsType=$fgsType (0x${fgsType.toString(16)}) sdk=${Build.VERSION.SDK_INT}")
+            startForeground(NOTIFICATION_ID, notification, fgsType)
+            Log.i("KokkoroCapture", "startForeground succeeded, actualFgsType=0x${getForegroundServiceType().toString(16)}")
+            return true
+        } catch (e: Exception) {
+            Log.e("KokkoroCapture", "Failed to start foreground service", e)
+            publishStatus(FrameStatus("录屏服务启动失败: ${e.message}", false, 0, 0, 0))
+            stopSelf()
+            return false
         }
     }
 
@@ -665,6 +677,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         private const val ENERGY_LOG_TAG = "KokkoroEnergy"
     }
 }
+
+private enum class CaptureState { IDLE, STARTING, ACTIVE, STOPPED }
 
 fun captureProcessingAllowed(
     pauseFrameRole: CharacterRole?,
