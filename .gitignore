@@ -42,3 +42,6 @@ test/screenshot.png
 test/templates/
 test/debug_*
 test/annotated*
+
+# Internal development docs (design specs, plans, roadmaps).
+docs/
