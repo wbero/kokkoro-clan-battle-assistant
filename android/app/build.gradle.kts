@@ -31,8 +31,8 @@ android {
         applicationId = "com.kokkoro.clanbattle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12000
-        versionName = "1.2.0"
+        versionCode = 12001
+        versionName = "1.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

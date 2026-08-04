@@ -63,6 +63,7 @@ class MainActivity : Activity() {
     private lateinit var pages: List<View>
     private lateinit var navigationButtons: List<Button>
     private var receiverRegistered = false
+    private var pendingCaptureRequest = false
     private val permissionUpdaters = mutableListOf<() -> Unit>()
 
     private val statusReceiver = object : BroadcastReceiver() {
@@ -123,6 +124,14 @@ class MainActivity : Activity() {
             }
 
             REQUEST_AXIS -> if (resultCode == RESULT_OK && data?.data != null) loadAxis(data.data!!)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_NOTIFICATIONS && pendingCaptureRequest) {
+            pendingCaptureRequest = false
+            launchCaptureIntent()
         }
     }
 
@@ -788,8 +797,14 @@ class MainActivity : Activity() {
             return
         }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            pendingCaptureRequest = true
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+            return
         }
+        launchCaptureIntent()
+    }
+
+    private fun launchCaptureIntent() {
         startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_CAPTURE)
     }
 

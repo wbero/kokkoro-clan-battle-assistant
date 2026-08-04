@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 (2026-08-05)
+
+### 修复
+
+- **Android 14+ MediaProjection 投影被立即撤销**：`recreateEnergyDisplay()` 在同一 MediaProjection 实例上第二次调用 `createVirtualDisplay()`（创建 "KokkoroEnergyCapture" 用于 TP 能量条采样），违反 Android 14+ 单实例限制，导致系统判定令牌无效并立即撤销投影。已禁用第二次虚拟显示屏创建，回退到帧内 TP 采样。
+- **onStop 不再尝试复用旧令牌**：删除 `reacquireProjection()` 逻辑，投影被系统停止后直接清理资源并关闭服务。
+- **防止重复令牌消费**：新增 `CaptureState` 状态机（IDLE → STARTING → ACTIVE → STOPPED），阻止重复 `ACTION_START` 再次消耗同一授权令牌。
+
 ## 1.2.0 (2026-08-04)
 
 ### 新增
