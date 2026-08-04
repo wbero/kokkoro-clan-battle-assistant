@@ -132,9 +132,29 @@ class EnergyDetectorTest {
         assertFalse(remainsLow.characters.getValue(CharacterRole.ROLE_1).triggered)
     }
 
+    /**
+     * 充能技能把 TP 从两成多瞬间拉满再放掉，满值可能只存在一个采样帧。
+     * 只要那一帧被采到，就必须能触发；这正是独立高频 TP 采样要保住的场景。
+     */
     @Test
-    fun `near full animation frame does not disarm a pending ub release`() {
+    fun `single full frame between two low frames still triggers a ub`() {
         val regions = CharacterRole.entries.associateWith { role ->
+            EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
+        }
+        val detector = EnergyDetector(regions)
+
+        val charging = detector.detect(roleOneWideRatio(25))
+        val full = detector.detect(roleOneWideRatio(100))
+        val released = detector.detect(roleOneWideRatio(25))
+
+        assertTrue(charging.triggeredRoles.isEmpty())
+        assertTrue(full.characters.getValue(CharacterRole.ROLE_1).isFull)
+        assertTrue(full.triggeredRoles.isEmpty())
+        assertEquals(setOf(CharacterRole.ROLE_1), released.triggeredRoles)
+    }
+
+    @Test
+    fun `near full animation frame does not disarm a pending ub release`() {        val regions = CharacterRole.entries.associateWith { role ->
             EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
         }
         val detector = EnergyDetector(regions)

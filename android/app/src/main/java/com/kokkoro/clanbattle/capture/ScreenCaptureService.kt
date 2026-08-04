@@ -32,6 +32,8 @@ import com.kokkoro.clanbattle.axis.AndroidAxisRepository
 import com.kokkoro.clanbattle.axis.AxisLibrary
 import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.control.ControlSafetyState
+import com.kokkoro.clanbattle.overlay.DebugOverlayFrame
+import com.kokkoro.clanbattle.overlay.DebugRegionOverlay
 import com.kokkoro.clanbattle.overlay.OverlayActions
 import com.kokkoro.clanbattle.overlay.OverlayController
 import com.kokkoro.clanbattle.overlay.ManualPauseUiMode
@@ -45,14 +47,20 @@ import com.kokkoro.clanbattle.recognition.CharacterRole
 class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private lateinit var captureThread: HandlerThread
     private lateinit var captureHandler: Handler
+    private lateinit var energyThread: HandlerThread
+    private lateinit var energyHandler: Handler
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var displayManager: DisplayManager
     private lateinit var overlay: OverlayController
+    private lateinit var debugRegionOverlay: DebugRegionOverlay
+    private var debugRegionOverlayShown = false
     private lateinit var axisLibrary: AxisLibrary
     private lateinit var pauseFrameSession: PauseFrameSession
     private var projection: MediaProjection? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
+    private var energyReader: ImageReader? = null
+    private var energyDisplay: VirtualDisplay? = null
     private var frameProcessor: FrameProcessor? = null
     private var captureWidth = 0
     private var captureHeight = 0
@@ -78,6 +86,8 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         super.onCreate()
         captureThread = HandlerThread("kokkoro-capture").apply { start() }
         captureHandler = Handler(captureThread.looper)
+        energyThread = HandlerThread("kokkoro-tp").apply { start() }
+        energyHandler = Handler(energyThread.looper)
         displayManager = getSystemService(DisplayManager::class.java)
         displayManager.registerDisplayListener(this, captureHandler)
         axisLibrary = AxisLibrary(AndroidAxisRepository(this))
@@ -111,12 +121,14 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                 captureHandler.post { frameProcessor?.recordPauseFrameDiagnostic(event) }
             }
         )
+        debugRegionOverlay = DebugRegionOverlay(this)
         frameProcessor = FrameProcessor(
             context = this,
             statusCallback = ::publishStatus,
             pauseFrameCallback = ::onPauseFrameRequested,
             battleLockCallback = ::lockBattle,
-            messageCallback = overlay::showPrompt
+            messageCallback = overlay::showPrompt,
+            debugOverlayCallback = ::publishDebugOverlay
         )
         createNotificationChannel()
     }
@@ -175,8 +187,11 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         frameProcessor = null
         axisLibrary.unlock()
         pauseFrameSession.reset()
+        debugRegionOverlayShown = false
+        debugRegionOverlay.hide()
         overlay.hide()
         captureThread.quitSafely()
+        energyThread.quitSafely()
         super.onDestroy()
     }
 
@@ -271,11 +286,74 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             stopSelf()
             return false
         }
+        recreateEnergyDisplay(mediaProjection, newWidth, newHeight, metrics.densityDpi)
         publishStatus(FrameStatus("捕获 ${captureWidth}×${captureHeight}", captureWidth > captureHeight, 0, captureWidth, captureHeight))
         return true
     }
 
+    /**
+     * TP 专用采集通道。满 TP 在快充 UB 里可能只存在一帧，而完整识别一轮约 60ms，
+     * 与它共用采集线程就必然漏采。这里另开一路镜像，只裁能量条、只算填充比例，
+     * 因此可以按显示帧率运行。创建失败时回退到完整识别内部检测，功能不受影响。
+     */
+    private fun recreateEnergyDisplay(
+        mediaProjection: MediaProjection,
+        width: Int,
+        height: Int,
+        densityDpi: Int
+    ) {
+        releaseEnergyDisplay()
+        val processor = frameProcessor ?: return
+        val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        reader.setOnImageAvailableListener({ source ->
+            val image = source.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                if (!captureProcessingAllowed(pauseFrameRole, pauseFrameProcessingBlocked)) {
+                    return@setOnImageAvailableListener
+                }
+                processor.sampleEnergy(image)
+            } finally {
+                image.close()
+            }
+        }, energyHandler)
+
+        val created = runCatching {
+            mediaProjection.createVirtualDisplay(
+                "KokkoroEnergyCapture",
+                width,
+                height,
+                densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface,
+                null,
+                energyHandler
+            )
+        }.getOrNull()
+
+        if (created == null) {
+            reader.setOnImageAvailableListener(null, null)
+            reader.close()
+            processor.setExternalEnergySampling(false)
+            Log.w(ENERGY_LOG_TAG, "energy display unavailable; falling back to in-frame TP sampling")
+            return
+        }
+        energyDisplay = created
+        energyReader = reader
+        processor.setExternalEnergySampling(true)
+        Log.i(ENERGY_LOG_TAG, "energy display ready ${width}x$height")
+    }
+
+    private fun releaseEnergyDisplay() {
+        frameProcessor?.setExternalEnergySampling(false)
+        energyReader?.setOnImageAvailableListener(null, null)
+        energyDisplay?.release()
+        energyReader?.close()
+        energyDisplay = null
+        energyReader = null
+    }
+
     private fun releaseDisplay() {
+        releaseEnergyDisplay()
         imageReader?.setOnImageAvailableListener(null, null)
         virtualDisplay?.release()
         imageReader?.close()
@@ -301,6 +379,22 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                 .putExtra(EXTRA_STATUS_SUCCESS, status.success)
                 .putExtra(EXTRA_PROCESSING_MS, status.processingMs)
         )
+    }
+
+    /** 识别线程回调：null 表示叠加层已关闭，需要移除窗口。 */
+    private fun publishDebugOverlay(frame: DebugOverlayFrame?) {
+        if (frame == null) {
+            if (debugRegionOverlayShown) {
+                debugRegionOverlayShown = false
+                debugRegionOverlay.hide()
+            }
+            return
+        }
+        if (!debugRegionOverlayShown) {
+            debugRegionOverlayShown = true
+            debugRegionOverlay.show()
+        }
+        debugRegionOverlay.render(frame)
     }
 
     private fun prepareNewBattle() {
@@ -568,6 +662,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         private const val NOTIFICATION_ID = 1001
         private const val FRAME_INTERVAL_NANOS = 50_000_000L
         private const val PAUSE_FRAME_LOG_TAG = "KokkoroPauseFrame"
+        private const val ENERGY_LOG_TAG = "KokkoroEnergy"
     }
 }
 
