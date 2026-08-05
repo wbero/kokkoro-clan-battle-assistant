@@ -77,13 +77,13 @@ class RecognitionFilter(
         val sorted = result.candidates.sortedByDescending { it.score }
 
         sorted.firstOrNull { candidate ->
-            !candidate.isPrimary &&
-                candidate.timeSeconds == previous - 1 &&
+            candidate.timeSeconds == previous - 1 &&
                 candidate.score >= MIN_SEQUENTIAL_CANDIDATE_SCORE
         }?.let { candidate ->
             val checked = validate(candidate.timeSeconds, candidate.rawText)
             if (checked != null && temporalStatus(checked.seconds, nowMs, false) is TemporalStatus.Accept) {
-                return commit(checked, nowMs, ReadingSource.ALTERNATIVE, TemporalStatus.Accept)
+                val source = if (candidate.isPrimary) ReadingSource.PRIMARY else ReadingSource.ALTERNATIVE
+                return commit(checked, nowMs, source, TemporalStatus.Accept)
             }
         }
 

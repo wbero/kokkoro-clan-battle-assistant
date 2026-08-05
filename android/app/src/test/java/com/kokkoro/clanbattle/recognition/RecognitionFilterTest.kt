@@ -46,6 +46,88 @@ class RecognitionFilterTest {
     }
 
     @Test
+    fun `accepts low confidence primary at the exact next second`() {
+        val filter = RecognitionFilter(minConfidence = 0.75, minAlternativeScore = 0.55)
+        assertTrue(filter.update(RecognitionResult.ok(60, "1:00", 0.95), 0).accepted)
+
+        val recovered = filter.update(
+            RecognitionResult(
+                ok = false,
+                timeSeconds = 59,
+                rawText = "0:59",
+                confidence = 0.44,
+                reason = "low-confidence",
+                candidates = listOf(
+                    ClockCandidate(59, "0:59", 0.40, isPrimary = true),
+                    ClockCandidate(58, "0:58", 0.38, isPrimary = false)
+                )
+            ),
+            1_000
+        )
+
+        assertTrue(recovered.accepted)
+        assertEquals(59, recovered.timeSeconds)
+        assertEquals("0:59", recovered.rawText)
+        assertEquals(ReadingSource.PRIMARY, recovered.source)
+    }
+
+    @Test
+    fun `chains consecutive low confidence primary countdown readings below one minute`() {
+        val filter = RecognitionFilter(minConfidence = 0.75, minAlternativeScore = 0.55)
+        assertTrue(filter.update(RecognitionResult.ok(60, "1:00", 0.95), 0).accepted)
+
+        val fiftyNine = filter.update(
+            RecognitionResult(
+                ok = false,
+                timeSeconds = 59,
+                rawText = "0:59",
+                confidence = 0.44,
+                reason = "low-confidence",
+                candidates = listOf(ClockCandidate(59, "0:59", 0.40, isPrimary = true))
+            ),
+            1_000
+        )
+        val fiftyEight = filter.update(
+            RecognitionResult(
+                ok = false,
+                timeSeconds = 58,
+                rawText = "0:58",
+                confidence = 0.43,
+                reason = "low-confidence",
+                candidates = listOf(ClockCandidate(58, "0:58", 0.39, isPrimary = true))
+            ),
+            2_000
+        )
+
+        assertTrue(fiftyNine.accepted)
+        assertEquals(59, fiftyNine.timeSeconds)
+        assertTrue(fiftyEight.accepted)
+        assertEquals(58, fiftyEight.timeSeconds)
+        assertEquals(ReadingSource.PRIMARY, fiftyEight.source)
+    }
+
+    @Test
+    fun `does not rescue a low confidence primary that skips several seconds`() {
+        val filter = RecognitionFilter(minConfidence = 0.75, minAlternativeScore = 0.55)
+        assertTrue(filter.update(RecognitionResult.ok(60, "1:00", 0.95), 0).accepted)
+
+        val rejected = filter.update(
+            RecognitionResult(
+                ok = false,
+                timeSeconds = 55,
+                rawText = "0:55",
+                confidence = 0.44,
+                reason = "low-confidence",
+                candidates = listOf(ClockCandidate(55, "0:55", 0.70, isPrimary = true))
+            ),
+            500
+        )
+
+        assertFalse(rejected.accepted)
+        assertEquals("low-confidence", rejected.reason)
+    }
+
+    @Test
     fun `uses temporal alternative when primary is implausible`() {
         val filter = RecognitionFilter(minConfidence = 0.8, minAlternativeScore = 0.55)
 
