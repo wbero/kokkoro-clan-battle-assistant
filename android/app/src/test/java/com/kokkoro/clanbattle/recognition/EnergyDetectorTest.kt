@@ -154,6 +154,36 @@ class EnergyDetectorTest {
     }
 
     @Test
+    fun `all full followed by several large drops is visual obstruction not multiple ub`() {
+        val regions = CharacterRole.entries.associateWith { role ->
+            EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
+        }
+        val detector = EnergyDetector(regions)
+
+        val allFull = detector.detect(allRoleRatios(listOf(100, 100, 100, 100, 100)))
+        val corrupted = detector.detect(allRoleRatios(listOf(0, 42, 80, 41, 100)))
+
+        assertTrue(allFull.characters.values.all { it.isFull })
+        assertTrue(corrupted.visualObstruction)
+        assertTrue(corrupted.triggeredRoles.isEmpty())
+        assertTrue(corrupted.characters.values.none { it.triggered })
+    }
+
+    @Test
+    fun `all full followed by one large drop remains a credible single ub`() {
+        val regions = CharacterRole.entries.associateWith { role ->
+            EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
+        }
+        val detector = EnergyDetector(regions)
+
+        detector.detect(allRoleRatios(listOf(100, 100, 100, 100, 100)))
+        val released = detector.detect(allRoleRatios(listOf(0, 100, 100, 100, 100)))
+
+        assertFalse(released.visualObstruction)
+        assertEquals(setOf(CharacterRole.ROLE_1), released.triggeredRoles)
+    }
+
+    @Test
     fun `near full animation frame does not disarm a pending ub release`() {        val regions = CharacterRole.entries.associateWith { role ->
             EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
         }
@@ -225,6 +255,17 @@ class EnergyDetectorTest {
     private fun roleOneWideRatio(bluePixelCount: Int): PixelImage {
         val pixels = IntArray(500) { rgb(100, 100, 100) }
         repeat(bluePixelCount) { pixels[it] = rgb(0, 0, 120) }
+        return PixelImage(width = 500, height = 1, pixels = pixels)
+    }
+
+    private fun allRoleRatios(bluePixelCounts: List<Int>): PixelImage {
+        require(bluePixelCounts.size == CharacterRole.entries.size)
+        val pixels = IntArray(500) { rgb(100, 100, 100) }
+        bluePixelCounts.forEachIndexed { roleIndex, bluePixelCount ->
+            repeat(bluePixelCount) { column ->
+                pixels[roleIndex * 100 + column] = rgb(0, 0, 120)
+            }
+        }
         return PixelImage(width = 500, height = 1, pixels = pixels)
     }
 

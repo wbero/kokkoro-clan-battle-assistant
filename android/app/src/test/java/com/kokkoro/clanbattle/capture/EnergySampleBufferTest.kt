@@ -57,6 +57,16 @@ class EnergySampleBufferTest {
         )
     }
 
+    @Test
+    fun `visual obstruction between recognition frames is retained once`() {
+        val buffer = EnergySampleBuffer()
+        buffer.submit(sample(emptyMap(), visualObstruction = true))
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_1 to 0.4f)))
+
+        assertTrue(buffer.take()!!.visualObstruction)
+        assertTrue(!buffer.take()!!.visualObstruction)
+    }
+
     /** 关键回归：同一次 UB 不能因为快照被反复读取而重复上报。 */
     @Test
     fun `a delivered ub is never delivered twice`() {
@@ -84,7 +94,8 @@ class EnergySampleBufferTest {
 
     private fun sample(
         ratios: Map<CharacterRole, Float>,
-        triggered: Set<CharacterRole> = emptySet()
+        triggered: Set<CharacterRole> = emptySet(),
+        visualObstruction: Boolean = false
     ): EnergyDetectionResult {
         val characters = CharacterRole.entries.associateWith { role ->
             val ratio = ratios[role] ?: 0f
@@ -95,6 +106,11 @@ class EnergySampleBufferTest {
                 triggered = role in triggered
             )
         }
-        return EnergyDetectionResult(characters, energyDelta = null, triggeredRoles = triggered)
+        return EnergyDetectionResult(
+            characters,
+            energyDelta = null,
+            triggeredRoles = triggered,
+            visualObstruction = visualObstruction
+        )
     }
 }

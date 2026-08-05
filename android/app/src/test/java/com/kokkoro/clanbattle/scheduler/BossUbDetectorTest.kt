@@ -76,19 +76,19 @@ class BossUbDetectorTest {
         assertNull(detector.latestEvent(7_000))
     }
 
-    @Test fun `repeated same-role tp artifacts cannot suppress a long boss hold forever`() {
+    @Test fun `repeated same-role ub remains credible and restarts the boss window`() {
         val detector = BossUbDetector()
         detector.update(50, emptySet(), 0)
 
         assertNull(detector.update(50, setOf(CharacterRole.ROLE_1), 3_400))
         assertNull(detector.update(50, setOf(CharacterRole.ROLE_1), 3_650))
-        for (nowMs in listOf(5_000L, 6_000L, 7_000L, 8_000L, 9_000L, 10_000L, 10_399L)) {
+        for (nowMs in listOf(5_000L, 6_000L, 7_000L, 8_000L, 9_000L, 10_000L, 10_649L)) {
             assertNull(detector.update(50, emptySet(), nowMs))
         }
 
         assertEquals(
-            BossUbEvent(50, 10_400, 10_400, early = true),
-            detector.update(50, emptySet(), 10_400)
+            BossUbEvent(50, 10_650, 10_650, early = true),
+            detector.update(50, emptySet(), 10_650)
         )
         assertEquals(
             BossUbEvent(50, 13_500, 13_500),
@@ -96,30 +96,25 @@ class BossUbDetectorTest {
         )
     }
 
-    @Test fun `multi-role obstruction after a single release allows conservative boss recovery`() {
+    @Test fun `explicit visual obstruction does not reset the boss hold`() {
         val detector = BossUbDetector()
         detector.update(50, emptySet(), 0)
 
-        assertNull(detector.update(50, setOf(CharacterRole.ROLE_1), 3_400))
         assertNull(
             detector.update(
                 50,
-                setOf(
-                    CharacterRole.ROLE_2,
-                    CharacterRole.ROLE_3,
-                    CharacterRole.ROLE_4,
-                    CharacterRole.ROLE_5
-                ),
-                5_000
+                setOf(CharacterRole.ROLE_1),
+                3_400,
+                visualObstruction = true
             )
         )
-        for (nowMs in listOf(6_000L, 7_000L, 8_000L, 9_000L, 10_000L)) {
+        for (nowMs in listOf(4_000L, 5_000L, 6_000L, 6_999L)) {
             assertNull(detector.update(50, emptySet(), nowMs))
         }
 
         assertEquals(
-            BossUbEvent(50, 10_400, 10_400, early = true),
-            detector.update(50, emptySet(), 10_400)
+            BossUbEvent(50, 7_000, 7_000, early = true),
+            detector.update(50, emptySet(), 7_000)
         )
     }
 
@@ -134,14 +129,15 @@ class BossUbDetectorTest {
         assertNull(detector.latestEvent(5_000))
     }
 
-    @Test fun `simultaneous tp drops are treated as visual obstruction`() {
+    @Test fun `explicit simultaneous-drop obstruction keeps the original boss hold`() {
         val detector = BossUbDetector()
         detector.update(60, emptySet(), 0)
 
         detector.update(
             60,
             setOf(CharacterRole.ROLE_2, CharacterRole.ROLE_5),
-            2_000
+            2_000,
+            visualObstruction = true
         )
         val event = detector.update(59, emptySet(), 6_000)
 

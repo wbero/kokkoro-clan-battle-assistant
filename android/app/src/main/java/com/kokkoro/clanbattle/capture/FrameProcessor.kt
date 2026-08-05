@@ -519,7 +519,8 @@ class FrameProcessor(
             bossUbDetector.update(
                 requireNotNull(filtered.timeSeconds),
                 energy?.triggeredRoles.orEmpty(),
-                start
+                start,
+                energy?.visualObstruction == true
             )
         } else {
             null

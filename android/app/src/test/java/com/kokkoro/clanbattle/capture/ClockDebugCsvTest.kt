@@ -94,7 +94,8 @@ class ClockDebugCsvTest {
                 CharacterEnergyState(role.ordinal / 10f, role == CharacterRole.ROLE_1, role.ordinal / 100f, role == CharacterRole.ROLE_3)
             },
             energyDelta = 0.25f,
-            triggeredRoles = setOf(CharacterRole.ROLE_3)
+            triggeredRoles = setOf(CharacterRole.ROLE_3),
+            visualObstruction = true
         )
         val columns = ClockDebugCsv.ENERGY_HEADER.split(',')
         val values = ClockDebugCsv.energyValues(12, 34, result)
@@ -103,6 +104,7 @@ class ClockDebugCsvTest {
         assertEquals(columns.size, values.size)
         assertEquals("0.25", row.getValue("energyDelta"))
         assertEquals("ROLE_3", row.getValue("triggeredRoles"))
+        assertEquals("true", row.getValue("visualObstruction"))
         assertEquals("0.4", row.getValue("role5Ratio"))
         assertEquals("true", row.getValue("role1Full"))
         assertEquals("true", row.getValue("role3Triggered"))

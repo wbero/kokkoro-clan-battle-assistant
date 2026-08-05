@@ -32,7 +32,8 @@ data class CharacterEnergyState(
 data class EnergyDetectionResult(
     val characters: Map<CharacterRole, CharacterEnergyState>,
     val energyDelta: Float?,
-    val triggeredRoles: Set<CharacterRole>
+    val triggeredRoles: Set<CharacterRole>,
+    val visualObstruction: Boolean = false
 )
 
 class EnergyDetector(
@@ -62,7 +63,7 @@ class EnergyDetector(
     fun detect(image: PixelImage): EnergyDetectionResult {
         val ratios = regions.mapValues { (_, region) -> fillExtentRatio(image, region) }
         val previous = previousRatios
-        val characters = ratios.mapValues { (role, ratio) ->
+        val rawCharacters = ratios.mapValues { (role, ratio) ->
             val previousRatio = previous?.get(role)
             val wasArmed = armedForRelease[role] == true
 
@@ -112,6 +113,23 @@ class EnergyDetector(
                 triggered = triggered
             )
         }
+        val visualObstruction = previous?.let { previousRatiosByRole ->
+            val previousAllFull = previousRatiosByRole.values.all { it >= fullThreshold }
+            val largeDrops = ratios.count { (role, ratio) ->
+                previousRatiosByRole.getValue(role) - ratio >= VISUAL_OBSTRUCTION_DROP_DELTA
+            }
+            previousAllFull && largeDrops >= MIN_SIMULTANEOUS_LARGE_DROPS
+        } ?: false
+        // One character can consume TP at a time. If an all-full frame is
+        // followed by several large drops, the TP HUD was visually corrupted;
+        // none of the apparent releases from that frame are trustworthy.
+        val characters = if (visualObstruction) {
+            rawCharacters.mapValues { (_, state) ->
+                if (state.triggered) state.copy(triggered = false) else state
+            }
+        } else {
+            rawCharacters
+        }
         val triggeredRoles = characters
             .filterValues(CharacterEnergyState::triggered)
             .keys
@@ -124,7 +142,8 @@ class EnergyDetector(
             } else {
                 characters.values.sumOf { it.delta!!.toDouble() }.toFloat() / characters.size
             },
-            triggeredRoles = triggeredRoles
+            triggeredRoles = triggeredRoles,
+            visualObstruction = visualObstruction
         )
     }
 
@@ -162,6 +181,8 @@ class EnergyDetector(
     companion object {
         private const val MIN_BLUE_COLUMN_RATIO = 0.2f
         private const val SMOOTHING_RADIUS = 2
+        private const val VISUAL_OBSTRUCTION_DROP_DELTA = 0.15f
+        private const val MIN_SIMULTANEOUS_LARGE_DROPS = 2
 
         fun isBluePixel(color: Int): Boolean {
             val red = color ushr 16 and 0xff

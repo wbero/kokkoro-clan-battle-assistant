@@ -16,19 +16,24 @@ class EnergySampleBuffer {
     private val lock = Any()
     private var latest: EnergyDetectionResult? = null
     private val pending = mutableSetOf<CharacterRole>()
+    private var pendingVisualObstruction = false
 
     fun submit(result: EnergyDetectionResult) = synchronized(lock) {
         latest = result
         pending += result.triggeredRoles
+        pendingVisualObstruction = pendingVisualObstruction || result.visualObstruction
     }
 
     /** 取出最新比例快照，并附上自上次取用以来累积的全部 UB 事件。 */
     fun take(): EnergyDetectionResult? = synchronized(lock) {
         val snapshot = latest ?: return@synchronized null
         val merged = pending.toSet()
+        val visualObstruction = pendingVisualObstruction
         pending.clear()
+        pendingVisualObstruction = false
         snapshot.copy(
             triggeredRoles = merged,
+            visualObstruction = visualObstruction,
             characters = snapshot.characters.mapValues { (role, state) ->
                 val triggered = role in merged
                 if (state.triggered == triggered) state else state.copy(triggered = triggered)
@@ -39,5 +44,6 @@ class EnergySampleBuffer {
     fun reset() = synchronized(lock) {
         latest = null
         pending.clear()
+        pendingVisualObstruction = false
     }
 }
