@@ -28,6 +28,24 @@ class GameCoordinateMapperTest {
         GameCoordinateCalibration.reset()
     }
 
+    @Test fun `top hud calibration is independent from center and right anchors`() {
+        GameCoordinateCalibration.reset()
+        val width = 2800
+        val height = 1272
+        val centerBefore = GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.CENTER)
+        val rightBefore = GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.RIGHT)
+        val topBefore = GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.TOP_HUD)
+
+        assertEquals(centerBefore, topBefore, 0.01f)
+
+        GameCoordinateCalibration.update(HorizontalAnchor.TOP_HUD, 232f)
+
+        assertEquals(centerBefore, GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.CENTER), 0.01f)
+        assertEquals(rightBefore, GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.RIGHT), 0.01f)
+        assertEquals(topBefore + 232f, GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.TOP_HUD), 0.01f)
+        GameCoordinateCalibration.reset()
+    }
+
     @Test fun `honor win top hud stays in centered safe area`() {
         GameCoordinateCalibration.reset()
         val width = 2800

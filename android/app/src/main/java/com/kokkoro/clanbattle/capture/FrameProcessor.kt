@@ -7,6 +7,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.kokkoro.clanbattle.automation.ActionExecutor
 import com.kokkoro.clanbattle.automation.GameCoordinateCalibration
+import com.kokkoro.clanbattle.automation.GameCoordinateMapper
 import com.kokkoro.clanbattle.automation.HorizontalAnchor
 import com.kokkoro.clanbattle.automation.KokkoroAccessibilityService
 import com.kokkoro.clanbattle.axis.AndroidAxisRepository
@@ -282,6 +283,7 @@ class FrameProcessor(
     private var regionOverlayEnabled = false
     private var centerAnchorCalibrated = false
     private var rightAnchorCalibrated = false
+    private var topHudAnchorCalibrated = false
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
     private var openingControlsConfirmed = true
     private var lastPauseFrameNodeId: String? = null
@@ -312,6 +314,7 @@ class FrameProcessor(
         GameCoordinateCalibration.reset()
         centerAnchorCalibrated = false
         rightAnchorCalibrated = false
+        topHudAnchorCalibrated = false
         filter.reset()
         resetEnergySampling() // 置空强制重建，使新战斗读到最新 UB 阈值配置
         gameStateDetector.reset()
@@ -402,7 +405,7 @@ class FrameProcessor(
             if (sessionGate.isWaitingForLoading()) {
                 val menuScore = matchRegion(
                     image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu,
-                    HorizontalAnchor.CENTER,
+                    HorizontalAnchor.TOP_HUD,
                     calibrate = true,
                     calibrationThreshold = MENU_TRUST_THRESHOLD
                 )
@@ -421,13 +424,13 @@ class FrameProcessor(
 
         val menuScore = matchRegion(
             image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu,
-            HorizontalAnchor.CENTER,
+            HorizontalAnchor.TOP_HUD,
             calibrate = true,
             calibrationThreshold = MENU_TRUST_THRESHOLD
         )
-        // The top HUD shares the centered 16:9 safe-area anchor. Resolve it
-        // from MENU before cropping the clock so ultrawide screens do not read
-        // the menu button as clock pixels on the first battle frame.
+        // Resolve the independent top-HUD anchor from MENU before cropping the
+        // clock. Honor Win and MuMu place this HUD differently despite sharing
+        // the same ultrawide aspect ratio.
         val parallelRecognition = recognizeFrameInParallel(image)
         if (closed.get()) return
         val recognition = parallelRecognition.clock
@@ -903,12 +906,21 @@ class FrameProcessor(
         val alreadyCalibrated = when (anchor) {
             HorizontalAnchor.CENTER -> centerAnchorCalibrated
             HorizontalAnchor.RIGHT -> rightAnchorCalibrated
+            HorizontalAnchor.TOP_HUD -> topHudAnchorCalibrated
         }
         if (!calibrate || alreadyCalibrated) {
             return FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, scaled), template)
         }
 
-        val radius = if (anchor == HorizontalAnchor.CENTER) CENTER_SEARCH_RADIUS else RIGHT_SEARCH_RADIUS
+        val radius = when (anchor) {
+            HorizontalAnchor.CENTER -> CENTER_SEARCH_RADIUS
+            HorizontalAnchor.RIGHT -> RIGHT_SEARCH_RADIUS
+            HorizontalAnchor.TOP_HUD -> maxOf(
+                TOP_HUD_MIN_SEARCH_RADIUS,
+                (GameCoordinateMapper.viewport(image.width, image.height).spareX / 2f).toInt() +
+                    TOP_HUD_SEARCH_MARGIN
+            )
+        }
         var bestScore = Double.NEGATIVE_INFINITY
         var bestDelta = 0
         fun consider(delta: Int) {
@@ -930,9 +942,15 @@ class FrameProcessor(
         if (bestScore >= calibrationThreshold) {
             val previous = GameCoordinateCalibration.horizontalDelta(anchor)
             GameCoordinateCalibration.update(anchor, previous + bestDelta)
+            Log.i(
+                CALIBRATION_LOG_TAG,
+                "anchor=$anchor delta=${previous + bestDelta} step=$bestDelta " +
+                    "score=${"%.4f".format(Locale.US, bestScore)} size=${image.width}x${image.height}"
+            )
             when (anchor) {
                 HorizontalAnchor.CENTER -> centerAnchorCalibrated = true
                 HorizontalAnchor.RIGHT -> rightAnchorCalibrated = true
+                HorizontalAnchor.TOP_HUD -> topHudAnchorCalibrated = true
             }
         }
         return bestScore
@@ -1269,7 +1287,7 @@ class FrameProcessor(
                     DebugBoxTint.NEUTRAL
                 )
             )
-            add(DebugRegionBox("菜单", rect(BattleReferenceRegions.MENU_BUTTON, HorizontalAnchor.CENTER)))
+            add(DebugRegionBox("菜单", rect(BattleReferenceRegions.MENU_BUTTON, HorizontalAnchor.TOP_HUD)))
             add(
                 DebugRegionBox(
                     "AUTO",
@@ -1373,11 +1391,14 @@ class FrameProcessor(
     private companion object {
         const val BOSS_UB_LOG_TAG = "KokkoroBossUb"
         const val SAFETY_LOG_TAG = "KokkoroSafety"
+        const val CALIBRATION_LOG_TAG = "KokkoroCalibration"
         const val REAL_DEVICE_CLOCK_MIN_CONFIDENCE = 0.75
         const val TEMPLATE_THRESHOLD = 0.72
         const val DEBUG_PREFERENCE_POLL_MS = 1_000L
         const val CENTER_SEARCH_RADIUS = 180
         const val RIGHT_SEARCH_RADIUS = 120
+        const val TOP_HUD_MIN_SEARCH_RADIUS = 180
+        const val TOP_HUD_SEARCH_MARGIN = 96
         const val CALIBRATION_COARSE_STEP = 12
         const val CALIBRATION_MIN_SCORE = 0.55
         const val MENU_TRUST_THRESHOLD = 0.70
