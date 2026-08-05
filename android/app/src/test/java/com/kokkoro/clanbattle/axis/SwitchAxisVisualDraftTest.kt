@@ -43,4 +43,28 @@ class SwitchAxisVisualDraftTest {
         assertTrue(text.contains("0:18 | 卡帧=角色5"))
         assertNotNull(SwitchAxisVisualDraft.from(parsed))
     }
+
+    @Test fun `boss delay zero serializes as an immediate valid switch trigger`() {
+        val target = VisualSwitchTarget(listOf(false, false, false, false, false), autoOn = false)
+        val draft = SwitchAxisVisualDraft(
+            name = "零延迟BOSS",
+            roleNames = listOf("A", "B", "C", "D", "E"),
+            opening = target,
+            nodes = listOf(
+                VisualSwitchNode(
+                    timeSeconds = 50,
+                    trigger = VisualSwitchTrigger.BOSS_DELAY,
+                    bossDelayMs = 0,
+                    target = target
+                )
+            )
+        )
+
+        val text = draft.toStandardText()
+        val parsed = AxisParser.parse(text)
+
+        assertTrue(text.contains("0:50 | UB后=BOSS | 延迟=0.00"))
+        assertEquals(BossDelayTrigger(0, "0.00"), parsed.switchNodes.single().trigger)
+        assertTrue(AxisValidator.validate(parsed).issues.toString(), AxisValidator.validate(parsed).isValid)
+    }
 }

@@ -328,8 +328,8 @@ class SwitchAxisEditorActivity : Activity() {
                     }
                     val selected = VisualSwitchTrigger.entries[typeInput.selectedItemPosition]
                     val parsedDelay = delayInput.text.toString().toDoubleOrNull()?.let { (it * 1_000).toLong() }
-                    if (selected == VisualSwitchTrigger.BOSS_DELAY && (parsedDelay == null || parsedDelay !in 1..30_000)) {
-                        delayInput.error = "延迟必须大于 0 且不超过 30 秒"
+                    if (selected == VisualSwitchTrigger.BOSS_DELAY && (parsedDelay == null || parsedDelay !in 0..30_000)) {
+                        delayInput.error = "延迟必须在 0～30 秒之间"
                         return@setOnClickListener
                     }
                     timeSeconds = parsedTime
