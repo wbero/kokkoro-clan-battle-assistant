@@ -1,6 +1,7 @@
 package com.kokkoro.clanbattle.switchaxis
 
 import com.kokkoro.clanbattle.axis.AxisToggleState
+import com.kokkoro.clanbattle.axis.CharacterUbTrigger
 import com.kokkoro.clanbattle.axis.SwitchAxisNode
 import com.kokkoro.clanbattle.axis.SwitchAxisOpening
 import com.kokkoro.clanbattle.axis.SwitchControlTarget
@@ -26,6 +27,7 @@ class SwitchControlCoordinator(
     openingGraceSeconds: Int = 0
 ) {
     private var runtime = SwitchAxisRuntime(opening, nodes, openingGraceSeconds)
+    private var nodesById = nodes.associateBy(SwitchAxisNode::id)
     private var convergingNodeId: String? = null
     private var pauseFrame: SwitchRuntimeCommand.EnterPauseFrame? = null
 
@@ -64,6 +66,9 @@ class SwitchControlCoordinator(
             is SwitchRuntimeCommand.Converge -> {
                 pauseFrame = null
                 convergingNodeId = command.nodeId
+                if (nodesById[command.nodeId]?.trigger is CharacterUbTrigger) {
+                    recentRoleUbEvents.clear()
+                }
                 stateMachine.setDesired(command.target.toControlTarget())
                 result()
             }
@@ -87,6 +92,7 @@ class SwitchControlCoordinator(
     ) {
         stateMachine.clearDesired()
         runtime = SwitchAxisRuntime(opening, nodes, openingGraceSeconds)
+        nodesById = nodes.associateBy(SwitchAxisNode::id)
         convergingNodeId = null
         pauseFrame = null
         recentRoleUbEvents.clear()

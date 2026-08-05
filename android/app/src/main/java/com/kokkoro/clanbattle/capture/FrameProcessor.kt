@@ -35,6 +35,7 @@ import com.kokkoro.clanbattle.control.VerifiedActionCoordinator
 import com.kokkoro.clanbattle.control.VisualToggleState
 import com.kokkoro.clanbattle.recognition.AndroidTemplateLoader
 import com.kokkoro.clanbattle.recognition.ClockRecognizer
+import com.kokkoro.clanbattle.recognition.CharacterRole
 import com.kokkoro.clanbattle.recognition.EnergyDetector
 import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
 import com.kokkoro.clanbattle.recognition.PixelImage
@@ -293,6 +294,7 @@ class FrameProcessor(
     private var lastSwitchDebugKey: String? = null
     private var lastSwitchDiagnosticContext: SwitchDiagnosticContext? = null
     private var lastPromptNodeId: String? = null
+    private val pendingSwitchRoleUbEvents = mutableSetOf<CharacterRole>()
     // UB animation can cover all SET/AUTO badges for a short, expected window.
     // Hold the last trustworthy control state during that window instead of
     // turning the animation into an automatic safety pause.
@@ -340,6 +342,7 @@ class FrameProcessor(
         openingControlsConfirmed = openingControlTarget == null
         lastPauseFrameNodeId = null
         lastPromptNodeId = null
+        pendingSwitchRoleUbEvents.clear()
         switchAxisBusy = false
         sessionGate.prepare()
         val wasDebugEnabled = debugEnabled
@@ -456,6 +459,9 @@ class FrameProcessor(
         // 而不是被过滤器锁住的旧稳定状态。
         publishDebugOverlay(image, controlDetection?.observation, energy)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
+            if (axis.type == AxisType.SWITCH && !sessionGate.isWaiting()) {
+                pendingSwitchRoleUbEvents += energy?.triggeredRoles.orEmpty()
+            }
             if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null, energy)
             val elapsed = SystemClock.elapsedRealtime() - start
             statusCallback(
@@ -476,6 +482,14 @@ class FrameProcessor(
         val sessionReady = usable && sessionGate.onAccepted(filtered.timeSeconds)
         val battleRunning = !sessionGate.isWaiting()
         val triggeredRoles = energy?.triggeredRoles.orEmpty()
+        if (axis.type == AxisType.SWITCH && battleRunning) {
+            pendingSwitchRoleUbEvents += triggeredRoles
+        }
+        val switchTriggeredRoles = if (axis.type == AxisType.SWITCH) {
+            pendingSwitchRoleUbEvents.toSet()
+        } else {
+            triggeredRoles
+        }
         val tpBelowThresholdRoles = energy?.characters
             ?.filterValues { it.blueRatio < AppPreferences.energyDropThreshold(appContext) }
             ?.keys
@@ -559,13 +573,14 @@ class FrameProcessor(
                     val coordinated = requireNotNull(switchCoordinator).update(
                         SwitchFrameInput(
                             clockSeconds = filtered.timeSeconds,
-                            triggeredRoles = triggeredRoles,
+                            triggeredRoles = switchTriggeredRoles,
                             controlsTrustworthy = controlsTrustworthy,
                             wallMs = start,
                             bossUbEvent = bossUbEvent
                         ),
                         controlStep
                     )
+                    pendingSwitchRoleUbEvents.clear()
                     switchAxisBusy = coordinated.busy
                     activeNodeId = coordinated.activeNodeId
                     activeNodeId?.let { nodeId ->
@@ -591,7 +606,7 @@ class FrameProcessor(
                             currentFrameId,
                             System.currentTimeMillis(),
                             filtered.timeSeconds,
-                            triggeredRoles,
+                            switchTriggeredRoles,
                             controlsTrustworthy,
                             coordinated
                         )

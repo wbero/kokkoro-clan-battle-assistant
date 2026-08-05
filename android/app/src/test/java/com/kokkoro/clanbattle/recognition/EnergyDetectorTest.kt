@@ -238,6 +238,35 @@ class EnergyDetectorTest {
     }
 
     @Test
+    fun `stable near-full plateau recovers a missed one-frame full sample`() {
+        val regions = CharacterRole.entries.associateWith { role ->
+            EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
+        }
+        val detector = EnergyDetector(regions)
+
+        repeat(3) { detector.detect(roleOneWideRatio(94)) }
+        val firstLow = detector.detect(roleOneWideRatio(20))
+        val confirmed = detector.detect(roleOneWideRatio(20))
+
+        assertTrue(firstLow.triggeredRoles.isEmpty())
+        assertEquals(setOf(CharacterRole.ROLE_1), confirmed.triggeredRoles)
+    }
+
+    @Test
+    fun `single near-full animation frame cannot arm a release`() {
+        val regions = CharacterRole.entries.associateWith { role ->
+            EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
+        }
+        val detector = EnergyDetector(regions)
+
+        detector.detect(roleOneWideRatio(94))
+        detector.detect(roleOneWideRatio(20))
+        val secondLow = detector.detect(roleOneWideRatio(20))
+
+        assertTrue(secondLow.triggeredRoles.isEmpty())
+    }
+
+    @Test
     fun `reset makes next detection a first frame again`() {
         val detector = EnergyDetector(fiveSinglePixelRegions())
         detector.detect(solidRolePixels(blueRoles = setOf(CharacterRole.ROLE_1)))

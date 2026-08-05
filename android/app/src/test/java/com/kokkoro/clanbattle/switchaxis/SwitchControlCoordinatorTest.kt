@@ -113,6 +113,42 @@ class SwitchControlCoordinatorTest {
         assertTrue(recovered.busy)
     }
 
+    @Test fun `consuming one character ub clears ambiguous same-pulse roles`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = coordinator(
+            machine,
+            node(
+                "role4",
+                14,
+                target(auto = AxisToggleState.ON),
+                CharacterUbTrigger(CharacterRole.ROLE_4, "角色4")
+            ),
+            node(
+                "role3",
+                13,
+                target(auto = AxisToggleState.OFF),
+                CharacterUbTrigger(CharacterRole.ROLE_3, "角色3")
+            )
+        )
+        val observed = machine.update(observation(), 0)
+        coordinator.update(frame(14), observed)
+
+        val consumed = coordinator.update(
+            frame(14, triggered = setOf(CharacterRole.ROLE_3, CharacterRole.ROLE_4)),
+            observed
+        )
+        assertEquals("role4", consumed.activeNodeId)
+
+        val click = machine.update(observation(), 10)
+        coordinator.update(frame(13), click)
+        val autoOn = observation(auto = VisualToggleState.ON)
+        coordinator.update(frame(13), machine.update(autoOn, 20))
+        val next = coordinator.update(frame(13), machine.update(autoOn, 30))
+
+        assertEquals("role3", next.activeNodeId)
+        assertNull(machine.snapshot().desired)
+    }
+
     private fun coordinator(
         machine: BattleControlStateMachine,
         vararg nodes: SwitchAxisNode

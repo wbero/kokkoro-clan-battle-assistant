@@ -39,13 +39,16 @@ data class EnergyDetectionResult(
 class EnergyDetector(
     private val regions: Map<CharacterRole, EnergyRegion>,
     private val fullThreshold: Float = 0.97f,
+    private val nearFullArmThreshold: Float = 0.93f,
     private val triggeredBelowThreshold: Float = 0.3f,
     private val minConsecutiveFullFrames: Int = 1,
+    private val minConsecutiveNearFullFrames: Int = 3,
     private val minConsecutiveReleaseFrames: Int = 2
 ) {
     private var previousRatios: Map<CharacterRole, Float>? = null
     private val armedForRelease = mutableMapOf<CharacterRole, Boolean>()
     private val consecutiveFullFrames = mutableMapOf<CharacterRole, Int>()
+    private val consecutiveNearFullFrames = mutableMapOf<CharacterRole, Int>()
     private val consecutiveReleaseFrames = mutableMapOf<CharacterRole, Int>()
     /**
      * Tracks whether a role has achieved the required consecutive full frames
@@ -58,8 +61,10 @@ class EnergyDetector(
     init {
         require(regions.keys == CharacterRole.entries.toSet())
         require(fullThreshold in 0f..1f)
+        require(nearFullArmThreshold in 0f..fullThreshold)
         require(triggeredBelowThreshold in 0f..1f)
         require(minConsecutiveFullFrames >= 1)
+        require(minConsecutiveNearFullFrames >= 1)
         require(minConsecutiveReleaseFrames >= 1)
     }
 
@@ -86,8 +91,18 @@ class EnergyDetector(
             }
             consecutiveFullFrames[role] = fullCount
 
+            val nearFullCount = if (ratio >= nearFullArmThreshold) {
+                (consecutiveNearFullFrames[role] ?: 0) + 1
+            } else {
+                0
+            }
+            consecutiveNearFullFrames[role] = nearFullCount
+
             // Mark as confirmed once the required consecutive frames are met
-            if (fullCount >= minConsecutiveFullFrames) {
+            if (
+                fullCount >= minConsecutiveFullFrames ||
+                nearFullCount >= minConsecutiveNearFullFrames
+            ) {
                 everConfirmed[role] = true
             }
 
@@ -118,12 +133,14 @@ class EnergyDetector(
                     } else {
                         armedForRelease[role] = false
                         consecutiveFullFrames[role] = 0
+                        consecutiveNearFullFrames[role] = 0
                         everConfirmed[role] = false
                     }
                 }
                 triggered -> {
                     armedForRelease[role] = false
                     consecutiveFullFrames[role] = 0
+                    consecutiveNearFullFrames[role] = 0
                     consecutiveReleaseFrames[role] = 0
                     everConfirmed[role] = false
                 }
@@ -135,6 +152,10 @@ class EnergyDetector(
                     consecutiveReleaseFrames[role] = releaseCount
                 }
                 ratio >= fullThreshold -> {
+                    armedForRelease[role] = true
+                    consecutiveReleaseFrames[role] = 0
+                }
+                nearFullCount >= minConsecutiveNearFullFrames -> {
                     armedForRelease[role] = true
                     consecutiveReleaseFrames[role] = 0
                 }
@@ -178,6 +199,7 @@ class EnergyDetector(
         previousRatios = null
         armedForRelease.clear()
         consecutiveFullFrames.clear()
+        consecutiveNearFullFrames.clear()
         consecutiveReleaseFrames.clear()
         everConfirmed.clear()
     }
