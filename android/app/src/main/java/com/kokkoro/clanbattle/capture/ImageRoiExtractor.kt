@@ -29,7 +29,10 @@ object ImageRoiExtractor {
     }
 
     fun scaleReferenceRegion(width: Int, height: Int): Rect {
-        return scaleRegion(width, height, 1619, 38, 64, 27, HorizontalAnchor.RIGHT)
+        // The clock and menu belong to the game's centered 16:9 safe HUD.
+        // On ultrawide devices (for example 2800x1272) they do not move all
+        // the way to the physical right edge with AUTO/global SET.
+        return scaleRegion(width, height, 1619, 38, 64, 27, HorizontalAnchor.CENTER)
     }
 
     fun scaleRegion(

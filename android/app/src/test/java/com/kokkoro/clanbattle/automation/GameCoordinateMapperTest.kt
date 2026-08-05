@@ -27,4 +27,28 @@ class GameCoordinateMapperTest {
         assertEquals(before - 72f, GameCoordinateMapper.mapX(960, 2780, 1264, HorizontalAnchor.CENTER), 0.01f)
         GameCoordinateCalibration.reset()
     }
+
+    @Test fun `honor win top hud stays in centered safe area`() {
+        GameCoordinateCalibration.reset()
+        val width = 2800
+        val height = 1272
+
+        val clockInSafeArea = GameCoordinateMapper.mapX(
+            1619,
+            width,
+            height,
+            HorizontalAnchor.CENTER
+        )
+        val clockAtPhysicalRight = GameCoordinateMapper.mapX(
+            1619,
+            width,
+            height,
+            HorizontalAnchor.RIGHT
+        )
+
+        // The wrong physical-right anchor adds half of the ultrawide spare
+        // area (about 269 device pixels), placing the clock crop over MENU.
+        assertEquals(2176.2f, clockInSafeArea, 0.2f)
+        assertEquals(269.3f, clockAtPhysicalRight - clockInSafeArea, 0.2f)
+    }
 }

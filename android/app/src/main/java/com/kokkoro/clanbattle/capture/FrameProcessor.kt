@@ -402,7 +402,7 @@ class FrameProcessor(
             if (sessionGate.isWaitingForLoading()) {
                 val menuScore = matchRegion(
                     image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu,
-                    HorizontalAnchor.RIGHT,
+                    HorizontalAnchor.CENTER,
                     calibrate = true,
                     calibrationThreshold = MENU_TRUST_THRESHOLD
                 )
@@ -421,12 +421,13 @@ class FrameProcessor(
 
         val menuScore = matchRegion(
             image, BattleReferenceRegions.MENU_BUTTON, controlTemplates.menu,
-            HorizontalAnchor.RIGHT,
+            HorizontalAnchor.CENTER,
             calibrate = true,
             calibrationThreshold = MENU_TRUST_THRESHOLD
         )
-        // Calibrate the right anchor from the menu before cropping the clock;
-        // otherwise the first battle frame can read a shifted clock once.
+        // The top HUD shares the centered 16:9 safe-area anchor. Resolve it
+        // from MENU before cropping the clock so ultrawide screens do not read
+        // the menu button as clock pixels on the first battle frame.
         val parallelRecognition = recognizeFrameInParallel(image)
         if (closed.get()) return
         val recognition = parallelRecognition.clock
@@ -1268,7 +1269,7 @@ class FrameProcessor(
                     DebugBoxTint.NEUTRAL
                 )
             )
-            add(DebugRegionBox("菜单", rect(BattleReferenceRegions.MENU_BUTTON, HorizontalAnchor.RIGHT)))
+            add(DebugRegionBox("菜单", rect(BattleReferenceRegions.MENU_BUTTON, HorizontalAnchor.CENTER)))
             add(
                 DebugRegionBox(
                     "AUTO",

@@ -73,7 +73,7 @@ class ActionExecutor(
         enqueueTap(ActionCoordinates.role(role), width, height, HorizontalAnchor.CENTER)
 
     fun tapMenu(width: Int, height: Int) =
-        enqueueTap(ActionCoordinates.menu, width, height, HorizontalAnchor.RIGHT)
+        enqueueTap(ActionCoordinates.menu, width, height, HorizontalAnchor.CENTER)
 
     /**
      * All automatic battle gestures share one action looper. Calls return
