@@ -112,6 +112,7 @@ fun buildActionPreview(
             )
         }
     }
+
     val activeIndex = entries.indexOfFirst { it.first == activeNodeId }
     if (activeIndex >= 0) {
         ActionPreview(
@@ -285,6 +286,7 @@ class FrameProcessor(
     private var rightAnchorCalibrated = false
     private var topHudAnchorCalibrated = false
     private var rightControlAnchorCalibrated = false
+    private var loadingAnchorCalibrated = false
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
     private var openingControlsConfirmed = true
     private var lastPauseFrameNodeId: String? = null
@@ -317,6 +319,7 @@ class FrameProcessor(
         rightAnchorCalibrated = false
         topHudAnchorCalibrated = false
         rightControlAnchorCalibrated = false
+        loadingAnchorCalibrated = false
         filter.reset()
         resetEnergySampling() // 置空强制重建，使新战斗读到最新 UB 阈值配置
         gameStateDetector.reset()
@@ -401,7 +404,12 @@ class FrameProcessor(
             roleTapSafe = false
             energySamples.reset()
             val score = matchRegion(
-                image, BattleReferenceRegions.LOADING, battleTemplates.loading, HorizontalAnchor.RIGHT
+                image,
+                BattleReferenceRegions.LOADING,
+                battleTemplates.loading,
+                HorizontalAnchor.LOADING,
+                calibrate = true,
+                calibrationThreshold = TEMPLATE_THRESHOLD
             )
             if (score >= TEMPLATE_THRESHOLD) sessionGate.onLoadingMatched()
             if (sessionGate.isWaitingForLoading()) {
@@ -911,6 +919,7 @@ class FrameProcessor(
             HorizontalAnchor.RIGHT -> rightAnchorCalibrated
             HorizontalAnchor.TOP_HUD -> topHudAnchorCalibrated
             HorizontalAnchor.RIGHT_CONTROL -> rightControlAnchorCalibrated
+            HorizontalAnchor.LOADING -> loadingAnchorCalibrated
         }
         if (!calibrate || alreadyCalibrated) {
             return FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, scaled), template)
@@ -924,7 +933,12 @@ class FrameProcessor(
                 (GameCoordinateMapper.viewport(image.width, image.height).spareX / 2f).toInt() +
                     TOP_HUD_SEARCH_MARGIN
             )
-            HorizontalAnchor.RIGHT_CONTROL -> RIGHT_CONTROL_SEARCH_RADIUS
+            HorizontalAnchor.RIGHT_CONTROL -> rightControlSearchRadius(image.width, image.height)
+            HorizontalAnchor.LOADING -> maxOf(
+                LOADING_MIN_SEARCH_RADIUS,
+                (GameCoordinateMapper.viewport(image.width, image.height).spareX / 2f).toInt() +
+                    LOADING_SEARCH_MARGIN
+            )
         }
         var bestScore = Double.NEGATIVE_INFINITY
         var bestDelta = 0
@@ -957,6 +971,7 @@ class FrameProcessor(
                 HorizontalAnchor.RIGHT -> rightAnchorCalibrated = true
                 HorizontalAnchor.TOP_HUD -> topHudAnchorCalibrated = true
                 HorizontalAnchor.RIGHT_CONTROL -> rightControlAnchorCalibrated = true
+                HorizontalAnchor.LOADING -> loadingAnchorCalibrated = true
             }
         }
         return bestScore
@@ -1011,11 +1026,12 @@ class FrameProcessor(
             }
         }
 
-        for (delta in -RIGHT_CONTROL_SEARCH_RADIUS..RIGHT_CONTROL_SEARCH_RADIUS step CALIBRATION_COARSE_STEP) {
+        val searchRadius = rightControlSearchRadius(image.width, image.height)
+        for (delta in -searchRadius..searchRadius step CALIBRATION_COARSE_STEP) {
             consider(delta)
         }
-        val fineStart = (bestDelta - CALIBRATION_COARSE_STEP).coerceAtLeast(-RIGHT_CONTROL_SEARCH_RADIUS)
-        val fineEnd = (bestDelta + CALIBRATION_COARSE_STEP).coerceAtMost(RIGHT_CONTROL_SEARCH_RADIUS)
+        val fineStart = (bestDelta - CALIBRATION_COARSE_STEP).coerceAtLeast(-searchRadius)
+        val fineEnd = (bestDelta + CALIBRATION_COARSE_STEP).coerceAtMost(searchRadius)
         for (delta in fineStart..fineEnd) consider(delta)
 
         if (bestScore >= RIGHT_CONTROL_CALIBRATION_THRESHOLD) {
@@ -1028,6 +1044,12 @@ class FrameProcessor(
             )
         }
     }
+
+    private fun rightControlSearchRadius(width: Int, height: Int): Int = maxOf(
+        RIGHT_CONTROL_MIN_SEARCH_RADIUS,
+        (GameCoordinateMapper.viewport(width, height).spareX / 2f).toInt() +
+            RIGHT_CONTROL_SEARCH_MARGIN
+    )
 
     /**
      * Clock OCR, TP detection and SET/AUTO recognition only consume immutable ROI
@@ -1385,7 +1407,7 @@ class FrameProcessor(
                 )
             }
             if (sessionGate.isWaitingForLoading()) {
-                add(DebugRegionBox("加载", rect(BattleReferenceRegions.LOADING, HorizontalAnchor.RIGHT)))
+                add(DebugRegionBox("加载", rect(BattleReferenceRegions.LOADING, HorizontalAnchor.LOADING)))
             }
             BattleReferenceRegions.ROLE_SET_BADGES.forEach { (role, region) ->
                 add(
@@ -1472,7 +1494,10 @@ class FrameProcessor(
         const val RIGHT_SEARCH_RADIUS = 120
         const val TOP_HUD_MIN_SEARCH_RADIUS = 180
         const val TOP_HUD_SEARCH_MARGIN = 96
-        const val RIGHT_CONTROL_SEARCH_RADIUS = 420
+        const val RIGHT_CONTROL_MIN_SEARCH_RADIUS = 420
+        const val RIGHT_CONTROL_SEARCH_MARGIN = 96
+        const val LOADING_MIN_SEARCH_RADIUS = 180
+        const val LOADING_SEARCH_MARGIN = 96
         const val RIGHT_CONTROL_CALIBRATION_THRESHOLD = 0.58
         const val CALIBRATION_COARSE_STEP = 12
         const val CALIBRATION_MIN_SCORE = 0.55

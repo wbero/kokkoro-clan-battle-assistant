@@ -31,7 +31,7 @@ class ActionExecutor(
                     QueuedCommand.Tap(point, HorizontalAnchor.CENTER)
                 }
                 ActionType.CLICK_AUTO ->
-                    QueuedCommand.Tap(ActionCoordinates.autoButton, HorizontalAnchor.RIGHT)
+                    QueuedCommand.Tap(ActionCoordinates.autoButton, HorizontalAnchor.RIGHT_CONTROL)
                 ActionType.NOTIFY -> QueuedCommand.Notify(action.message.orEmpty())
                 ActionType.BOSS -> QueuedCommand.Notify("BOSS UB")
                 ActionType.TOGGLE_AUTO, ActionType.SET_ROLES -> null

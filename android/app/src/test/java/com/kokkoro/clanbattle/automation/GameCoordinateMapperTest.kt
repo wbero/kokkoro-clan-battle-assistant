@@ -32,15 +32,30 @@ class GameCoordinateMapperTest {
         GameCoordinateCalibration.reset()
         val width = 3440
         val height = 1440
-        val loadingBefore = GameCoordinateMapper.mapX(1545, width, height, HorizontalAnchor.RIGHT)
+        val loadingBefore = GameCoordinateMapper.mapX(1545, width, height, HorizontalAnchor.LOADING)
         val topBefore = GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.TOP_HUD)
         val controlBefore = GameCoordinateMapper.mapX(1783, width, height, HorizontalAnchor.RIGHT_CONTROL)
 
         GameCoordinateCalibration.update(HorizontalAnchor.RIGHT_CONTROL, -220f)
 
-        assertEquals(loadingBefore, GameCoordinateMapper.mapX(1545, width, height, HorizontalAnchor.RIGHT), 0.01f)
+        assertEquals(loadingBefore, GameCoordinateMapper.mapX(1545, width, height, HorizontalAnchor.LOADING), 0.01f)
         assertEquals(topBefore, GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.TOP_HUD), 0.01f)
         assertEquals(controlBefore - 220f, GameCoordinateMapper.mapX(1783, width, height, HorizontalAnchor.RIGHT_CONTROL), 0.01f)
+        GameCoordinateCalibration.reset()
+    }
+
+    @Test fun `extreme ultrawide loading and right controls start from centered viewport`() {
+        GameCoordinateCalibration.reset()
+        val width = 2800
+        val height = 800
+
+        val loadingCenter = GameCoordinateMapper.mapX(1545, width, height, HorizontalAnchor.CENTER)
+        val controlCenter = GameCoordinateMapper.mapX(1783, width, height, HorizontalAnchor.CENTER)
+        val physicalRightControl = GameCoordinateMapper.mapX(1783, width, height, HorizontalAnchor.RIGHT)
+
+        assertEquals(loadingCenter, GameCoordinateMapper.mapX(1545, width, height, HorizontalAnchor.LOADING), 0.01f)
+        assertEquals(controlCenter, GameCoordinateMapper.mapX(1783, width, height, HorizontalAnchor.RIGHT_CONTROL), 0.01f)
+        assertEquals(688.9f, physicalRightControl - controlCenter, 0.2f)
         GameCoordinateCalibration.reset()
     }
 
