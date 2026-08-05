@@ -114,20 +114,22 @@ class EnergyDetectorTest {
     }
 
     @Test
-    fun `full to below thirty percent triggers only on the transition frame`() {
+    fun `full to below thirty percent requires two consecutive low frames`() {
         val regions = CharacterRole.entries.associateWith { role ->
             EnergyRegion(x = role.ordinal * 10, y = 0, width = 10, height = 1)
         }
         val detector = EnergyDetector(regions)
 
         val full = detector.detect(roleOneRatio(10))
-        val dropped = detector.detect(roleOneRatio(2))
+        val firstLow = detector.detect(roleOneRatio(2))
+        val confirmedLow = detector.detect(roleOneRatio(1))
         val remainsLow = detector.detect(roleOneRatio(1))
 
         assertTrue(full.characters.getValue(CharacterRole.ROLE_1).isFull)
         assertTrue(full.triggeredRoles.isEmpty())
-        assertEquals(setOf(CharacterRole.ROLE_1), dropped.triggeredRoles)
-        assertTrue(dropped.characters.getValue(CharacterRole.ROLE_1).triggered)
+        assertTrue(firstLow.triggeredRoles.isEmpty())
+        assertEquals(setOf(CharacterRole.ROLE_1), confirmedLow.triggeredRoles)
+        assertTrue(confirmedLow.characters.getValue(CharacterRole.ROLE_1).triggered)
         assertTrue(remainsLow.triggeredRoles.isEmpty())
         assertFalse(remainsLow.characters.getValue(CharacterRole.ROLE_1).triggered)
     }
@@ -145,11 +147,13 @@ class EnergyDetectorTest {
 
         val charging = detector.detect(roleOneWideRatio(25))
         val full = detector.detect(roleOneWideRatio(100))
+        val firstReleased = detector.detect(roleOneWideRatio(25))
         val released = detector.detect(roleOneWideRatio(25))
 
         assertTrue(charging.triggeredRoles.isEmpty())
         assertTrue(full.characters.getValue(CharacterRole.ROLE_1).isFull)
         assertTrue(full.triggeredRoles.isEmpty())
+        assertTrue(firstReleased.triggeredRoles.isEmpty())
         assertEquals(setOf(CharacterRole.ROLE_1), released.triggeredRoles)
     }
 
@@ -177,8 +181,11 @@ class EnergyDetectorTest {
         val detector = EnergyDetector(regions)
 
         detector.detect(allRoleRatios(listOf(100, 100, 100, 100, 100)))
+        val firstLow = detector.detect(allRoleRatios(listOf(0, 100, 100, 100, 100)))
         val released = detector.detect(allRoleRatios(listOf(0, 100, 100, 100, 100)))
 
+        assertFalse(firstLow.visualObstruction)
+        assertTrue(firstLow.triggeredRoles.isEmpty())
         assertFalse(released.visualObstruction)
         assertEquals(setOf(CharacterRole.ROLE_1), released.triggeredRoles)
     }
@@ -191,11 +198,29 @@ class EnergyDetectorTest {
 
         detector.detect(roleOneWideRatio(100))
         val animationDip = detector.detect(roleOneWideRatio(95))
+        val firstLow = detector.detect(roleOneWideRatio(0))
         val released = detector.detect(roleOneWideRatio(0))
 
         assertFalse(animationDip.characters.getValue(CharacterRole.ROLE_1).isFull)
         assertTrue(animationDip.triggeredRoles.isEmpty())
+        assertTrue(firstLow.triggeredRoles.isEmpty())
         assertEquals(setOf(CharacterRole.ROLE_1), released.triggeredRoles)
+    }
+
+    @Test
+    fun `single low frame between full frames does not trigger a ub`() {
+        val regions = CharacterRole.entries.associateWith { role ->
+            EnergyRegion(x = role.ordinal * 100, y = 0, width = 100, height = 1)
+        }
+        val detector = EnergyDetector(regions)
+
+        detector.detect(roleOneWideRatio(100))
+        val transientLow = detector.detect(roleOneWideRatio(0))
+        val fullAgain = detector.detect(roleOneWideRatio(100))
+
+        assertTrue(transientLow.triggeredRoles.isEmpty())
+        assertTrue(fullAgain.triggeredRoles.isEmpty())
+        assertTrue(fullAgain.characters.getValue(CharacterRole.ROLE_1).isFull)
     }
 
     @Test
