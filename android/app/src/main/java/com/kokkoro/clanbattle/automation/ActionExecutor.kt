@@ -64,10 +64,10 @@ class ActionExecutor(
     }
 
     fun tapAuto(width: Int, height: Int) =
-        enqueueTap(ActionCoordinates.autoButton, width, height, HorizontalAnchor.RIGHT)
+        enqueueTap(ActionCoordinates.autoButton, width, height, HorizontalAnchor.RIGHT_CONTROL)
 
     fun tapGlobalSet(width: Int, height: Int) =
-        enqueueTap(ActionCoordinates.globalSet, width, height, HorizontalAnchor.RIGHT)
+        enqueueTap(ActionCoordinates.globalSet, width, height, HorizontalAnchor.RIGHT_CONTROL)
 
     fun tapRole(role: CharacterRole, width: Int, height: Int) =
         enqueueTap(ActionCoordinates.role(role), width, height, HorizontalAnchor.CENTER)

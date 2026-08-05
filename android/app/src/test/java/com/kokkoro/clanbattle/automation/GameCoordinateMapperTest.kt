@@ -28,6 +28,22 @@ class GameCoordinateMapperTest {
         GameCoordinateCalibration.reset()
     }
 
+    @Test fun `right control calibration does not move loading or top hud`() {
+        GameCoordinateCalibration.reset()
+        val width = 3440
+        val height = 1440
+        val loadingBefore = GameCoordinateMapper.mapX(1545, width, height, HorizontalAnchor.RIGHT)
+        val topBefore = GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.TOP_HUD)
+        val controlBefore = GameCoordinateMapper.mapX(1783, width, height, HorizontalAnchor.RIGHT_CONTROL)
+
+        GameCoordinateCalibration.update(HorizontalAnchor.RIGHT_CONTROL, -220f)
+
+        assertEquals(loadingBefore, GameCoordinateMapper.mapX(1545, width, height, HorizontalAnchor.RIGHT), 0.01f)
+        assertEquals(topBefore, GameCoordinateMapper.mapX(1619, width, height, HorizontalAnchor.TOP_HUD), 0.01f)
+        assertEquals(controlBefore - 220f, GameCoordinateMapper.mapX(1783, width, height, HorizontalAnchor.RIGHT_CONTROL), 0.01f)
+        GameCoordinateCalibration.reset()
+    }
+
     @Test fun `top hud calibration is independent from center and right anchors`() {
         GameCoordinateCalibration.reset()
         val width = 2800

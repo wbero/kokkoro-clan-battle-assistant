@@ -284,6 +284,7 @@ class FrameProcessor(
     private var centerAnchorCalibrated = false
     private var rightAnchorCalibrated = false
     private var topHudAnchorCalibrated = false
+    private var rightControlAnchorCalibrated = false
     private var lastDebugPreferenceCheckMs = Long.MIN_VALUE
     private var openingControlsConfirmed = true
     private var lastPauseFrameNodeId: String? = null
@@ -315,6 +316,7 @@ class FrameProcessor(
         centerAnchorCalibrated = false
         rightAnchorCalibrated = false
         topHudAnchorCalibrated = false
+        rightControlAnchorCalibrated = false
         filter.reset()
         resetEnergySampling() // 置空强制重建，使新战斗读到最新 UB 阈值配置
         gameStateDetector.reset()
@@ -428,6 +430,7 @@ class FrameProcessor(
             calibrate = true,
             calibrationThreshold = MENU_TRUST_THRESHOLD
         )
+        calibrateRightControlAnchor(image)
         // Resolve the independent top-HUD anchor from MENU before cropping the
         // clock. Honor Win and MuMu place this HUD differently despite sharing
         // the same ultrawide aspect ratio.
@@ -907,6 +910,7 @@ class FrameProcessor(
             HorizontalAnchor.CENTER -> centerAnchorCalibrated
             HorizontalAnchor.RIGHT -> rightAnchorCalibrated
             HorizontalAnchor.TOP_HUD -> topHudAnchorCalibrated
+            HorizontalAnchor.RIGHT_CONTROL -> rightControlAnchorCalibrated
         }
         if (!calibrate || alreadyCalibrated) {
             return FixedTemplateMatcher.score(ImageRoiExtractor.extract(image, scaled), template)
@@ -920,6 +924,7 @@ class FrameProcessor(
                 (GameCoordinateMapper.viewport(image.width, image.height).spareX / 2f).toInt() +
                     TOP_HUD_SEARCH_MARGIN
             )
+            HorizontalAnchor.RIGHT_CONTROL -> RIGHT_CONTROL_SEARCH_RADIUS
         }
         var bestScore = Double.NEGATIVE_INFINITY
         var bestDelta = 0
@@ -951,9 +956,77 @@ class FrameProcessor(
                 HorizontalAnchor.CENTER -> centerAnchorCalibrated = true
                 HorizontalAnchor.RIGHT -> rightAnchorCalibrated = true
                 HorizontalAnchor.TOP_HUD -> topHudAnchorCalibrated = true
+                HorizontalAnchor.RIGHT_CONTROL -> rightControlAnchorCalibrated = true
             }
         }
         return bestScore
+    }
+
+    private fun calibrateRightControlAnchor(image: Image) {
+        if (rightControlAnchorCalibrated) return
+
+        val autoBase = ImageRoiExtractor.scaleRegion(
+            image.width,
+            image.height,
+            BattleReferenceRegions.AUTO_BUTTON.x,
+            BattleReferenceRegions.AUTO_BUTTON.y,
+            BattleReferenceRegions.AUTO_BUTTON.width,
+            BattleReferenceRegions.AUTO_BUTTON.height,
+            HorizontalAnchor.RIGHT_CONTROL
+        )
+        val globalBase = ImageRoiExtractor.scaleRegion(
+            image.width,
+            image.height,
+            BattleReferenceRegions.GLOBAL_SET_BUTTON.x,
+            BattleReferenceRegions.GLOBAL_SET_BUTTON.y,
+            BattleReferenceRegions.GLOBAL_SET_BUTTON.width,
+            BattleReferenceRegions.GLOBAL_SET_BUTTON.height,
+            HorizontalAnchor.RIGHT_CONTROL
+        )
+
+        var bestScore = Double.NEGATIVE_INFINITY
+        var bestDelta = 0
+        fun consider(delta: Int) {
+            val autoCandidate = Rect(autoBase).apply { offset(delta, 0) }
+            val globalCandidate = Rect(globalBase).apply { offset(delta, 0) }
+            if (
+                autoCandidate.left < 0 || autoCandidate.right > image.width ||
+                globalCandidate.left < 0 || globalCandidate.right > image.width
+            ) return
+
+            val autoCrop = ImageRoiExtractor.extract(image, autoCandidate)
+            val globalCrop = ImageRoiExtractor.extract(image, globalCandidate)
+            val autoScore = maxOf(
+                FixedTemplateMatcher.score(autoCrop, controlTemplates.controls.autoOn),
+                FixedTemplateMatcher.score(autoCrop, controlTemplates.controls.autoOff)
+            )
+            val globalScore = maxOf(
+                FixedTemplateMatcher.score(globalCrop, controlTemplates.controls.globalSetOn),
+                FixedTemplateMatcher.score(globalCrop, controlTemplates.controls.globalSetOff)
+            )
+            val score = (autoScore + globalScore) / 2.0
+            if (score > bestScore) {
+                bestScore = score
+                bestDelta = delta
+            }
+        }
+
+        for (delta in -RIGHT_CONTROL_SEARCH_RADIUS..RIGHT_CONTROL_SEARCH_RADIUS step CALIBRATION_COARSE_STEP) {
+            consider(delta)
+        }
+        val fineStart = (bestDelta - CALIBRATION_COARSE_STEP).coerceAtLeast(-RIGHT_CONTROL_SEARCH_RADIUS)
+        val fineEnd = (bestDelta + CALIBRATION_COARSE_STEP).coerceAtMost(RIGHT_CONTROL_SEARCH_RADIUS)
+        for (delta in fineStart..fineEnd) consider(delta)
+
+        if (bestScore >= RIGHT_CONTROL_CALIBRATION_THRESHOLD) {
+            GameCoordinateCalibration.update(HorizontalAnchor.RIGHT_CONTROL, bestDelta.toFloat())
+            rightControlAnchorCalibrated = true
+            Log.i(
+                CALIBRATION_LOG_TAG,
+                "anchor=${HorizontalAnchor.RIGHT_CONTROL} delta=$bestDelta " +
+                    "score=${"%.4f".format(Locale.US, bestScore)} size=${image.width}x${image.height}"
+            )
+        }
     }
 
     /**
@@ -1059,8 +1132,8 @@ class FrameProcessor(
 
     private fun extractControlCrops(image: Image): ControlCrops? = runCatching {
         ControlCrops(
-            auto = extractRegion(image, BattleReferenceRegions.AUTO_BUTTON, HorizontalAnchor.RIGHT),
-            globalSet = extractRegion(image, BattleReferenceRegions.GLOBAL_SET_BUTTON, HorizontalAnchor.RIGHT),
+            auto = extractRegion(image, BattleReferenceRegions.AUTO_BUTTON, HorizontalAnchor.RIGHT_CONTROL),
+            globalSet = extractRegion(image, BattleReferenceRegions.GLOBAL_SET_BUTTON, HorizontalAnchor.RIGHT_CONTROL),
             roles = BattleReferenceRegions.ROLE_SET_BADGES.mapValues { (_, region) ->
                 extractRegion(image, region)
             }
@@ -1291,14 +1364,14 @@ class FrameProcessor(
             add(
                 DebugRegionBox(
                     "AUTO",
-                    rect(BattleReferenceRegions.AUTO_BUTTON, HorizontalAnchor.RIGHT),
+                    rect(BattleReferenceRegions.AUTO_BUTTON, HorizontalAnchor.RIGHT_CONTROL),
                     tint(observation?.auto?.state)
                 )
             )
             add(
                 DebugRegionBox(
                     "全局SET",
-                    rect(BattleReferenceRegions.GLOBAL_SET_BUTTON, HorizontalAnchor.RIGHT),
+                    rect(BattleReferenceRegions.GLOBAL_SET_BUTTON, HorizontalAnchor.RIGHT_CONTROL),
                     tint(observation?.globalSet?.state)
                 )
             )
@@ -1399,6 +1472,8 @@ class FrameProcessor(
         const val RIGHT_SEARCH_RADIUS = 120
         const val TOP_HUD_MIN_SEARCH_RADIUS = 180
         const val TOP_HUD_SEARCH_MARGIN = 96
+        const val RIGHT_CONTROL_SEARCH_RADIUS = 420
+        const val RIGHT_CONTROL_CALIBRATION_THRESHOLD = 0.58
         const val CALIBRATION_COARSE_STEP = 12
         const val CALIBRATION_MIN_SCORE = 0.55
         const val MENU_TRUST_THRESHOLD = 0.70
