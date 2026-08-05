@@ -719,6 +719,83 @@ class VerifiedActionCoordinatorTest {
         assertTrue(cleanup.busy)
     }
 
+    @Test fun `visual obstruction clears false full tp fallback baseline`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = VerifiedActionCoordinator(machine, roleSetFallbackGraceMs = 0)
+        machine.update(observation(), 0)
+        coordinator.enqueue(listOf(eventAt(50, AxisAction(ActionType.CLICK_ROLE, role = "角色5"))))
+        coordinator.update(machine.snapshot(), 10, clockSeconds = 50)
+
+        val role5On = observation().copy(
+            roles = CharacterRole.entries.associateWith { role ->
+                ToggleObservation(
+                    if (role == CharacterRole.ROLE_5) VisualToggleState.ON else VisualToggleState.OFF,
+                    0.9
+                )
+            }
+        )
+        coordinator.update(machine.update(role5On, 20), 20, clockSeconds = 50)
+
+        // A false all-full frame temporarily arms the fallback baseline.
+        coordinator.update(
+            machine.update(role5On, 30),
+            30,
+            clockSeconds = 50,
+            tpFullRoles = CharacterRole.entries.toSet()
+        )
+
+        // The following impossible multi-role drop retrospectively invalidates
+        // that all-full frame and must clear the baseline.
+        coordinator.update(
+            machine.snapshot(),
+            40,
+            clockSeconds = 49,
+            tpBelowThresholdRoles = CharacterRole.entries.toSet(),
+            tpVisualObstruction = true
+        )
+
+        repeat(4) { index ->
+            val step = coordinator.update(
+                machine.snapshot(),
+                50L + index,
+                clockSeconds = 49,
+                tpBelowThresholdRoles = setOf(CharacterRole.ROLE_5)
+            )
+            assertEquals(ControlAction.None, step.newControlAction)
+            assertEquals("WAITING_ROLE_UB", step.phase)
+            assertTrue(step.busy)
+        }
+
+        // A new trustworthy full frame re-arms the fallback normally.
+        coordinator.update(
+            machine.snapshot(),
+            60,
+            clockSeconds = 49,
+            tpFullRoles = setOf(CharacterRole.ROLE_5)
+        )
+        coordinator.update(
+            machine.snapshot(),
+            61,
+            clockSeconds = 49,
+            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_5)
+        )
+        coordinator.update(
+            machine.snapshot(),
+            62,
+            clockSeconds = 49,
+            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_5)
+        )
+        val cleanup = coordinator.update(
+            machine.snapshot(),
+            63,
+            clockSeconds = 49,
+            tpBelowThresholdRoles = setOf(CharacterRole.ROLE_5)
+        )
+
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_5), cleanup.newControlAction)
+        assertEquals("CONFIRMING_ROLE_OFF", cleanup.phase)
+    }
+
     @Test fun `same time role actions stay serialized in source order`() {
         val machine = BattleControlStateMachine()
         val coordinator = VerifiedActionCoordinator(machine)

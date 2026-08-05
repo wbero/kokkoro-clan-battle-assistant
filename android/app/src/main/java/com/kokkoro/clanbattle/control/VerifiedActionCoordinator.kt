@@ -53,7 +53,8 @@ class VerifiedActionCoordinator(
         clockSeconds: Int?,
         nowMs: Long,
         tpBelowThresholdRoles: Set<CharacterRole> = emptySet(),
-        tpFullRoles: Set<CharacterRole> = emptySet()
+        tpFullRoles: Set<CharacterRole> = emptySet(),
+        tpVisualObstruction: Boolean = false
     ) {
         roleSetFallbackWatchdog.observeClock(clockSeconds, nowMs)
         triggeredRoles.forEach { role ->
@@ -76,6 +77,15 @@ class VerifiedActionCoordinator(
             activeRoleTpObservedAtMs != nowMs
         ) {
             activeRoleTpObservedAtMs = nowMs
+            if (tpVisualObstruction) {
+                // The prior all-full frame is only known to be false after the
+                // following multi-role drop arrives. Invalidate the entire
+                // node-local fallback baseline so later low frames cannot close
+                // SET until a new trustworthy full-TP frame is observed.
+                activeRoleTpBelowThresholdFrames = 0
+                activeRoleTpFullObserved = false
+                return
+            }
             activeRoleTpBelowThresholdFrames = when {
                 role in tpFullRoles -> {
                     // Start a fresh, node-local baseline. A low TP reading from
@@ -138,9 +148,17 @@ class VerifiedActionCoordinator(
         triggeredRoles: Set<CharacterRole> = emptySet(),
         clockSeconds: Int? = null,
         tpBelowThresholdRoles: Set<CharacterRole> = emptySet(),
-        tpFullRoles: Set<CharacterRole> = emptySet()
+        tpFullRoles: Set<CharacterRole> = emptySet(),
+        tpVisualObstruction: Boolean = false
     ): CoordinatedActionStep {
-        observeFrame(triggeredRoles, clockSeconds, nowMs, tpBelowThresholdRoles, tpFullRoles)
+        observeFrame(
+            triggeredRoles,
+            clockSeconds,
+            nowMs,
+            tpBelowThresholdRoles,
+            tpFullRoles,
+            tpVisualObstruction
+        )
         if (latest.safety != ControlSafetyState.RUNNING) {
             if (activeControl != null) {
                 activePhase = ActivePhase.STARTING
@@ -155,7 +173,7 @@ class VerifiedActionCoordinator(
 
         val active = activeControl
         if (active != null) {
-            return advance(active, latest, nowMs, triggeredRoles, tpBelowThresholdRoles, tpFullRoles, emptyList())
+            return advance(active, latest, nowMs, triggeredRoles, tpFullRoles, emptyList())
         }
 
         val immediate = mutableListOf<AxisEvent>()
@@ -171,7 +189,7 @@ class VerifiedActionCoordinator(
             resetFallbackTpEvidence()
             activeRoleSetVisualOnObserved = false
             activeRoleSetRequestedByCoordinator = false
-            return advance(next, latest, nowMs, triggeredRoles, tpBelowThresholdRoles, tpFullRoles, immediate)
+            return advance(next, latest, nowMs, triggeredRoles, tpFullRoles, immediate)
         }
         return result(latest, immediate, busy = false)
     }
@@ -201,12 +219,11 @@ class VerifiedActionCoordinator(
         latest: ControlStep,
         nowMs: Long,
         triggeredRoles: Set<CharacterRole>,
-        tpBelowThresholdRoles: Set<CharacterRole>,
         tpFullRoles: Set<CharacterRole>,
         immediate: List<AxisEvent>
     ): CoordinatedActionStep = when (event.actions.single().type) {
         ActionType.CLICK_ROLE -> advanceRole(
-            event, latest, nowMs, triggeredRoles, tpBelowThresholdRoles, tpFullRoles, immediate
+            event, latest, nowMs, triggeredRoles, tpFullRoles, immediate
         )
         else -> advanceGeneric(event, latest, nowMs, immediate)
     }
@@ -216,7 +233,6 @@ class VerifiedActionCoordinator(
         latest: ControlStep,
         nowMs: Long,
         triggeredRoles: Set<CharacterRole>,
-        tpBelowThresholdRoles: Set<CharacterRole>,
         tpFullRoles: Set<CharacterRole>,
         immediate: List<AxisEvent>
     ): CoordinatedActionStep {

@@ -510,7 +510,8 @@ class FrameProcessor(
                 acceptedClockSeconds,
                 start,
                 tpBelowThresholdRoles,
-                tpFullRoles
+                tpFullRoles,
+                energy?.visualObstruction == true
             )
             sequenceRuntime?.observeRoleUbEvents(triggeredRoles)
         }
@@ -616,7 +617,8 @@ class FrameProcessor(
                         triggeredRoles,
                         acceptedClockSeconds,
                         tpBelowThresholdRoles,
-                        tpFullRoles
+                        tpFullRoles,
+                        energy?.visualObstruction == true
                     )
                     sequenceProgress = coordinated
                     executeControlAction(coordinated.newControlAction, image.width, image.height)
@@ -668,7 +670,8 @@ class FrameProcessor(
                                     triggeredRoles,
                                     filtered.timeSeconds,
                                     tpBelowThresholdRoles,
-                                    tpFullRoles
+                                    tpFullRoles,
+                                    energy?.visualObstruction == true
                                 )
                                 sequenceProgress = coordinated
                                 executeControlAction(coordinated.newControlAction, image.width, image.height)
