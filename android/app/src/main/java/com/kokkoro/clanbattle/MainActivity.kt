@@ -5,7 +5,6 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -738,16 +737,7 @@ class MainActivity : Activity() {
     }
 
     private fun accessibilityEnabled(): Boolean {
-        if (KokkoroAccessibilityService.instance != null) return true
-        val component = ComponentName(this, KokkoroAccessibilityService::class.java)
-        val enabled = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-        ) ?: return false
-        return enabled.split(':').any {
-            it.equals(component.flattenToString(), ignoreCase = true) ||
-                it.equals(component.flattenToShortString(), ignoreCase = true)
-        }
+        return KokkoroAccessibilityService.isConnected()
     }
 
     private fun setStatus(text: String, success: Boolean) {

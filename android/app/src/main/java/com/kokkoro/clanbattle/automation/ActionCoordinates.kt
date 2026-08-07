@@ -9,6 +9,7 @@ object ActionCoordinates {
     val autoButton = ReferencePoint(1828, 845)
     val menu = ReferencePoint(1805, 50)
 
+    // 战斗中切换角色 SET 需要点击角色头像区域，而不是右上角 SET 徽标。
     fun role(role: CharacterRole): ReferencePoint = ReferencePoint(480 + role.ordinal * 240, 845)
 
     fun role(name: String?): ReferencePoint? = when (name) {

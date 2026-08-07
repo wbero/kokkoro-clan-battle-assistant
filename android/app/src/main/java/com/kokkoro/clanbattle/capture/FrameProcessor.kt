@@ -6,6 +6,8 @@ import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Log
 import com.kokkoro.clanbattle.automation.ActionExecutor
+import com.kokkoro.clanbattle.automation.GestureDispatchEvent
+import com.kokkoro.clanbattle.automation.GestureDispatchStatus
 import com.kokkoro.clanbattle.automation.GameCoordinateCalibration
 import com.kokkoro.clanbattle.automation.GameCoordinateMapper
 import com.kokkoro.clanbattle.automation.HorizontalAnchor
@@ -41,6 +43,11 @@ import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
 import com.kokkoro.clanbattle.recognition.PixelImage
 import com.kokkoro.clanbattle.recognition.RecognitionFilter
 import com.kokkoro.clanbattle.recognition.RecognitionResult
+import com.kokkoro.clanbattle.recognition.UbBannerDetection
+import com.kokkoro.clanbattle.recognition.UbBannerDetector
+import com.kokkoro.clanbattle.recognition.RoleUbBannerGate
+import com.kokkoro.clanbattle.recognition.RoleUbFlashDetection
+import com.kokkoro.clanbattle.recognition.RoleUbFlashDetector
 import com.kokkoro.clanbattle.scheduler.GameStateDetector
 import com.kokkoro.clanbattle.scheduler.GameState
 import com.kokkoro.clanbattle.scheduler.BossUbDetector
@@ -62,6 +69,7 @@ import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 data class FrameStatus(
     val text: String,
@@ -77,10 +85,26 @@ data class FrameStatus(
 
 data class ActionPreview(val current: String, val next: String)
 
+/**
+ * TP evidence frozen at the same instant a display frame is retained for slow
+ * recognition. The wrapper intentionally distinguishes "captured but empty"
+ * from "no frozen snapshot supplied", so a later buffer read cannot pull in
+ * samples newer than the retained image.
+ */
+data class EnergyFrameSnapshot(val result: EnergyDetectionResult?)
+
 fun actionExecutionBlockReason(dryRun: Boolean, accessibilityConnected: Boolean): String? = when {
     dryRun -> "只识别模式，不执行点击"
     !accessibilityConnected -> "无障碍服务未启用，点击不会执行"
     else -> null
+}
+
+fun accessibilityGestureFailureMessage(event: GestureDispatchEvent): String = when (event.status) {
+    GestureDispatchStatus.CANCELLED -> "无障碍点击被系统取消，请重新开启无障碍服务"
+    GestureDispatchStatus.REJECTED -> "无障碍服务拒绝点击，请关闭后重新开启无障碍服务"
+    GestureDispatchStatus.SERVICE_UNAVAILABLE -> "无障碍服务已断开，请重新开启无障碍服务"
+    GestureDispatchStatus.SUBMISSION_TIMEOUT -> "无障碍服务无响应，请重新开启无障碍服务"
+    GestureDispatchStatus.COMPLETED -> ""
 }
 
 /** 等待有效开场 1:30 期间的悬浮窗状态行；原始 OCR 读数明确标注，避免被误解为已在运行。 */
@@ -216,7 +240,9 @@ private data class ControlDetection(
 private data class ParallelFrameRecognition(
     val clock: RecognitionResult,
     val energy: EnergyDetectionResult?,
-    val controls: ControlDetection?
+    val controls: ControlDetection?,
+    val ubBanner: UbBannerDetection,
+    val roleUbFlash: RoleUbFlashDetection
 )
 
 private data class SwitchDiagnosticContext(
@@ -253,6 +279,12 @@ class FrameProcessor(
     )
     private var energyDetector: EnergyDetector? = null
     private var energyHudSize: Pair<Int, Int>? = null
+    private val ubBannerDetector = UbBannerDetector(
+        battleTemplates.ubBannerLeft,
+        battleTemplates.ubBannerRight
+    )
+    private val roleUbBannerGate = RoleUbBannerGate()
+    private val roleUbFlashDetector = RoleUbFlashDetector()
     // TP 采样与完整识别解耦：满 TP 可能只存在一帧（快充 UB），
     // 而完整识别一轮约 60ms，靠它采样会漏掉大部分快充事件。
     private val energyLock = Any()
@@ -267,7 +299,12 @@ class FrameProcessor(
     private val bossUbDetector = BossUbDetector(
         earlyConfirmationHoldMs = AppPreferences.bossUbEarlyConfirmationHoldMs(appContext).toLong()
     )
-    private val executor = ActionExecutor(appContext, messageCallback)
+    private val pendingGestureFailure = AtomicReference<GestureDispatchEvent?>(null)
+    private val executor = ActionExecutor(appContext, messageCallback) { event ->
+        if (event.status != GestureDispatchStatus.COMPLETED) {
+            pendingGestureFailure.compareAndSet(null, event)
+        }
+    }
     private val recognitionThreadId = AtomicInteger(0)
     private val recognitionExecutor = Executors.newFixedThreadPool(RECOGNITION_WORKER_COUNT) { task ->
         Thread(task, "kokkoro-recognition-${recognitionThreadId.incrementAndGet()}").apply {
@@ -299,6 +336,7 @@ class FrameProcessor(
     // Hold the last trustworthy control state during that window instead of
     // turning the animation into an automatic safety pause.
     private var controlTransientHoldUntilMs = 0L
+    private var ubBannerHoldUntilMs = 0L
     @Volatile private var roleTapSafe = false
     // Tracks whether the switch-axis runtime is currently busy (node armed,
     // converging, or pause-frame entered) so that the safety gate can hold
@@ -324,6 +362,9 @@ class FrameProcessor(
         loadingAnchorCalibrated = false
         filter.reset()
         resetEnergySampling() // 置空强制重建，使新战斗读到最新 UB 阈值配置
+        ubBannerDetector.reset()
+        roleUbFlashDetector.reset()
+        roleUbBannerGate.reset()
         gameStateDetector.reset()
         bossUbDetector.configureEarlyConfirmationHoldMs(
             AppPreferences.bossUbEarlyConfirmationHoldMs(appContext).toLong()
@@ -333,6 +374,7 @@ class FrameProcessor(
         controlObservationFilter.reset()
         controlObservationSafetyGate.reset()
         controlTransientHoldUntilMs = 0L
+        ubBannerHoldUntilMs = 0L
         actionCoordinator.configureRoleSetFallbackGraceMs(
             AppPreferences.roleSetFallbackGraceMs(appContext).toLong()
         )
@@ -350,7 +392,11 @@ class FrameProcessor(
         if (debugEnabled && wasDebugEnabled) recorder().startSession()
     }
 
-    fun process(image: Image) {
+    fun freezeEnergyForSlowFrame(): EnergyFrameSnapshot = EnergyFrameSnapshot(
+        if (externalEnergySampling) energySamples.take() else null
+    )
+
+    fun process(image: Image, frozenEnergy: EnergyFrameSnapshot? = null) {
         if (closed.get()) return
         val start = SystemClock.elapsedRealtime()
         refreshDebugPreference(start)
@@ -445,11 +491,45 @@ class FrameProcessor(
         // Resolve the independent top-HUD anchor from MENU before cropping the
         // clock. Honor Win and MuMu place this HUD differently despite sharing
         // the same ultrawide aspect ratio.
+        // Prefer the TP snapshot frozen when this exact image was retained by the
+        // capture thread. Falling back to a live take is kept only for direct
+        // callers/tests that do not use ScreenCaptureService's handoff path.
+        val externallySampledEnergy = resolveEnergyForRetainedFrame(
+            externalEnergySampling = externalEnergySampling,
+            frozenEnergy = frozenEnergy,
+            liveTake = energySamples::take
+        )
         val parallelRecognition = recognizeFrameInParallel(image)
         if (closed.get()) return
         val recognition = parallelRecognition.clock
-        val energy = if (externalEnergySampling) energySamples.take() else parallelRecognition.energy
+        val rawEnergy = if (externalEnergySampling) externallySampledEnergy else parallelRecognition.energy
         val controlDetection = parallelRecognition.controls
+        val ubBanner = parallelRecognition.ubBanner
+        val roleUbFlash = parallelRecognition.roleUbFlash
+        val captureTimestampNanos = image.timestamp.takeIf { it > 0L }
+            ?: SystemClock.elapsedRealtimeNanos()
+        val rawCandidateTimes = rawEnergy?.triggeredRoleTimesNanos
+            ?.takeIf { it.isNotEmpty() }
+            ?: rawEnergy?.triggeredRoles.orEmpty().associateWith { captureTimestampNanos }
+        val confirmedRoleTimes = roleUbBannerGate.update(
+            candidateTimesNanos = rawCandidateTimes,
+            currentlyFullRoles = rawEnergy?.characters
+                ?.filterValues { state -> state.isFull }
+                ?.keys
+                .orEmpty(),
+            bannerRawPresent = ubBanner.rawPresent,
+            bannerActive = ubBanner.active,
+            bannerFrameTimestampNanos = captureTimestampNanos,
+            flashRoleTimesNanos = roleUbFlash.role
+                ?.let { role -> mapOf(role to captureTimestampNanos) }
+                .orEmpty()
+        )
+        val energy = rawEnergy?.withConfirmedRoleUbEvents(confirmedRoleTimes)
+        if (ubBanner.rawPresent || ubBanner.active) {
+            ubBannerHoldUntilMs = maxOf(ubBannerHoldUntilMs, start + UB_BANNER_CONTROL_TAIL_MS)
+        }
+        val holdControlsForUbBanner = start <= ubBannerHoldUntilMs
+        val forceHoldControlsForUbBanner = holdControlsForUbBanner
         val filteredControls = controlDetection?.observation?.let(controlObservationFilter::update)
             ?: controlObservationFilter.missing()
         val controls = filteredControls.observation
@@ -457,12 +537,22 @@ class FrameProcessor(
         roleTapSafe = filteredControls.trustworthy && menuScore >= MENU_TRUST_THRESHOLD
         // 画未经跨帧过滤的原始观察：调试时需要看到识别器当帧真正读到什么，
         // 而不是被过滤器锁住的旧稳定状态。
-        publishDebugOverlay(image, controlDetection?.observation, energy)
+        publishDebugOverlay(image, controlDetection?.observation, energy, ubBanner)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
             if (axis.type == AxisType.SWITCH && !sessionGate.isWaiting()) {
                 pendingSwitchRoleUbEvents += energy?.triggeredRoles.orEmpty()
             }
-            if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, null, energy)
+            if (debugEnabled) recorder().record(
+                currentFrameId,
+                System.currentTimeMillis(),
+                start,
+                sessionGate.debugState(),
+                recognition,
+                null,
+                energy,
+                ubBanner,
+                roleUbFlash
+            )
             val elapsed = SystemClock.elapsedRealtime() - start
             statusCallback(
                 FrameStatus(
@@ -477,7 +567,17 @@ class FrameProcessor(
         }
 
         val filtered = filter.update(recognition, SystemClock.elapsedRealtime())
-        if (debugEnabled) recorder().record(currentFrameId, System.currentTimeMillis(), start, sessionGate.debugState(), recognition, filtered, energy)
+        if (debugEnabled) recorder().record(
+            currentFrameId,
+            System.currentTimeMillis(),
+            start,
+            sessionGate.debugState(),
+            recognition,
+            filtered,
+            energy,
+            ubBanner,
+            roleUbFlash
+        )
         val usable = filtered.accepted || filtered.reason == "same-time"
         val sessionReady = usable && sessionGate.onAccepted(filtered.timeSeconds)
         val battleRunning = !sessionGate.isWaiting()
@@ -549,6 +649,13 @@ class FrameProcessor(
         }
         val bossUbEvent = bossUbDetector.latestEvent(start)
 
+        pendingGestureFailure.getAndSet(null)?.let { failure ->
+            val reason = "accessibility-gesture-${failure.status.name.lowercase(Locale.US)}"
+            controlStateMachine.abandonPendingAction(reason)
+            controlStateMachine.forceSafety(reason)
+            messageCallback(accessibilityGestureFailureMessage(failure))
+        }
+
         var scheduleReason: String? = null
         var controlStep: ControlStep = controlStateMachine.snapshot()
         var activeNodeId: String? = null
@@ -556,7 +663,7 @@ class FrameProcessor(
         var openingConfirmedThisFrame = false
         val executionWarning = actionExecutionBlockReason(
             dryRun = AppPreferences.dryRun(appContext),
-            accessibilityConnected = KokkoroAccessibilityService.instance != null
+            accessibilityConnected = KokkoroAccessibilityService.isConnected()
         )
         if (battleRunning && executionWarning == null) {
             controlStep = updateControls(
@@ -564,7 +671,8 @@ class FrameProcessor(
                 menuScore,
                 start,
                 image,
-                holdControlsForCharacterUb
+                holdControlsForCharacterUb,
+                forceHoldControlsForUbBanner
             )
             if (axis.type == AxisType.SWITCH) {
                 if (sessionReady) {
@@ -799,9 +907,13 @@ class FrameProcessor(
     fun resumeAfterManualPause() {
         filter.reset()
         resetEnergySampling()
+        ubBannerDetector.reset()
+        roleUbFlashDetector.reset()
+        roleUbBannerGate.reset()
         controlObservationFilter.reset()
         controlObservationSafetyGate.reset()
         controlTransientHoldUntilMs = 0L
+        ubBannerHoldUntilMs = 0L
         bossUbDetector.reset()
         gameStateDetector.reset()
         controlStateMachine.abandonPendingAction()
@@ -1080,11 +1192,19 @@ class FrameProcessor(
         val clockImage = ImageRoiExtractor.extract(image, clockRegion)
         val energyHud = extractEnergyHud(image)
         val controlCrops = extractControlCrops(image)
+        val ubBannerImage = runCatching {
+            extractRegion(image, BattleReferenceRegions.UB_NAME_BANNER)
+        }.getOrNull()
+        val roleUbFlashImage = runCatching {
+            extractRegion(image, BattleReferenceRegions.ROLE_UB_FLASH_HUD)
+        }.getOrNull()
         val includeDiagnostics = debugEnabled
 
         val clockFuture: Future<RecognitionResult>
         val energyFuture: Future<EnergyDetectionResult?>
         val controlsFuture: Future<ControlDetection?>
+        val ubBannerFuture: Future<UbBannerDetection>
+        val roleUbFlashFuture: Future<RoleUbFlashDetection>
         try {
             clockFuture = recognitionExecutor.submit<RecognitionResult> {
                 recognizer.recognize(
@@ -1100,11 +1220,25 @@ class FrameProcessor(
             controlsFuture = recognitionExecutor.submit<ControlDetection?> {
                 controlCrops?.let(::detectControls)
             }
+            ubBannerFuture = recognitionExecutor.submit<UbBannerDetection> {
+                synchronized(ubBannerDetector) {
+                    ubBannerImage?.let(ubBannerDetector::detect)
+                        ?: UbBannerDetection(active = false, score = 0.0, rawPresent = false)
+                }
+            }
+            roleUbFlashFuture = recognitionExecutor.submit<RoleUbFlashDetection> {
+                synchronized(roleUbFlashDetector) {
+                    roleUbFlashImage?.let(roleUbFlashDetector::detect)
+                        ?: RoleUbFlashDetection.empty()
+                }
+            }
         } catch (_: RejectedExecutionException) {
             return ParallelFrameRecognition(
                 clock = RecognitionResult(ok = false, reason = "recognition-closed"),
                 energy = null,
-                controls = null
+                controls = null,
+                ubBanner = UbBannerDetection(active = false, score = 0.0, rawPresent = false),
+                roleUbFlash = RoleUbFlashDetection.empty()
             )
         }
 
@@ -1112,7 +1246,11 @@ class FrameProcessor(
             clock = awaitOrNull(clockFuture)
                 ?: RecognitionResult(ok = false, reason = "clock-worker-failed"),
             energy = awaitOrNull(energyFuture),
-            controls = awaitOrNull(controlsFuture)
+            controls = awaitOrNull(controlsFuture),
+            ubBanner = awaitOrNull(ubBannerFuture)
+                ?: UbBannerDetection(active = false, score = 0.0, rawPresent = false),
+            roleUbFlash = awaitOrNull(roleUbFlashFuture)
+                ?: RoleUbFlashDetection.empty()
         )
     }
 
@@ -1148,7 +1286,9 @@ class FrameProcessor(
         if (image.width <= image.height) return
         val hud = extractEnergyHud(image) ?: return
         val result = detectEnergy(hud) ?: return
-        energySamples.submit(result)
+        val captureTimestampNanos = image.timestamp.takeIf { it > 0L }
+            ?: SystemClock.elapsedRealtimeNanos()
+        energySamples.submit(result, captureTimestampNanos)
     }
 
     /**
@@ -1173,8 +1313,16 @@ class FrameProcessor(
 
     private fun extractControlCrops(image: Image): ControlCrops? = runCatching {
         ControlCrops(
-            auto = extractRegion(image, BattleReferenceRegions.AUTO_BUTTON, HorizontalAnchor.RIGHT_CONTROL),
-            globalSet = extractRegion(image, BattleReferenceRegions.GLOBAL_SET_BUTTON, HorizontalAnchor.RIGHT_CONTROL),
+            auto = extractRegion(
+                image,
+                BattleReferenceRegions.AUTO_BUTTON,
+                HorizontalAnchor.RIGHT_CONTROL
+            ),
+            globalSet = extractRegion(
+                image,
+                BattleReferenceRegions.GLOBAL_SET_BUTTON,
+                HorizontalAnchor.RIGHT_CONTROL
+            ),
             roles = BattleReferenceRegions.ROLE_SET_BADGES.mapValues { (_, region) ->
                 extractRegion(image, region)
             }
@@ -1201,7 +1349,8 @@ class FrameProcessor(
         menuScore: Double,
         nowMs: Long,
         image: Image,
-        holdControlsForCharacterUb: Boolean
+        holdControlsForCharacterUb: Boolean,
+        forceHoldForUbBanner: Boolean
     ): ControlStep {
         val before = controlStateMachine.snapshot()
         val controls = filteredControls.observation
@@ -1225,7 +1374,13 @@ class FrameProcessor(
                     holdWhileActionBusy =
                         (axis.type == AxisType.SEQUENCE && actionCoordinator.isRoleLifecycleBusy()) ||
                         (axis.type == AxisType.SWITCH && switchAxisBusy) ||
-                        holdControlsForCharacterUb
+                        holdControlsForCharacterUb,
+                    forceHold = forceHoldForUbBanner,
+                    // A noisy recognition frame never opens the menu by itself.
+                    // Actual post-click mismatch still reaches
+                    // BattleControlStateMachine and can pause with
+                    // click-confirmation-failed after retries.
+                    pauseOnUntrusted = false
                 )
                 when (safety.decision) {
                     ControlObservationSafetyDecision.USE ->
@@ -1366,10 +1521,11 @@ class FrameProcessor(
     private fun publishDebugOverlay(
         image: Image,
         observation: BattleControlObservation?,
-        energy: EnergyDetectionResult?
+        energy: EnergyDetectionResult?,
+        ubBanner: UbBannerDetection? = null
     ) {
         if (!regionOverlayEnabled) return
-        runCatching { buildDebugOverlayFrame(image, observation, energy) }
+        runCatching { buildDebugOverlayFrame(image, observation, energy, ubBanner) }
             .getOrNull()
             ?.let(debugOverlayCallback)
     }
@@ -1382,10 +1538,17 @@ class FrameProcessor(
     private fun buildDebugOverlayFrame(
         image: Image,
         observation: BattleControlObservation?,
-        energy: EnergyDetectionResult?
+        energy: EnergyDetectionResult?,
+        ubBanner: UbBannerDetection?
     ): DebugOverlayFrame {
         fun rect(region: ReferenceRegion, anchor: HorizontalAnchor) = ImageRoiExtractor.scaleRegion(
-            image.width, image.height, region.x, region.y, region.width, region.height, anchor
+            image.width,
+            image.height,
+            region.x,
+            region.y,
+            region.width,
+            region.height,
+            anchor
         )
         fun tint(state: VisualToggleState?) = when (state) {
             VisualToggleState.ON -> DebugBoxTint.ON
@@ -1404,15 +1567,32 @@ class FrameProcessor(
             add(DebugRegionBox("菜单", rect(BattleReferenceRegions.MENU_BUTTON, HorizontalAnchor.TOP_HUD)))
             add(
                 DebugRegionBox(
+                    "UB技能框",
+                    rect(BattleReferenceRegions.UB_NAME_BANNER, HorizontalAnchor.CENTER),
+                    if (ubBanner?.rawPresent == true || ubBanner?.active == true) {
+                        DebugBoxTint.ON
+                    } else {
+                        DebugBoxTint.NEUTRAL
+                    }
+                )
+            )
+            add(
+                DebugRegionBox(
                     "AUTO",
-                    rect(BattleReferenceRegions.AUTO_BUTTON, HorizontalAnchor.RIGHT_CONTROL),
+                    rect(
+                        BattleReferenceRegions.AUTO_BUTTON,
+                        HorizontalAnchor.RIGHT_CONTROL
+                    ),
                     tint(observation?.auto?.state)
                 )
             )
             add(
                 DebugRegionBox(
                     "全局SET",
-                    rect(BattleReferenceRegions.GLOBAL_SET_BUTTON, HorizontalAnchor.RIGHT_CONTROL),
+                    rect(
+                        BattleReferenceRegions.GLOBAL_SET_BUTTON,
+                        HorizontalAnchor.RIGHT_CONTROL
+                    ),
                     tint(observation?.globalSet?.state)
                 )
             )
@@ -1479,7 +1659,13 @@ class FrameProcessor(
     ) = ImageRoiExtractor.extract(
         image,
         ImageRoiExtractor.scaleRegion(
-            image.width, image.height, region.x, region.y, region.width, region.height, anchor
+            image.width,
+            image.height,
+            region.x,
+            region.y,
+            region.width,
+            region.height,
+            anchor
         )
     )
 
@@ -1523,7 +1709,8 @@ class FrameProcessor(
         const val MENU_TRUST_THRESHOLD = 0.70
         const val OPENING_GRACE_SECONDS = 5
         const val UB_CONTROL_MAX_HOLD_MS = 8_000L
-        const val RECOGNITION_WORKER_COUNT = 3
+        const val RECOGNITION_WORKER_COUNT = 4
+        const val UB_BANNER_CONTROL_TAIL_MS = 750L
 
         fun emptyAxis() = AxisDocument(AxisType.SEQUENCE, 100, emptyMap(), emptyList())
     }
@@ -1532,8 +1719,32 @@ class FrameProcessor(
 internal fun GameState?.isCharacterUbActive(): Boolean =
     this == GameState.CHARACTER_UB || this == GameState.UB_ANIMATION
 
+private fun EnergyDetectionResult.withConfirmedRoleUbEvents(
+    confirmedTimesNanos: Map<CharacterRole, Long>
+): EnergyDetectionResult {
+    val confirmedRoles = confirmedTimesNanos.keys
+    return copy(
+        triggeredRoles = confirmedRoles,
+        triggeredRoleTimesNanos = confirmedTimesNanos,
+        characters = characters.mapValues { (role, state) ->
+            val confirmed = role in confirmedRoles
+            if (state.triggered == confirmed) state else state.copy(triggered = confirmed)
+        }
+    )
+}
+
 internal fun shouldHoldControlRecognitionForCharacterUb(
     gameState: GameState?,
     nowMs: Long,
     holdUntilMs: Long
 ): Boolean = gameState.isCharacterUbActive() && nowMs < holdUntilMs
+
+internal fun resolveEnergyForRetainedFrame(
+    externalEnergySampling: Boolean,
+    frozenEnergy: EnergyFrameSnapshot?,
+    liveTake: () -> EnergyDetectionResult?
+): EnergyDetectionResult? = when {
+    !externalEnergySampling -> null
+    frozenEnergy != null -> frozenEnergy.result
+    else -> liveTake()
+}

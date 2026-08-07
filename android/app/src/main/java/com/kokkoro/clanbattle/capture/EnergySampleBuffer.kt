@@ -15,24 +15,28 @@ import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
 class EnergySampleBuffer {
     private val lock = Any()
     private var latest: EnergyDetectionResult? = null
-    private val pending = mutableSetOf<CharacterRole>()
+    private val pending = mutableMapOf<CharacterRole, Long>()
     private var pendingVisualObstruction = false
 
-    fun submit(result: EnergyDetectionResult) = synchronized(lock) {
+    fun submit(result: EnergyDetectionResult, sampleTimestampNanos: Long) = synchronized(lock) {
         latest = result
-        pending += result.triggeredRoles
+        result.triggeredRoles.forEach { role ->
+            pending[role] = result.triggeredRoleTimesNanos[role] ?: sampleTimestampNanos
+        }
         pendingVisualObstruction = pendingVisualObstruction || result.visualObstruction
     }
 
     /** 取出最新比例快照，并附上自上次取用以来累积的全部 UB 事件。 */
     fun take(): EnergyDetectionResult? = synchronized(lock) {
         val snapshot = latest ?: return@synchronized null
-        val merged = pending.toSet()
+        val mergedTimes = pending.toMap()
+        val merged = mergedTimes.keys
         val visualObstruction = pendingVisualObstruction
         pending.clear()
         pendingVisualObstruction = false
         snapshot.copy(
             triggeredRoles = merged,
+            triggeredRoleTimesNanos = mergedTimes,
             visualObstruction = visualObstruction,
             characters = snapshot.characters.mapValues { (role, state) ->
                 val triggered = role in merged

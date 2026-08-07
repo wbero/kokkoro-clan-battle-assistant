@@ -75,6 +75,33 @@ class ControlObservationSafetyGateTest {
         assertEquals(1, after.consecutiveUntrustedFrames)
     }
 
+    @Test
+    fun `forced animation hold ignores even a plausible trusted observation`() {
+        val gate = ControlObservationSafetyGate(maxUntrustedFrames = 2)
+
+        val held = gate.evaluate(
+            filtered(ControlObservationStatus.TRUSTWORTHY),
+            forceHold = true
+        )
+
+        assertEquals(ControlObservationSafetyDecision.HOLD, held.decision)
+        assertEquals(0, held.consecutiveUntrustedFrames)
+    }
+
+    @Test
+    fun `axis mode never pauses only because recognition remains untrusted`() {
+        val gate = ControlObservationSafetyGate(maxUntrustedFrames = 2)
+
+        repeat(20) {
+            val held = gate.evaluate(
+                filtered(ControlObservationStatus.RAW_UNTRUSTWORTHY),
+                pauseOnUntrusted = false
+            )
+            assertEquals(ControlObservationSafetyDecision.HOLD, held.decision)
+            assertEquals(0, held.consecutiveUntrustedFrames)
+        }
+    }
+
     private fun filtered(status: ControlObservationStatus): FilteredControlObservation =
         FilteredControlObservation(
             observation = if (status == ControlObservationStatus.TRUSTWORTHY) observation() else null,

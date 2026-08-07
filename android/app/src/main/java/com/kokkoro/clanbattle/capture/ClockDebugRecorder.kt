@@ -7,6 +7,8 @@ import com.kokkoro.clanbattle.recognition.FilterResult
 import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
 import com.kokkoro.clanbattle.recognition.PixelImage
 import com.kokkoro.clanbattle.recognition.RecognitionResult
+import com.kokkoro.clanbattle.recognition.UbBannerDetection
+import com.kokkoro.clanbattle.recognition.RoleUbFlashDetection
 import com.kokkoro.clanbattle.control.BattleControlObservation
 import com.kokkoro.clanbattle.control.ControlCrops
 import com.kokkoro.clanbattle.control.ControlStep
@@ -32,13 +34,27 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
         if (!closed) queue.control { sessions.start() } else false
     }
 
-    fun record(frameId: Long, wallMs: Long, elapsedMs: Long, gate: String, recognition: RecognitionResult, filter: FilterResult?, energy: EnergyDetectionResult? = null) {
+    fun record(
+        frameId: Long,
+        wallMs: Long,
+        elapsedMs: Long,
+        gate: String,
+        recognition: RecognitionResult,
+        filter: FilterResult?,
+        energy: EnergyDetectionResult? = null,
+        ubBanner: UbBannerDetection? = null,
+        roleUbFlash: RoleUbFlashDetection? = null
+    ) {
         val trace = recognition.debugTrace
         val accepted = synchronized(lifecycleLock) { !closed && queue.submit {
             val current = sessions.current() ?: return@submit
             current.frames.write(listOf(frameId, wallMs, gate, recognition.rawText, recognition.ok,
                 recognition.confidence, recognition.reason, filter?.accepted, filter?.timeSeconds,
-                filter?.reason, filter?.source, dropped.get()))
+                filter?.reason, filter?.source, dropped.get(), ubBanner?.active,
+                ubBanner?.rawPresent, ubBanner?.score, ubBanner?.colorScore,
+                ubBanner?.leftScore, ubBanner?.rightScore, roleUbFlash?.role?.name,
+                roleUbFlash?.rawRole?.name, roleUbFlash?.strongestScore,
+                roleUbFlash?.margin))
             energy?.let { current.energy.write(ClockDebugCsv.energyValues(frameId, wallMs, it)) }
             val saveFrame = trace?.digits?.let { digits ->
                 current.sampler.shouldSaveFrame(

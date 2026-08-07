@@ -33,7 +33,9 @@ data class EnergyDetectionResult(
     val characters: Map<CharacterRole, CharacterEnergyState>,
     val energyDelta: Float?,
     val triggeredRoles: Set<CharacterRole>,
-    val visualObstruction: Boolean = false
+    val visualObstruction: Boolean = false,
+    /** Capture timestamps for raw TP-release candidates, keyed by role. */
+    val triggeredRoleTimesNanos: Map<CharacterRole, Long> = emptyMap()
 )
 
 class EnergyDetector(
@@ -43,7 +45,7 @@ class EnergyDetector(
     private val triggeredBelowThreshold: Float = 0.3f,
     private val minConsecutiveFullFrames: Int = 1,
     private val minConsecutiveNearFullFrames: Int = 3,
-    private val minConsecutiveReleaseFrames: Int = 2
+    private val minConsecutiveReleaseFrames: Int = 1
 ) {
     private var previousRatios: Map<CharacterRole, Float>? = null
     private val armedForRelease = mutableMapOf<CharacterRole, Boolean>()
@@ -106,10 +108,12 @@ class EnergyDetector(
                 everConfirmed[role] = true
             }
 
-            // A role is eligible to trigger if it was armed and has ever been
-            // confirmed (reached the required consecutive full frames) since
-            // the last trigger/reset.  This allows fast UBs where the drop
-            // happens immediately after the brief full-TP window.
+            // A role is eligible to emit a raw release candidate if it was
+            // armed and has ever been confirmed full since the last trigger or
+            // reset. Production uses the first low sample: final UB
+            // confirmation belongs to RoleUbBannerGate, which can revoke a
+            // transient dip when TP immediately recovers and requires the
+            // following moving skill-name banner.
             val trulyArmed = wasArmed && everConfirmed[role] == true
             val releaseCandidate = trulyArmed && ratio < triggeredBelowThreshold
             val releaseCount = if (releaseCandidate) {
@@ -145,9 +149,8 @@ class EnergyDetector(
                     everConfirmed[role] = false
                 }
                 releaseCandidate -> {
-                    // Delay UB confirmation by one high-frequency sample. A
-                    // real release remains low; a one-frame animation dip
-                    // returns to full and is discarded.
+                    // Retained for stricter detector configurations used by
+                    // focused tests. Production emits on the first low sample.
                     armedForRelease[role] = true
                     consecutiveReleaseFrames[role] = releaseCount
                 }

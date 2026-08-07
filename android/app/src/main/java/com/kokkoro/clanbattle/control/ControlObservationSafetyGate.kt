@@ -23,8 +23,19 @@ class ControlObservationSafetyGate(
 
     fun evaluate(
         observation: FilteredControlObservation,
-        holdWhileActionBusy: Boolean = false
+        holdWhileActionBusy: Boolean = false,
+        forceHold: Boolean = false,
+        pauseOnUntrusted: Boolean = true
     ): ControlObservationSafetyResult {
+        if (forceHold) {
+            consecutiveUntrustedFrames = 0
+            return ControlObservationSafetyResult(
+                ControlObservationSafetyDecision.HOLD,
+                consecutiveUntrustedFrames,
+                observation.status
+            )
+        }
+
         if (observation.trustworthy && observation.observation != null) {
             consecutiveUntrustedFrames = 0
             return ControlObservationSafetyResult(
@@ -54,6 +65,19 @@ class ControlObservationSafetyGate(
         // recognition failure and must not race the confirmation frame into a
         // safety pause.
         if (observation.status == ControlObservationStatus.PENDING_CONFIRMATION) {
+            return ControlObservationSafetyResult(
+                ControlObservationSafetyDecision.HOLD,
+                consecutiveUntrustedFrames,
+                observation.status
+            )
+        }
+
+        // During an active axis run, visual corruption from BOSS/character UB is
+        // not itself proof that automation has failed. Keep waiting for a
+        // trustworthy frame; only the verified click-confirmation path may pause
+        // after an actual dispatched action fails to reach its target state.
+        if (!pauseOnUntrusted) {
+            consecutiveUntrustedFrames = 0
             return ControlObservationSafetyResult(
                 ControlObservationSafetyDecision.HOLD,
                 consecutiveUntrustedFrames,

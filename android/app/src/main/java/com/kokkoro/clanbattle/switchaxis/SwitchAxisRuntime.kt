@@ -162,9 +162,11 @@ class SwitchAxisRuntime(
             return SwitchRuntimeCommand.Converge(OPENING_NODE_ID, target)
         }
         val clockSeconds = frame.clockSeconds ?: return SwitchRuntimeCommand.None
-        // Once the battle session has been accepted, opening convergence must stay
-        // pending until the first trustworthy control snapshot. Restricting this to
-        // 1:30..1:28 permanently blocked the whole switch axis on slower devices.
+        // The first readable 1:30 frame can still belong to the battle-entry
+        // transition: the SET/AUTO badges are visible and trustworthy, but taps may
+        // not be accepted yet. Wait until the countdown has visibly started before
+        // issuing the first opening click. Opening grace still lets slower devices
+        // begin later than the normal 1:29..1:28 window.
         if (
             clockSeconds !in openingEarliestSeconds..OPENING_MAX_SECONDS ||
             !frame.controlsTrustworthy
@@ -259,7 +261,7 @@ class SwitchAxisRuntime(
     private companion object {
         const val OPENING_NODE_ID = "opening-1"
         const val OPENING_MIN_SECONDS = 88
-        const val OPENING_MAX_SECONDS = 90
+        const val OPENING_MAX_SECONDS = 89
     }
 
     private fun BossUbEvent.isApplicableTo(nodeTimeSeconds: Int): Boolean =

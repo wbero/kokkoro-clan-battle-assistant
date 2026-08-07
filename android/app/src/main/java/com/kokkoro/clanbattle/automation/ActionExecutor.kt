@@ -15,7 +15,8 @@ class ActionExecutor(
     private val context: Context,
     private val messagePresenter: (String) -> Unit = { message ->
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-    }
+    },
+    private val gestureResultListener: (GestureDispatchEvent) -> Unit = {}
 ) {
     private val thread = HandlerThread("kokkoro-actions").apply { start() }
     private val handler = Handler(thread.looper)
@@ -108,7 +109,35 @@ class ActionExecutor(
         if (AppPreferences.dryRun(context)) return
         val x = GameCoordinateMapper.mapX(referenceX, width, height, anchor)
         val y = GameCoordinateMapper.mapY(referenceY, width, height)
-        val dispatched = KokkoroAccessibilityService.instance?.tap(x, y) == true
+        val service = KokkoroAccessibilityService.instance
+        val dispatched = service?.tap(x, y) { status ->
+            val event = GestureDispatchEvent(
+                status = status,
+                referenceX = referenceX,
+                referenceY = referenceY,
+                mappedX = x,
+                mappedY = y,
+                frameWidth = width,
+                frameHeight = height,
+                anchor = anchor
+            )
+            Log.i(ACTION_LOG_TAG, "gesture-result=$status $event")
+            gestureResultListener(event)
+        } == true
+        if (service == null) {
+            gestureResultListener(
+                GestureDispatchEvent(
+                    status = GestureDispatchStatus.SERVICE_UNAVAILABLE,
+                    referenceX = referenceX,
+                    referenceY = referenceY,
+                    mappedX = x,
+                    mappedY = y,
+                    frameWidth = width,
+                    frameHeight = height,
+                    anchor = anchor
+                )
+            )
+        }
         Log.i(
             ACTION_LOG_TAG,
             "tap ref=$referenceX,$referenceY mapped=$x,$y size=${width}x$height " +
@@ -141,3 +170,14 @@ class ActionExecutor(
     }
 
 }
+
+data class GestureDispatchEvent(
+    val status: GestureDispatchStatus,
+    val referenceX: Int,
+    val referenceY: Int,
+    val mappedX: Float,
+    val mappedY: Float,
+    val frameWidth: Int,
+    val frameHeight: Int,
+    val anchor: HorizontalAnchor
+)

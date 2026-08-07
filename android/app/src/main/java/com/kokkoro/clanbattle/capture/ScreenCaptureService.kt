@@ -357,6 +357,11 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
 
                 val now = SystemClock.elapsedRealtimeNanos()
                 val slowFrameLease = frameDispatchGate.tryBeginSlowFrame(now) ?: continue
+                // Freeze TP evidence before posting the slow task. The capture
+                // thread continues sampling later display frames while OCR is
+                // queued/running, so reading the buffer inside process(image)
+                // would pair an old banner screenshot with future TP samples.
+                val frozenEnergy = frameProcessor?.freezeEnergyForSlowFrame()
 
                 handedToSlowProcessor = captureHandler.post {
                     try {
@@ -364,7 +369,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                             generation == captureGeneration &&
                             captureProcessingAllowed(pauseFrameRole, pauseFrameProcessingBlocked)
                         ) {
-                            frameProcessor?.process(image)
+                            frameProcessor?.process(image, frozenEnergy)
                         }
                     } catch (error: RuntimeException) {
                         Log.e("KokkoroCapture", "full-frame recognition failed", error)
@@ -600,7 +605,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
         val name = axisLibrary.selected()?.name
         val executionWarning = status?.executionWarning ?: actionExecutionBlockReason(
             dryRun = AppPreferences.dryRun(this),
-            accessibilityConnected = KokkoroAccessibilityService.instance != null
+            accessibilityConnected = KokkoroAccessibilityService.isConnected()
         )
         val idlePreview = if (!battleLocked) {
             axisLibrary.selectedDocument()?.let { buildActionPreview(it, activeNodeId = null, clockSeconds = null) }

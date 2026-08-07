@@ -17,8 +17,8 @@ class EnergySampleBufferTest {
     @Test
     fun `latest ratios are delivered to the recognition frame`() {
         val buffer = EnergySampleBuffer()
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_1 to 0.25f)))
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_1 to 0.80f)))
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_1 to 0.25f)), 10L)
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_1 to 0.80f)), 20L)
 
         val taken = buffer.take()!!
 
@@ -32,14 +32,15 @@ class EnergySampleBufferTest {
     @Test
     fun `ub between two recognition frames is not lost`() {
         val buffer = EnergySampleBuffer()
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_3 to 0.25f)))
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_3 to 1.0f)))
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_3 to 0.25f), triggered = setOf(CharacterRole.ROLE_3)))
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_3 to 0.28f)))
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_3 to 0.25f)), 10L)
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_3 to 1.0f)), 20L)
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_3 to 0.25f), triggered = setOf(CharacterRole.ROLE_3)), 30L)
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_3 to 0.28f)), 40L)
 
         val taken = buffer.take()!!
 
         assertEquals(setOf(CharacterRole.ROLE_3), taken.triggeredRoles)
+        assertEquals(mapOf(CharacterRole.ROLE_3 to 30L), taken.triggeredRoleTimesNanos)
         assertTrue(taken.characters.getValue(CharacterRole.ROLE_3).triggered)
         // 比例仍取最新一帧，不会退回触发瞬间的旧值。
         assertEquals(0.28f, taken.characters.getValue(CharacterRole.ROLE_3).blueRatio, 0.0001f)
@@ -48,8 +49,8 @@ class EnergySampleBufferTest {
     @Test
     fun `several ub events between recognition frames are all delivered together`() {
         val buffer = EnergySampleBuffer()
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_1 to 0.1f), triggered = setOf(CharacterRole.ROLE_1)))
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_4 to 0.1f), triggered = setOf(CharacterRole.ROLE_4)))
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_1 to 0.1f), triggered = setOf(CharacterRole.ROLE_1)), 10L)
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_4 to 0.1f), triggered = setOf(CharacterRole.ROLE_4)), 20L)
 
         assertEquals(
             setOf(CharacterRole.ROLE_1, CharacterRole.ROLE_4),
@@ -60,8 +61,8 @@ class EnergySampleBufferTest {
     @Test
     fun `visual obstruction between recognition frames is retained once`() {
         val buffer = EnergySampleBuffer()
-        buffer.submit(sample(emptyMap(), visualObstruction = true))
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_1 to 0.4f)))
+        buffer.submit(sample(emptyMap(), visualObstruction = true), 10L)
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_1 to 0.4f)), 20L)
 
         assertTrue(buffer.take()!!.visualObstruction)
         assertTrue(!buffer.take()!!.visualObstruction)
@@ -71,7 +72,7 @@ class EnergySampleBufferTest {
     @Test
     fun `a delivered ub is never delivered twice`() {
         val buffer = EnergySampleBuffer()
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_2 to 0.2f), triggered = setOf(CharacterRole.ROLE_2)))
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_2 to 0.2f), triggered = setOf(CharacterRole.ROLE_2)), 10L)
 
         assertEquals(setOf(CharacterRole.ROLE_2), buffer.take()!!.triggeredRoles)
 
@@ -85,7 +86,7 @@ class EnergySampleBufferTest {
     @Test
     fun `reset drops both the snapshot and undelivered events`() {
         val buffer = EnergySampleBuffer()
-        buffer.submit(sample(mapOf(CharacterRole.ROLE_5 to 0.1f), triggered = setOf(CharacterRole.ROLE_5)))
+        buffer.submit(sample(mapOf(CharacterRole.ROLE_5 to 0.1f), triggered = setOf(CharacterRole.ROLE_5)), 10L)
 
         buffer.reset()
 

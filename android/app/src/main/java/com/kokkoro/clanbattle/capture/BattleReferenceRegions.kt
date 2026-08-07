@@ -48,6 +48,10 @@ object BattleReferenceRegions {
         ReferenceRegion(540 + role.ordinal * 240, 761, 74, 73)
     }
     val ENERGY_HUD = ReferenceRegion(384, 1034, 1160, 25)
+    /** Five portrait slots where the universal character-UB activation flash originates. */
+    val ROLE_UB_FLASH_HUD = ReferenceRegion(375, 610, 1170, 400)
+    /** Generic character/BOSS skill-name banner; only the fixed background is detected. */
+    val UB_NAME_BANNER = ReferenceRegion(560, 120, 800, 110)
     val ENERGY_REGIONS = mapOf(
         CharacterRole.ROLE_1 to EnergyRegion(8, 6, 176, 13),
         CharacterRole.ROLE_2 to EnergyRegion(248, 6, 176, 13),

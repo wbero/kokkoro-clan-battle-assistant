@@ -42,6 +42,32 @@ object FixedTemplateMatcher {
         return numerator / sqrt(imageDenominator * stats.denominator)
     }
 
+    fun scoreWindow(
+        image: PixelImage,
+        left: Int,
+        top: Int,
+        width: Int,
+        height: Int,
+        template: PixelImage
+    ): Double {
+        require(left >= 0 && top >= 0)
+        require(width > 0 && height > 0)
+        require(left + width <= image.width)
+        require(top + height <= image.height)
+        val stats = templateStats(template)
+        return scoreWindow(
+            image = image,
+            left = left,
+            top = top,
+            width = width,
+            height = height,
+            template = template,
+            templateLuminance = stats.luminance,
+            templateMean = stats.mean,
+            templateDenominator = stats.denominator
+        )
+    }
+
     /**
      * Finds a template whose rendered size and position can change inside [image].
      * This is intended for animated HUD badges; fixed controls should keep using [score].
