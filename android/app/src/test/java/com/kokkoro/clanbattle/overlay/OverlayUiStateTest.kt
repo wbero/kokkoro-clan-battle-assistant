@@ -82,6 +82,10 @@ class OverlayUiStateTest {
         val openingPreview = buildActionPreview(document, activeNodeId = null, clockSeconds = 90)
         assertEquals("当前：等待触发", openingPreview.current)
         assertEquals("下一：开局 → AUTO开 SET:XXXXO", openingPreview.next)
+
+        val retainedBattlePreview = buildActionPreview(document, activeNodeId = null, clockSeconds = 71)
+        assertEquals("当前：等待触发", retainedBattlePreview.current)
+        assertEquals("下一：0:26 BOSS UB后+1.20s → AUTO开 SET:XOXXO", retainedBattlePreview.next)
     }
 
     @Test fun `sequence preview explains role ub lifecycle and next action`() {

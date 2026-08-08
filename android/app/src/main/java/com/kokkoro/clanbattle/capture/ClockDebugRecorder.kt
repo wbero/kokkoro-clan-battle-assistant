@@ -43,7 +43,9 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
         filter: FilterResult?,
         energy: EnergyDetectionResult? = null,
         ubBanner: UbBannerDetection? = null,
-        roleUbFlash: RoleUbFlashDetection? = null
+        roleUbFlash: RoleUbFlashDetection? = null,
+        rawTpCandidateRoles: Set<CharacterRole> = emptySet(),
+        slowTpFallbackRoles: Set<CharacterRole> = emptySet()
     ) {
         val trace = recognition.debugTrace
         val accepted = synchronized(lifecycleLock) { !closed && queue.submit {
@@ -54,7 +56,9 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
                 ubBanner?.rawPresent, ubBanner?.score, ubBanner?.colorScore,
                 ubBanner?.leftScore, ubBanner?.rightScore, roleUbFlash?.role?.name,
                 roleUbFlash?.rawRole?.name, roleUbFlash?.strongestScore,
-                roleUbFlash?.margin))
+                roleUbFlash?.margin,
+                rawTpCandidateRoles.sortedBy { it.ordinal }.joinToString("|"),
+                slowTpFallbackRoles.sortedBy { it.ordinal }.joinToString("|")))
             energy?.let { current.energy.write(ClockDebugCsv.energyValues(frameId, wallMs, it)) }
             val saveFrame = trace?.digits?.let { digits ->
                 current.sampler.shouldSaveFrame(

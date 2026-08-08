@@ -113,7 +113,13 @@ class RoleUbFlashDetector(
         // for capture variation without accepting the weak expanding tail.
         const val DEFAULT_MINIMUM_SCORE = 0.70f
         const val DEFAULT_MINIMUM_MARGIN = 0.12f
-        const val DEFAULT_IMMEDIATE_SCORE = 0.80f
+        // Real-phone replay contains a valid one-frame ROLE_5 origin at
+        // 0.78065 immediately before the UB-name banner. All other confirmed
+        // phone origins in the same runs are >= 0.825, while known ordinary /
+        // BOSS interference stays below DEFAULT_MINIMUM_SCORE (0.70). Keep the
+        // normal 0.70 + margin gate and the following banner requirement, but
+        // allow this narrow capture-device variation to confirm in one frame.
+        const val DEFAULT_IMMEDIATE_SCORE = 0.77f
         const val DEFAULT_MINIMUM_CONSECUTIVE_FRAMES = 2
 
         fun isActivationFlashPixel(color: Int): Boolean {

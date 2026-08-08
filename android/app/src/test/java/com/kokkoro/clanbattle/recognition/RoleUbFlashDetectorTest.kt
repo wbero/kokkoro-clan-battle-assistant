@@ -96,6 +96,17 @@ class RoleUbFlashDetectorTest {
     }
 
     @Test
+    fun `phone strength single frame flash can confirm immediately`() {
+        val result = RoleUbFlashDetector().detect(
+            syntheticFlash(CharacterRole.ROLE_5, fillFraction = 0.78f)
+        )
+
+        assertEquals(CharacterRole.ROLE_5, result.rawRole)
+        assertEquals(CharacterRole.ROLE_5, result.role)
+        assertTrue(result.strongestScore >= RoleUbFlashDetector.DEFAULT_IMMEDIATE_SCORE)
+    }
+
+    @Test
     fun `same detector geometry works for every role slot`() {
         CharacterRole.entries.forEach { role ->
             val result = RoleUbFlashDetector().detect(syntheticFlash(role))

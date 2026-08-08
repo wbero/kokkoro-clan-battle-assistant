@@ -38,6 +38,35 @@ class RoleUbBannerGate(
     private fun latestFlash(values: Map<CharacterRole, Long>): Pair<CharacterRole, Long>? =
         values.maxByOrNull { (_, timestamp) -> timestamp }?.toPair()
 
+    private fun latestReleaseCohort(
+        values: Map<CharacterRole, Long>,
+        latestAllowedTimestamp: Long = Long.MAX_VALUE
+    ): Map<CharacterRole, Long> {
+        val latestTimestamp = values.values
+            .filter { it <= latestAllowedTimestamp }
+            .maxOrNull()
+            ?: return emptyMap()
+        return values.filterValues { timestamp -> timestamp == latestTimestamp }
+    }
+
+    private fun mergeLatestReleaseCohort(
+        target: MutableMap<CharacterRole, Long>,
+        values: Map<CharacterRole, Long>,
+        latestAllowedTimestamp: Long = Long.MAX_VALUE
+    ) {
+        val cohort = latestReleaseCohort(values, latestAllowedTimestamp)
+        if (cohort.isEmpty()) return
+        val incomingTimestamp = cohort.values.first()
+        val currentTimestamp = target.values.maxOrNull()
+        when {
+            currentTimestamp == null || incomingTimestamp > currentTimestamp -> {
+                target.clear()
+                target.putAll(cohort)
+            }
+            incomingTimestamp == currentTimestamp -> target.putAll(cohort)
+        }
+    }
+
     fun update(
         candidateTimesNanos: Map<CharacterRole, Long>,
         bannerRawPresent: Boolean,
@@ -57,20 +86,22 @@ class RoleUbBannerGate(
             // the visible banner still belong to that animation and are dropped.
             val cycleStartedAt = bannerCycleStartedAtNanos
             if (!cycleConfirmed && cycleStartedAt != null) {
-                candidateTimesNanos.forEach { (role, timestamp) ->
-                    if (
-                        timestamp <= cycleStartedAt &&
+                val eligible = candidateTimesNanos.filterValues { timestamp ->
+                    timestamp <= cycleStartedAt &&
                         cycleStartedAt - timestamp <= maxConfirmationDelayNanos
-                    ) {
-                        cycleCandidates[role] = timestamp
-                    }
                 }
+                mergeLatestReleaseCohort(cycleCandidates, eligible, cycleStartedAt)
             }
             candidateTimesNanos.keys.forEach(pendingCandidates::remove)
             acceptLatePreBannerFlash(flashRoleTimesNanos)
         } else if (!newBannerCycle) {
-            candidateTimesNanos.forEach { (role, timestamp) ->
-                pendingCandidates[role] = timestamp
+            if (candidateTimesNanos.isNotEmpty()) {
+                // EnergySampleBuffer can deliver several high-frequency release
+                // events together on one slower recognition frame. Preserve the
+                // true capture timestamps: only the newest sampling instant is
+                // causal for the upcoming skill-name banner. Exact timestamp ties
+                // remain ambiguous because they came from the same TP sample.
+                mergeLatestReleaseCohort(pendingCandidates, candidateTimesNanos)
             }
             latestFlash(flashRoleTimesNanos)?.let { pendingFlashCandidate = it }
         }
@@ -91,8 +122,12 @@ class RoleUbBannerGate(
 
         if (newBannerCycle) {
             bannerCycleStartedAtNanos = bannerFrameTimestampNanos
-            candidateTimesNanos.forEach { (role, timestamp) ->
-                if (timestamp <= bannerFrameTimestampNanos) pendingCandidates[role] = timestamp
+            if (candidateTimesNanos.isNotEmpty()) {
+                mergeLatestReleaseCohort(
+                    pendingCandidates,
+                    candidateTimesNanos,
+                    bannerFrameTimestampNanos
+                )
             }
             pruneExpired(pendingCandidates, bannerFrameTimestampNanos)
             cycleCandidates.clear()

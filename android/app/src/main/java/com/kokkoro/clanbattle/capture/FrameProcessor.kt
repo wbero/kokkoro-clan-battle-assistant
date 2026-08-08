@@ -267,7 +267,11 @@ class FrameProcessor(
     private val controlRecognizer = BattleControlRecognizer(controlTemplates.controls)
     private val controlObservationFilter = BattleControlObservationFilter()
     private val controlObservationSafetyGate = ControlObservationSafetyGate()
-    private val controlStateMachine = BattleControlStateMachine()
+    // Control observations reach this machine only after
+    // BattleControlObservationFilter has confirmed a changed state on two raw
+    // frames. One state-machine confirmation is therefore enough here and saves
+    // one full recognition cycle between dependent SET/AUTO clicks.
+    private val controlStateMachine = BattleControlStateMachine(requiredConfirmationFrames = 1)
     private val actionCoordinator = VerifiedActionCoordinator(
         controlStateMachine,
         AppPreferences.roleSetFallbackGraceMs(appContext).toLong()
@@ -290,6 +294,7 @@ class FrameProcessor(
     private val energyLock = Any()
     @Volatile private var externalEnergySampling = false
     private val energySamples = EnergySampleBuffer()
+    private var previousSlowEnergyCharacters: Map<CharacterRole, com.kokkoro.clanbattle.recognition.CharacterEnergyState>? = null
     private var axis: AxisDocument = emptyAxis()
     private var activeAxisId: String = ""
     private var openingControlTarget: OpeningControlTarget? = null
@@ -331,6 +336,10 @@ class FrameProcessor(
     private var lastSwitchDebugKey: String? = null
     private var lastSwitchDiagnosticContext: SwitchDiagnosticContext? = null
     private var lastPromptNodeId: String? = null
+    // Overlay preview must not reinterpret a transient rejected clock frame as
+    // "before battle opening". Keep the last filtered clock only for display;
+    // execution continues to use the current filtered result/runtime state.
+    private var lastActionPreviewClockSeconds: Int? = null
     private val pendingSwitchRoleUbEvents = mutableSetOf<CharacterRole>()
     // UB animation can cover all SET/AUTO badges for a short, expected window.
     // Hold the last trustworthy control state during that window instead of
@@ -384,6 +393,7 @@ class FrameProcessor(
         openingControlsConfirmed = openingControlTarget == null
         lastPauseFrameNodeId = null
         lastPromptNodeId = null
+        lastActionPreviewClockSeconds = null
         pendingSwitchRoleUbEvents.clear()
         switchAxisBusy = false
         sessionGate.prepare()
@@ -508,9 +518,27 @@ class FrameProcessor(
         val roleUbFlash = parallelRecognition.roleUbFlash
         val captureTimestampNanos = image.timestamp.takeIf { it > 0L }
             ?: SystemClock.elapsedRealtimeNanos()
-        val rawCandidateTimes = rawEnergy?.triggeredRoleTimesNanos
+        val detectorCandidateTimes = rawEnergy?.triggeredRoleTimesNanos
             ?.takeIf { it.isNotEmpty() }
             ?: rawEnergy?.triggeredRoles.orEmpty().associateWith { captureTimestampNanos }
+        val slowFallbackCandidateTimes = slowFrameReleaseFallbackCandidates(
+            previous = previousSlowEnergyCharacters,
+            current = rawEnergy?.characters,
+            dropThreshold = AppPreferences.energyDropThreshold(appContext),
+            visualObstruction = rawEnergy?.visualObstruction == true,
+            captureTimestampNanos = captureTimestampNanos
+        )
+        // A slow-frame full->low transition is stronger evidence than raw
+        // high-frequency candidates accumulated since the previous slow frame.
+        // If both sources agree on at least one role, keep only those
+        // corroborated strong roles; otherwise retain the slow fallback so it
+        // can still rescue a detector miss. This prevents an animation-induced
+        // later false candidate from stealing the following skill-name banner.
+        val rawCandidateTimes = prioritizeRoleUbCandidates(
+            detectorCandidateTimes,
+            slowFallbackCandidateTimes
+        )
+        previousSlowEnergyCharacters = rawEnergy?.characters
         val confirmedRoleTimes = roleUbBannerGate.update(
             candidateTimesNanos = rawCandidateTimes,
             currentlyFullRoles = rawEnergy?.characters
@@ -551,7 +579,9 @@ class FrameProcessor(
                 null,
                 energy,
                 ubBanner,
-                roleUbFlash
+                roleUbFlash,
+                rawTpCandidateRoles = rawCandidateTimes.keys,
+                slowTpFallbackRoles = slowFallbackCandidateTimes.keys
             )
             val elapsed = SystemClock.elapsedRealtime() - start
             statusCallback(
@@ -576,7 +606,9 @@ class FrameProcessor(
             filtered,
             energy,
             ubBanner,
-            roleUbFlash
+            roleUbFlash,
+            rawTpCandidateRoles = rawCandidateTimes.keys,
+            slowTpFallbackRoles = slowFallbackCandidateTimes.keys
         )
         val usable = filtered.accepted || filtered.reason == "same-time"
         val sessionReady = usable && sessionGate.onAccepted(filtered.timeSeconds)
@@ -686,7 +718,14 @@ class FrameProcessor(
                             wallMs = start,
                             bossUbEvent = bossUbEvent
                         ),
-                        controlStep
+                        controlStep,
+                        trustworthyObservation = trustworthyControls.takeIf { controlsTrustworthy }
+                    )
+                    executor.executeControlActions(
+                        coordinated.controlActions,
+                        image.width,
+                        image.height,
+                        axis.clickIntervalMs
                     )
                     pendingSwitchRoleUbEvents.clear()
                     switchAxisBusy = coordinated.busy
@@ -843,6 +882,7 @@ class FrameProcessor(
         val source = filtered.source?.name?.lowercase() ?: "-"
         val energyText = EnergyStatusFormatter.format(energy, gameState, scheduleReason)
         val controlText = ControlStatusFormatter.format(controlStep, openingConfirmedThisFrame)
+        filtered.timeSeconds?.let { lastActionPreviewClockSeconds = it }
         val actionPreview = if (axis.type == AxisType.SEQUENCE) {
             val runtime = sequenceRuntime?.snapshot()
             val progress = sequenceProgress
@@ -862,7 +902,7 @@ class FrameProcessor(
                 )
             }
         } else {
-            buildActionPreview(axis, activeNodeId, filtered.timeSeconds)
+            buildActionPreview(axis, activeNodeId, lastActionPreviewClockSeconds)
         }
         val text = if (sessionReady) {
             "${filtered.rawText}  $source  ${elapsed}ms  $energyText\n$controlText"
@@ -979,7 +1019,8 @@ class FrameProcessor(
                 stateMachine = controlStateMachine,
                 opening = document.switchOpenings.singleOrNull(),
                 nodes = document.switchNodes,
-                openingGraceSeconds = OPENING_GRACE_SECONDS
+                openingGraceSeconds = OPENING_GRACE_SECONDS,
+                clickIntervalMs = document.clickIntervalMs
             )
         } else {
             null
@@ -1301,6 +1342,7 @@ class FrameProcessor(
             energyHudSize = null
         }
         energySamples.reset()
+        previousSlowEnergyCharacters = null
     }
 
     /** 启用后 [process] 不再自行检测 TP，改为消费 [sampleEnergy] 的结果。 */
@@ -1369,37 +1411,45 @@ class FrameProcessor(
                 recovery
             }
             ControlSafetyState.RUNNING -> {
-                val safety = controlObservationSafetyGate.evaluate(
-                    filteredControls,
-                    holdWhileActionBusy =
-                        (axis.type == AxisType.SEQUENCE && actionCoordinator.isRoleLifecycleBusy()) ||
-                        (axis.type == AxisType.SWITCH && switchAxisBusy) ||
-                        holdControlsForCharacterUb,
-                    forceHold = forceHoldForUbBanner,
-                    // A noisy recognition frame never opens the menu by itself.
-                    // Actual post-click mismatch still reaches
-                    // BattleControlStateMachine and can pause with
-                    // click-confirmation-failed after retries.
-                    pauseOnUntrusted = false
-                )
-                when (safety.decision) {
-                    ControlObservationSafetyDecision.USE ->
-                        controlStateMachine.update(requireNotNull(controls), nowMs)
-
-                    ControlObservationSafetyDecision.HOLD -> controlStateMachine.snapshot(
-                        "control-hold-${safety.status.name.lowercase()}-" +
-                            "${safety.consecutiveUntrustedFrames}"
+                if (forceHoldForUbBanner && filteredControls.trustworthy && controls != null) {
+                    // Keep UB-banner protection against planning a fresh click,
+                    // but do not throw away a trustworthy result for the click
+                    // that was already dispatched before the animation began.
+                    controlObservationSafetyGate.reset()
+                    controlStateMachine.confirmPendingDuringVisualHold(controls)
+                } else {
+                    val safety = controlObservationSafetyGate.evaluate(
+                        filteredControls,
+                        holdWhileActionBusy =
+                            (axis.type == AxisType.SEQUENCE && actionCoordinator.isRoleLifecycleBusy()) ||
+                            (axis.type == AxisType.SWITCH && switchAxisBusy) ||
+                            holdControlsForCharacterUb,
+                        forceHold = forceHoldForUbBanner,
+                        // A noisy recognition frame never opens the menu by itself.
+                        // Actual post-click mismatch still reaches
+                        // BattleControlStateMachine and can pause with
+                        // click-confirmation-failed after retries.
+                        pauseOnUntrusted = false
                     )
+                    when (safety.decision) {
+                        ControlObservationSafetyDecision.USE ->
+                            controlStateMachine.update(requireNotNull(controls), nowMs)
 
-                    ControlObservationSafetyDecision.PAUSE -> {
-                        val reason = "control-recognition-failed:${safety.status.name.lowercase()}"
-                        Log.w(
-                            SAFETY_LOG_TAG,
-                            "source=control-gate reason=$reason " +
-                                "untrustedFrames=${safety.consecutiveUntrustedFrames}"
+                        ControlObservationSafetyDecision.HOLD -> controlStateMachine.snapshot(
+                            "control-hold-${safety.status.name.lowercase()}-" +
+                                "${safety.consecutiveUntrustedFrames}"
                         )
-                        controlStateMachine.forceSafety(reason)
-                        controlStateMachine.snapshot(reason)
+
+                        ControlObservationSafetyDecision.PAUSE -> {
+                            val reason = "control-recognition-failed:${safety.status.name.lowercase()}"
+                            Log.w(
+                                SAFETY_LOG_TAG,
+                                "source=control-gate reason=$reason " +
+                                    "untrustedFrames=${safety.consecutiveUntrustedFrames}"
+                            )
+                            controlStateMachine.forceSafety(reason)
+                            controlStateMachine.snapshot(reason)
+                        }
                     }
                 }
             }
@@ -1426,6 +1476,7 @@ class FrameProcessor(
         val desired = encodeTarget(coordinated.controlStep.desired)
         val observed = encodeControlState(coordinated.controlStep.observed)
         val expected = encodeControlState(coordinated.controlStep.expected)
+        val batchActions = encodeControlActions(coordinated.controlActions)
         val runtime = coordinated.runtime
         val key = listOf(
             coordinated.activeNodeId,
@@ -1436,13 +1487,14 @@ class FrameProcessor(
             desired,
             observed,
             expected,
+            batchActions,
             coordinated.controlStep.safety,
             controlsTrustworthy,
             triggeredRoles.sortedBy { it.ordinal }.joinToString("|")
         ).joinToString("|")
         if (key == lastSwitchDebugKey) return
         lastSwitchDebugKey = key
-        writeSwitchDiagnostic(currentFrameId, wallMs, context)
+        writeSwitchDiagnostic(currentFrameId, wallMs, context, focusAction = batchActions)
     }
 
     private fun writeSwitchDiagnostic(
@@ -1491,6 +1543,17 @@ class FrameProcessor(
     private fun encodeTarget(target: OpeningControlTarget?): String = target?.let {
         "auto=${it.auto ?: "-"};roles=${encodeRoles(it.roles)}"
     }.orEmpty()
+
+    private fun encodeControlActions(actions: List<ControlAction>): String =
+        actions.joinToString("+") { action ->
+            when (action) {
+                ControlAction.TapAuto -> "TapAuto"
+                ControlAction.TapGlobalSet -> "TapGlobalSet"
+                is ControlAction.TapRole -> "Tap${action.role.name}"
+                ControlAction.TapMenu -> "TapMenu"
+                ControlAction.None -> "None"
+            }
+        }
 
     private fun encodeControlState(state: com.kokkoro.clanbattle.control.BattleControlState?): String =
         state?.let {
@@ -1556,66 +1619,74 @@ class FrameProcessor(
             else -> DebugBoxTint.UNKNOWN
         }
 
-        val boxes = buildList {
-            add(
-                DebugRegionBox(
-                    "时钟",
-                    ImageRoiExtractor.scaleReferenceRegion(image.width, image.height),
-                    DebugBoxTint.NEUTRAL
+        val waitingForStart = sessionGate.isWaitingForStart()
+        val boxes = if (waitingForStart) {
+            // MediaProjection captures TYPE_APPLICATION_OVERLAY as part of the
+            // next frame. On the pre-battle screen some battle-HUD debug boxes
+            // overlap START_BUTTON (notably AUTO), so drawing them here can
+            // poison the very template used to leave WAIT_START. Only show the
+            // relevant start region until it has actually matched.
+            buildList {
+                add(
+                    DebugRegionBox(
+                        "开始/模拟战",
+                        rect(BattleReferenceRegions.START_BUTTON, HorizontalAnchor.CENTER)
+                    )
                 )
-            )
-            add(DebugRegionBox("菜单", rect(BattleReferenceRegions.MENU_BUTTON, HorizontalAnchor.TOP_HUD)))
-            add(
-                DebugRegionBox(
-                    "UB技能框",
-                    rect(BattleReferenceRegions.UB_NAME_BANNER, HorizontalAnchor.CENTER),
-                    if (ubBanner?.rawPresent == true || ubBanner?.active == true) {
-                        DebugBoxTint.ON
-                    } else {
+            }
+        } else {
+            buildList {
+                add(
+                    DebugRegionBox(
+                        "时钟",
+                        ImageRoiExtractor.scaleReferenceRegion(image.width, image.height),
                         DebugBoxTint.NEUTRAL
-                    }
-                )
-            )
-            add(
-                DebugRegionBox(
-                    "AUTO",
-                    rect(
-                        BattleReferenceRegions.AUTO_BUTTON,
-                        HorizontalAnchor.RIGHT_CONTROL
-                    ),
-                    tint(observation?.auto?.state)
-                )
-            )
-            add(
-                DebugRegionBox(
-                    "全局SET",
-                    rect(
-                        BattleReferenceRegions.GLOBAL_SET_BUTTON,
-                        HorizontalAnchor.RIGHT_CONTROL
-                    ),
-                    tint(observation?.globalSet?.state)
-                )
-            )
-            if (sessionGate.isWaitingForStart()) {
-                add(DebugRegionBox("开始", rect(BattleReferenceRegions.START_BUTTON, HorizontalAnchor.CENTER)))
-                add(
-                    DebugRegionBox(
-                        "模拟战开始",
-                        rect(BattleReferenceRegions.SIMULATION_START_BUTTON, HorizontalAnchor.CENTER)
                     )
                 )
-            }
-            if (sessionGate.isWaitingForLoading()) {
-                add(DebugRegionBox("加载", rect(BattleReferenceRegions.LOADING, HorizontalAnchor.LOADING)))
-            }
-            BattleReferenceRegions.ROLE_SET_BADGES.forEach { (role, region) ->
+                add(DebugRegionBox("菜单", rect(BattleReferenceRegions.MENU_BUTTON, HorizontalAnchor.TOP_HUD)))
                 add(
                     DebugRegionBox(
-                        "SET${role.ordinal + 1}",
-                        rect(region, HorizontalAnchor.CENTER),
-                        tint(observation?.roles?.get(role)?.state)
+                        "UB技能框",
+                        rect(BattleReferenceRegions.UB_NAME_BANNER, HorizontalAnchor.CENTER),
+                        if (ubBanner?.rawPresent == true || ubBanner?.active == true) {
+                            DebugBoxTint.ON
+                        } else {
+                            DebugBoxTint.NEUTRAL
+                        }
                     )
                 )
+                add(
+                    DebugRegionBox(
+                        "AUTO",
+                        rect(
+                            BattleReferenceRegions.AUTO_BUTTON,
+                            HorizontalAnchor.RIGHT_CONTROL
+                        ),
+                        tint(observation?.auto?.state)
+                    )
+                )
+                add(
+                    DebugRegionBox(
+                        "全局SET",
+                        rect(
+                            BattleReferenceRegions.GLOBAL_SET_BUTTON,
+                            HorizontalAnchor.RIGHT_CONTROL
+                        ),
+                        tint(observation?.globalSet?.state)
+                    )
+                )
+                if (sessionGate.isWaitingForLoading()) {
+                    add(DebugRegionBox("加载", rect(BattleReferenceRegions.LOADING, HorizontalAnchor.LOADING)))
+                }
+                BattleReferenceRegions.ROLE_SET_BADGES.forEach { (role, region) ->
+                    add(
+                        DebugRegionBox(
+                            "SET${role.ordinal + 1}",
+                            rect(region, HorizontalAnchor.CENTER),
+                            tint(observation?.roles?.get(role)?.state)
+                        )
+                    )
+                }
             }
         }
 
@@ -1738,6 +1809,34 @@ internal fun shouldHoldControlRecognitionForCharacterUb(
     nowMs: Long,
     holdUntilMs: Long
 ): Boolean = gameState.isCharacterUbActive() && nowMs < holdUntilMs
+
+internal fun slowFrameReleaseFallbackCandidates(
+    previous: Map<CharacterRole, com.kokkoro.clanbattle.recognition.CharacterEnergyState>?,
+    current: Map<CharacterRole, com.kokkoro.clanbattle.recognition.CharacterEnergyState>?,
+    dropThreshold: Float,
+    visualObstruction: Boolean,
+    captureTimestampNanos: Long
+): Map<CharacterRole, Long> {
+    if (previous == null || current == null || visualObstruction) return emptyMap()
+    return CharacterRole.entries.mapNotNull { role ->
+        val before = previous[role] ?: return@mapNotNull null
+        val after = current[role] ?: return@mapNotNull null
+        if (before.isFull && after.blueRatio < dropThreshold) {
+            role to captureTimestampNanos
+        } else {
+            null
+        }
+    }.toMap()
+}
+
+internal fun prioritizeRoleUbCandidates(
+    detectorCandidates: Map<CharacterRole, Long>,
+    strongFullToLowCandidates: Map<CharacterRole, Long>
+): Map<CharacterRole, Long> {
+    if (strongFullToLowCandidates.isEmpty()) return detectorCandidates
+    val corroboratedStrong = strongFullToLowCandidates.filterKeys { it in detectorCandidates }
+    return corroboratedStrong.ifEmpty { strongFullToLowCandidates }
+}
 
 internal fun resolveEnergyForRetainedFrame(
     externalEnergySampling: Boolean,

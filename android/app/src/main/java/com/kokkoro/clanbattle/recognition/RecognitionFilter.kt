@@ -76,6 +76,22 @@ class RecognitionFilter(
         val previous = lastAccepted ?: return null
         val sorted = result.candidates.sortedByDescending { it.score }
 
+        // On the real device, the minute '0' can briefly lose structural score
+        // under battle effects while the clock itself has not changed. Allow a
+        // modestly weaker PRIMARY candidate to hold the already-trusted second.
+        // This does not advance the clock, does not accept increases, and does
+        // not relax alternative-candidate scoring.
+        sorted.firstOrNull { candidate ->
+            candidate.isPrimary &&
+                candidate.timeSeconds == previous &&
+                candidate.score >= MIN_SAME_TIME_PRIMARY_SCORE
+        }?.let { candidate ->
+            val checked = validate(candidate.timeSeconds, candidate.rawText)
+            if (checked != null && temporalStatus(checked.seconds, nowMs, false) is TemporalStatus.Same) {
+                return commit(checked, nowMs, ReadingSource.PRIMARY, TemporalStatus.Same)
+            }
+        }
+
         sorted.firstOrNull { candidate ->
             candidate.timeSeconds == previous - 1 &&
                 candidate.score >= MIN_SEQUENTIAL_CANDIDATE_SCORE
@@ -188,6 +204,7 @@ class RecognitionFilter(
 
     private companion object {
         val CLOCK_REGEX = Regex("^([01]):([0-5]\\d)$")
+        const val MIN_SAME_TIME_PRIMARY_SCORE = 0.50
         const val MIN_SEQUENTIAL_CANDIDATE_SCORE = 0.35
     }
 }

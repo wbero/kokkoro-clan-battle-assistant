@@ -191,13 +191,85 @@ class RoleUbBannerGateTest {
         val gate = RoleUbBannerGate(maxConfirmationDelayNanos = 1_000L)
 
         gate.update(
-            mapOf(CharacterRole.ROLE_3 to 100L, CharacterRole.ROLE_4 to 120L),
+            mapOf(CharacterRole.ROLE_3 to 100L, CharacterRole.ROLE_4 to 100L),
             false,
             false,
             150L
         )
 
         assertTrue(gate.update(emptyMap(), true, false, 200L).isEmpty())
+    }
+
+    @Test
+    fun `newest timestamp inside one merged tp delivery wins before banner`() {
+        val gate = RoleUbBannerGate(maxConfirmationDelayNanos = 2_000L)
+
+        // Mirrors session-20260808-030050-036 at 0:55. EnergySampleBuffer can
+        // merge an older false ROLE_2 release with the later genuine ROLE_1
+        // release into one slow-frame delivery. Their capture timestamps still
+        // identify which high-frequency sample happened last.
+        assertTrue(
+            gate.update(
+                candidateTimesNanos = mapOf(
+                    CharacterRole.ROLE_2 to 100L,
+                    CharacterRole.ROLE_1 to 200L
+                ),
+                bannerRawPresent = false,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 220L
+            ).isEmpty()
+        )
+
+        assertEquals(
+            mapOf(CharacterRole.ROLE_1 to 200L),
+            gate.update(
+                candidateTimesNanos = emptyMap(),
+                bannerRawPresent = true,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 260L
+            )
+        )
+    }
+
+    @Test
+    fun `newer singleton tp batch supersedes an older ambiguous batch before banner`() {
+        val gate = RoleUbBannerGate(maxConfirmationDelayNanos = 2_000L)
+
+        // Mirrors both 2026-08-08 phone failures at 0:57: an early visual
+        // transition briefly makes roles 1/2/3 look released together.
+        assertTrue(
+            gate.update(
+                candidateTimesNanos = mapOf(
+                    CharacterRole.ROLE_1 to 100L,
+                    CharacterRole.ROLE_2 to 100L,
+                    CharacterRole.ROLE_3 to 100L
+                ),
+                bannerRawPresent = false,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 100L
+            ).isEmpty()
+        )
+
+        // The genuine role-2 release is observed later, immediately before the
+        // skill-name banner. This newer batch must replace the stale ambiguity.
+        assertTrue(
+            gate.update(
+                candidateTimesNanos = mapOf(CharacterRole.ROLE_2 to 600L),
+                bannerRawPresent = false,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 600L
+            ).isEmpty()
+        )
+
+        assertEquals(
+            mapOf(CharacterRole.ROLE_2 to 600L),
+            gate.update(
+                candidateTimesNanos = emptyMap(),
+                bannerRawPresent = true,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 700L
+            )
+        )
     }
 
     @Test

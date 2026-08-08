@@ -8,6 +8,7 @@ import android.widget.Toast
 import com.kokkoro.clanbattle.axis.ActionType
 import com.kokkoro.clanbattle.axis.AxisEvent
 import com.kokkoro.clanbattle.config.AppPreferences
+import com.kokkoro.clanbattle.control.ControlAction
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -26,7 +27,7 @@ class ActionExecutor(
         if (events.isEmpty()) return
         if (AppPreferences.dryRun(context)) return
         val actions = events.flatMap { it.actions }
-        val commands = actions.mapNotNull { action ->
+        val commands: List<QueuedCommand> = actions.mapNotNull { action ->
             when (action.type) {
                 ActionType.CLICK_ROLE -> ActionCoordinates.role(action.role)?.let { point ->
                     QueuedCommand.Tap(point, HorizontalAnchor.CENTER)
@@ -54,6 +55,40 @@ class ActionExecutor(
                     }
                     is QueuedCommand.Notify -> showToast(command.message)
                 }
+            }
+        }
+    }
+
+    fun executeControlActions(
+        actions: List<ControlAction>,
+        frameWidth: Int,
+        frameHeight: Int,
+        clickIntervalMs: Int
+    ) {
+        if (actions.isEmpty()) return
+        if (AppPreferences.dryRun(context)) return
+        val commands: List<QueuedCommand.Tap> = actions.mapNotNull { action ->
+            when (action) {
+                ControlAction.TapAuto ->
+                    QueuedCommand.Tap(ActionCoordinates.autoButton, HorizontalAnchor.RIGHT_CONTROL)
+                ControlAction.TapGlobalSet ->
+                    QueuedCommand.Tap(ActionCoordinates.globalSet, HorizontalAnchor.RIGHT_CONTROL)
+                is ControlAction.TapRole ->
+                    QueuedCommand.Tap(ActionCoordinates.role(action.role), HorizontalAnchor.CENTER)
+                ControlAction.TapMenu ->
+                    QueuedCommand.Tap(ActionCoordinates.menu, HorizontalAnchor.TOP_HUD)
+                ControlAction.None -> null
+            }
+        }
+        if (commands.isEmpty()) return
+
+        enqueue {
+            commands.forEachIndexed { index, command ->
+                if (closed.get()) return@enqueue
+                if (index > 0 && !sleepUntilNextAction(clickIntervalMs.toLong())) {
+                    return@enqueue
+                }
+                tapNow(command.point, frameWidth, frameHeight, command.anchor)
             }
         }
     }

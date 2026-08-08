@@ -2,7 +2,9 @@ package com.kokkoro.clanbattle.control
 
 import com.kokkoro.clanbattle.recognition.CharacterRole
 
-class BattleControlStateMachine {
+class BattleControlStateMachine(
+    private val requiredConfirmationFrames: Int = DEFAULT_CONFIRM_FRAMES
+) {
     private var observed: BattleControlState? = null
     private var desired: OpeningControlTarget? = null
     private var expected: BattleControlState? = null
@@ -16,6 +18,10 @@ class BattleControlStateMachine {
     private var recoveryFrames = 0
     private var recoveryRequested = false
     private var inconsistentFrames = 0
+
+    init {
+        require(requiredConfirmationFrames >= 1)
+    }
 
     fun setDesired(target: OpeningControlTarget?) {
         desired = target
@@ -169,7 +175,7 @@ class BattleControlStateMachine {
         if (pending != null) {
             if (matchesExpected(current, pending, requireNotNull(expected))) {
                 confirmationFrames++
-                if (confirmationFrames < CONFIRM_FRAMES) {
+                if (confirmationFrames < requiredConfirmationFrames) {
                     return step(ControlAction.None, "confirming-click")
                 }
                 clearPending()
@@ -208,6 +214,44 @@ class BattleControlStateMachine {
             ControlAction.None,
             if (observation.consistent) "observation-only" else observation.reason ?: "inconsistent-observation"
         )
+    }
+
+    /**
+     * During a UB-banner visual hold we must not plan another click, but a click
+     * that has already happened still needs to be allowed to finish. Otherwise
+     * a stream of back-to-back UB banners can keep [expected] stale forever even
+     * though the filtered control recognizer has already confirmed the target
+     * state on screen.
+     *
+     * Only a pending action whose expected state is actually visible is
+     * consumed here. Other observations remain frozen, preserving the original
+     * protection against animation-corrupted SET/AUTO readings. The axis target
+     * is retained and the next normal frame will plan the following action.
+     */
+    fun confirmPendingDuringVisualHold(observation: BattleControlObservation): ControlStep {
+        if (safety != ControlSafetyState.RUNNING) {
+            return step(ControlAction.None, pauseReason ?: "safety-paused")
+        }
+        val pending = pendingAction ?: return step(ControlAction.None, "control-hold-trustworthy")
+        val target = expected ?: return step(ControlAction.None, "control-hold-trustworthy")
+        if (!observation.consistent) {
+            return step(ControlAction.None, observation.reason ?: "inconsistent-observation")
+        }
+
+        val current = observation.toState()
+        if (!matchesExpected(current, pending, target)) {
+            confirmationFrames = 0
+            return step(ControlAction.None, "holding-click-confirmation")
+        }
+
+        confirmationFrames++
+        if (confirmationFrames < requiredConfirmationFrames) {
+            return step(ControlAction.None, "confirming-click-during-hold")
+        }
+
+        observed = current
+        clearPending()
+        return step(ControlAction.None, "click-confirmed-during-hold")
     }
 
     fun forceSafety(reason: String) {
@@ -309,13 +353,10 @@ class BattleControlStateMachine {
 
     private fun plan(current: BattleControlState, nowMs: Long): ControlStep {
         val target = desired ?: return step(ControlAction.None, "no-control-target", confirmed = true)
-        target.auto?.let { wanted ->
-            if (current.auto == VisualToggleState.UNKNOWN) {
-                return step(ControlAction.None, "waiting-trustworthy-state")
-            }
-            if (current.auto != wanted) return begin(ControlAction.TapAuto, current, nowMs)
-        }
-
+        // SET changes take priority over AUTO. When a target requires both, first
+        // converge all role/global SET state, verify it from the image, then toggle
+        // AUTO. This avoids AUTO taking effect before the intended role SET mask is
+        // ready on nodes that change both controls at once.
         target.roles?.let { wantedRoles ->
             require(wantedRoles.keys == CharacterRole.entries.toSet())
             if (current.globalSet == VisualToggleState.UNKNOWN ||
@@ -338,6 +379,13 @@ class BattleControlStateMachine {
                     if (mismatch != null) return begin(ControlAction.TapRole(mismatch), current, nowMs)
                 }
             }
+        }
+
+        target.auto?.let { wanted ->
+            if (current.auto == VisualToggleState.UNKNOWN) {
+                return step(ControlAction.None, "waiting-trustworthy-state")
+            }
+            if (current.auto != wanted) return begin(ControlAction.TapAuto, current, nowMs)
         }
         return step(ControlAction.None, "control-target-confirmed", confirmed = true)
     }
@@ -429,7 +477,7 @@ class BattleControlStateMachine {
     }
 
     private companion object {
-        const val CONFIRM_FRAMES = 2
+        const val DEFAULT_CONFIRM_FRAMES = 2
         const val CONFIRM_TIMEOUT_MS = 1_000L
         const val MAX_RETRIES = 1
         const val MENU_MIN_SCORE = 0.70

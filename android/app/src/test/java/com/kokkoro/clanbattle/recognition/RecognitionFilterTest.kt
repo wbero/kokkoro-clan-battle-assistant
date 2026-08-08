@@ -2,6 +2,7 @@ package com.kokkoro.clanbattle.recognition
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -185,6 +186,51 @@ class RecognitionFilterTest {
         assertFalse(held.accepted)
         assertEquals("same-time", held.reason)
         assertEquals(70, held.timeSeconds)
+    }
+
+    @Test
+    fun `real device weak primary may hold same second without lowering alternative threshold`() {
+        val filter = RecognitionFilter(minConfidence = 0.8, minAlternativeScore = 0.55)
+        assertTrue(filter.update(RecognitionResult.ok(15, "0:15", 0.95), 0).accepted)
+
+        val held = filter.update(
+            RecognitionResult(
+                ok = false,
+                timeSeconds = 15,
+                rawText = "0:15",
+                confidence = 0.575,
+                reason = "low-confidence",
+                candidates = listOf(ClockCandidate(15, "0:15", 0.53, true))
+            ),
+            250
+        )
+
+        assertFalse(held.accepted)
+        assertEquals("same-time", held.reason)
+        assertEquals(15, held.timeSeconds)
+        assertEquals(ReadingSource.PRIMARY, held.source)
+    }
+
+    @Test
+    fun `weak same time primary below real device floor remains rejected`() {
+        val filter = RecognitionFilter(minConfidence = 0.8, minAlternativeScore = 0.55)
+        assertTrue(filter.update(RecognitionResult.ok(15, "0:15", 0.95), 0).accepted)
+
+        val rejected = filter.update(
+            RecognitionResult(
+                ok = false,
+                timeSeconds = 15,
+                rawText = "0:15",
+                confidence = 0.3,
+                reason = "low-confidence",
+                candidates = listOf(ClockCandidate(15, "0:15", 0.49, true))
+            ),
+            250
+        )
+
+        assertFalse(rejected.accepted)
+        assertEquals("low-confidence", rejected.reason)
+        assertNull(rejected.timeSeconds)
     }
 
     @Test

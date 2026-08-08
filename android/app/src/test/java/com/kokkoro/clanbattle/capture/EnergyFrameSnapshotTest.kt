@@ -3,8 +3,11 @@ package com.kokkoro.clanbattle.capture
 import com.kokkoro.clanbattle.recognition.CharacterEnergyState
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import com.kokkoro.clanbattle.recognition.EnergyDetectionResult
+import com.kokkoro.clanbattle.recognition.RoleUbBannerGate
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EnergyFrameSnapshotTest {
@@ -18,6 +21,97 @@ class EnergyFrameSnapshotTest {
                 frozenEnergy = frozen,
                 liveTake = { throw AssertionError("frozen empty snapshot must not read future samples") }
             )
+        )
+    }
+
+    @Test
+    fun `slow frame fallback recovers full to low role before following ub banner`() {
+        val previous = energyStates(role1 = 1.0f, role4 = 0.78f)
+        val current = energyStates(role1 = 0.0f, role4 = 1.0f)
+
+        val fallback = slowFrameReleaseFallbackCandidates(
+            previous = previous,
+            current = current,
+            dropThreshold = 0.30f,
+            visualObstruction = false,
+            captureTimestampNanos = 100L
+        )
+
+        assertEquals(mapOf(CharacterRole.ROLE_1 to 100L), fallback)
+
+        val gate = RoleUbBannerGate()
+        assertTrue(
+            gate.update(
+                candidateTimesNanos = fallback,
+                bannerRawPresent = false,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 100L
+            ).isEmpty()
+        )
+        assertEquals(
+            mapOf(CharacterRole.ROLE_1 to 100L),
+            gate.update(
+                candidateTimesNanos = emptyMap(),
+                bannerRawPresent = true,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 120L
+            )
+        )
+    }
+
+    @Test
+    fun `slow frame fallback is disabled during visual obstruction`() {
+        val fallback = slowFrameReleaseFallbackCandidates(
+            previous = energyStates(role1 = 1.0f),
+            current = energyStates(role1 = 0.0f),
+            dropThreshold = 0.30f,
+            visualObstruction = true,
+            captureTimestampNanos = 100L
+        )
+
+        assertTrue(fallback.isEmpty())
+    }
+
+    @Test
+    fun `corroborated full to low role suppresses unrelated later detector candidate`() {
+        val detector = mapOf(
+            CharacterRole.ROLE_1 to 90L,
+            CharacterRole.ROLE_2 to 100L
+        )
+        val strong = mapOf(CharacterRole.ROLE_1 to 110L)
+
+        val prioritized = prioritizeRoleUbCandidates(detector, strong)
+
+        assertEquals(mapOf(CharacterRole.ROLE_1 to 110L), prioritized)
+
+        val gate = RoleUbBannerGate(maxConfirmationDelayNanos = 1_000L)
+        assertTrue(
+            gate.update(
+                candidateTimesNanos = prioritized,
+                bannerRawPresent = false,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 110L
+            ).isEmpty()
+        )
+        assertEquals(
+            mapOf(CharacterRole.ROLE_1 to 110L),
+            gate.update(
+                candidateTimesNanos = emptyMap(),
+                bannerRawPresent = true,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 120L
+            )
+        )
+    }
+
+    @Test
+    fun `uncorroborated full to low fallback still rescues detector miss`() {
+        val detector = mapOf(CharacterRole.ROLE_2 to 90L)
+        val strong = mapOf(CharacterRole.ROLE_1 to 100L)
+
+        assertEquals(
+            mapOf(CharacterRole.ROLE_1 to 100L),
+            prioritizeRoleUbCandidates(detector, strong)
         )
     }
 
@@ -57,4 +151,21 @@ class EnergyFrameSnapshotTest {
         energyDelta = null,
         triggeredRoles = emptySet()
     )
+
+    private fun energyStates(
+        role1: Float = 0.5f,
+        role4: Float = 0.5f
+    ): Map<CharacterRole, CharacterEnergyState> = CharacterRole.entries.associateWith { role ->
+        val ratio = when (role) {
+            CharacterRole.ROLE_1 -> role1
+            CharacterRole.ROLE_4 -> role4
+            else -> 0.5f
+        }
+        CharacterEnergyState(
+            blueRatio = ratio,
+            isFull = ratio >= 0.97f,
+            delta = null,
+            triggered = false
+        )
+    }
 }

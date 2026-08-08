@@ -83,16 +83,172 @@ class BattleControlStateMachineTest {
         assertEquals("inconsistent", failed.reason)
     }
 
-    @Test fun `click needs two matching frames before next action`() {
+    @Test fun `role set changes are confirmed before auto when both are required`() {
         val machine = machine(
             auto = VisualToggleState.ON,
             roles = roles(VisualToggleState.ON, VisualToggleState.OFF, VisualToggleState.ON, VisualToggleState.OFF, VisualToggleState.ON)
         )
         val initial = observation(auto = VisualToggleState.OFF, global = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
-        assertEquals(TapAuto, machine.update(initial, 0).action)
-        val autoOn = initial.copy(auto = toggle(VisualToggleState.ON))
-        assertEquals(None, machine.update(autoOn, 100).action)
-        assertEquals(TapRole(CharacterRole.ROLE_1), machine.update(autoOn, 150).action)
+        assertEquals(TapRole(CharacterRole.ROLE_1), machine.update(initial, 0).action)
+
+        val role1On = observation(
+            auto = VisualToggleState.OFF,
+            global = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF
+            )
+        )
+        assertEquals(None, machine.update(role1On, 100).action)
+        assertEquals(TapRole(CharacterRole.ROLE_3), machine.update(role1On, 150).action)
+
+        val role3On = observation(
+            auto = VisualToggleState.OFF,
+            global = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF
+            )
+        )
+        assertEquals(None, machine.update(role3On, 250).action)
+        assertEquals(TapRole(CharacterRole.ROLE_5), machine.update(role3On, 300).action)
+
+        val allRolesReady = observation(
+            auto = VisualToggleState.OFF,
+            global = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.ON
+            )
+        )
+        assertEquals(None, machine.update(allRolesReady, 400).action)
+        assertEquals(TapAuto, machine.update(allRolesReady, 450).action)
+    }
+
+    @Test fun `filtered production mode advances after first trustworthy changed state`() {
+        val machine = BattleControlStateMachine(requiredConfirmationFrames = 1).apply {
+            setDesired(
+                OpeningControlTarget(
+                    auto = VisualToggleState.ON,
+                    roles = roles(
+                        VisualToggleState.ON,
+                        VisualToggleState.OFF,
+                        VisualToggleState.OFF,
+                        VisualToggleState.OFF,
+                        VisualToggleState.OFF
+                    )
+                )
+            )
+        }
+        val initial = observation(auto = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
+        assertEquals(TapRole(CharacterRole.ROLE_1), machine.update(initial, 0).action)
+
+        val roleReady = observation(
+            auto = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF
+            )
+        )
+        assertEquals(TapAuto, machine.update(roleReady, 100).action)
+    }
+
+    @Test fun `production filter still requires two raw frames before fast state machine advances`() {
+        val filter = BattleControlObservationFilter(confirmationFrames = 2)
+        val machine = BattleControlStateMachine(requiredConfirmationFrames = 1).apply {
+            setDesired(
+                OpeningControlTarget(
+                    auto = VisualToggleState.ON,
+                    roles = roles(
+                        VisualToggleState.ON,
+                        VisualToggleState.OFF,
+                        VisualToggleState.OFF,
+                        VisualToggleState.OFF,
+                        VisualToggleState.OFF
+                    )
+                )
+            )
+        }
+        val initial = observation(auto = VisualToggleState.OFF, roles = all(VisualToggleState.OFF))
+        assertEquals(ControlObservationStatus.PENDING_CONFIRMATION, filter.update(initial).status)
+        val initialTrusted = filter.update(initial)
+        assertEquals(ControlObservationStatus.TRUSTWORTHY, initialTrusted.status)
+        assertEquals(TapRole(CharacterRole.ROLE_1), machine.update(requireNotNull(initialTrusted.observation), 0).action)
+
+        val roleReady = observation(
+            auto = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF,
+                VisualToggleState.OFF
+            )
+        )
+        val firstRawAfterClick = filter.update(roleReady)
+        assertEquals(ControlObservationStatus.PENDING_CONFIRMATION, firstRawAfterClick.status)
+
+        val secondRawAfterClick = filter.update(roleReady)
+        assertEquals(ControlObservationStatus.TRUSTWORTHY, secondRawAfterClick.status)
+        assertEquals(TapAuto, machine.update(requireNotNull(secondRawAfterClick.observation), 100).action)
+    }
+
+    @Test fun `ub visual hold can confirm dispatched set without planning auto`() {
+        val machine = BattleControlStateMachine(requiredConfirmationFrames = 1).apply {
+            setDesired(
+                OpeningControlTarget(
+                    auto = VisualToggleState.ON,
+                    roles = roles(
+                        VisualToggleState.OFF,
+                        VisualToggleState.ON,
+                        VisualToggleState.ON,
+                        VisualToggleState.OFF,
+                        VisualToggleState.ON
+                    )
+                )
+            )
+        }
+        val beforeRole4Off = observation(
+            auto = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.ON,
+                VisualToggleState.ON,
+                VisualToggleState.ON
+            )
+        )
+        assertEquals(TapRole(CharacterRole.ROLE_4), machine.update(beforeRole4Off, 0).action)
+
+        val role4Off = observation(
+            auto = VisualToggleState.OFF,
+            roles = roles(
+                VisualToggleState.OFF,
+                VisualToggleState.ON,
+                VisualToggleState.ON,
+                VisualToggleState.OFF,
+                VisualToggleState.ON
+            )
+        )
+        val held = machine.confirmPendingDuringVisualHold(role4Off)
+        assertEquals(None, held.action)
+        assertEquals("click-confirmed-during-hold", held.reason)
+        assertNull(held.expected)
+        assertTrue(!held.confirmed)
+
+        assertEquals(TapAuto, machine.update(role4Off, 100).action)
     }
 
     @Test fun `unconfirmed click waits one second before retry`() {
