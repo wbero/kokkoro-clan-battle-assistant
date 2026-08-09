@@ -6,13 +6,14 @@ import com.kokkoro.clanbattle.axis.SwitchAxisNode
 import com.kokkoro.clanbattle.axis.SwitchControlTarget
 import com.kokkoro.clanbattle.axis.SwitchNodeTrigger
 import com.kokkoro.clanbattle.axis.TimedTrigger
+import com.kokkoro.clanbattle.control.AuthoritativeControlState
 import com.kokkoro.clanbattle.control.BattleControlObservation
-import com.kokkoro.clanbattle.control.BattleControlState
 import com.kokkoro.clanbattle.control.BattleControlStateMachine
 import com.kokkoro.clanbattle.control.ControlAction
 import com.kokkoro.clanbattle.control.ControlSafetyState
 import com.kokkoro.clanbattle.control.ToggleObservation
 import com.kokkoro.clanbattle.control.VisualToggleState
+import com.kokkoro.clanbattle.control.toControlState
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -21,176 +22,105 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SwitchControlCoordinatorTest {
-    @Test fun `timed node dispatches the target delta without arming state machine clicks`() {
+    @Test fun `timed node plans delta from authoritative state and completes immediately`() {
         val machine = BattleControlStateMachine()
         val coordinator = coordinator(machine, node("first", 60, target(auto = AxisToggleState.ON)))
-        val observed = machine.update(observation(), 0)
 
-        val result = coordinator.update(frame(60), observed)
+        val result = coordinator.update(frame(60), machine.snapshot())
 
-        assertEquals("first", result.activeNodeId)
-        assertTrue(result.busy)
         assertEquals(listOf(ControlAction.TapAuto), result.controlActions)
-        assertEquals(VisualToggleState.ON, result.controlStep.desired?.auto)
-        assertEquals(all(VisualToggleState.OFF), result.controlStep.desired?.roles)
+        assertFalse(result.busy)
+        assertNull(result.activeNodeId)
         assertNull(machine.snapshot().desired)
     }
 
-    @Test fun `later node remains blocked until every target control is visually confirmed`() {
+    @Test fun `later node uses predicted state even when visual remains stale`() {
         val machine = BattleControlStateMachine()
         val coordinator = coordinator(
             machine,
             node("first", 60, target(auto = AxisToggleState.ON)),
             node("second", 59, target(auto = AxisToggleState.OFF))
         )
-        val first = coordinator.update(frame(60, wallMs = 0), machine.update(observation(), 0))
-        assertEquals(listOf(ControlAction.TapAuto), first.controlActions)
 
-        val noExtraClick = machine.update(observation(), 10)
-        assertEquals(ControlAction.None, noExtraClick.action)
-        assertEquals("first", coordinator.update(frame(59, wallMs = 10), noExtraClick).activeNodeId)
+        assertEquals(
+            listOf(ControlAction.TapAuto),
+            coordinator.update(frame(60), machine.snapshot()).controlActions
+        )
 
-        val autoOn = observation(auto = VisualToggleState.ON)
-        val completed = coordinator.update(frame(59, wallMs = 20), machine.update(autoOn, 20))
-
-        assertEquals("second", completed.activeNodeId)
-        assertEquals(listOf(ControlAction.TapAuto), completed.controlActions)
-        assertEquals(VisualToggleState.OFF, completed.controlStep.desired?.auto)
-        assertNull(machine.snapshot().desired)
+        // BattleControlStateMachine still carries the original OFF visual state.
+        // The second node must nevertheless know the first TapAuto predicted ON.
+        assertEquals(
+            listOf(ControlAction.TapAuto),
+            coordinator.update(frame(59), machine.snapshot()).controlActions
+        )
     }
 
-    @Test fun `untrustworthy controls do not arm a timed convergence`() {
+    @Test fun `timed node still waits for trustworthy control timing gate`() {
         val machine = BattleControlStateMachine()
         val coordinator = coordinator(machine, node("first", 60, target(auto = AxisToggleState.ON)))
 
-        val result = coordinator.update(frame(60, trustworthy = false), machine.snapshot())
+        val held = coordinator.update(frame(60, trustworthy = false), machine.snapshot())
+        assertTrue(held.controlActions.isEmpty())
+        assertTrue(held.busy)
 
-        assertTrue(result.busy)
-        assertEquals("first", result.activeNodeId)
-        assertNull(machine.snapshot().desired)
+        val dispatched = coordinator.update(frame(60, trustworthy = true), machine.snapshot())
+        assertEquals(listOf(ControlAction.TapAuto), dispatched.controlActions)
     }
 
-    @Test fun `safety pause freezes runtime and preserves the original reason`() {
-        val machine = BattleControlStateMachine()
-        val coordinator = coordinator(machine, node("first", 60, target(auto = AxisToggleState.ON)))
-        machine.forceSafety("control-recognition-failed:raw_untrustworthy")
-
-        val result = coordinator.update(frame(60), machine.snapshot("control-recognition-failed:raw_untrustworthy"))
-
-        assertEquals(ControlSafetyState.SAFETY_PAUSING, result.controlStep.safety)
-        assertEquals("control-recognition-failed:raw_untrustworthy", result.controlStep.reason)
-        assertFalse(result.busy)
-        assertNull(result.activeNodeId)
-        assertNull(machine.snapshot().desired)
-    }
-
-    @Test fun `reset replaces pending nodes with the new axis`() {
-        val machine = BattleControlStateMachine()
-        val coordinator = coordinator(machine, node("old", 60, target()))
-        coordinator.update(frame(60), machine.update(observation(), 0))
-
-        coordinator.reset(
-            opening = null,
-            nodes = listOf(node("new", 50, target(auto = AxisToggleState.ON)))
-        )
-        val result = coordinator.update(frame(50), machine.update(observation(), 10))
-
-        assertEquals("new", result.activeNodeId)
-        assertEquals(listOf(ControlAction.TapAuto), result.controlActions)
-    }
-
-     @Test fun `role ub pulse during a safety pause is not lost once safety recovers`() {
-        val machine = BattleControlStateMachine()
-        val coordinator = coordinator(
-            machine,
-            node("role1", 60, target(), CharacterUbTrigger(CharacterRole.ROLE_1, "角色1"))
-        )
-        // 先让节点进入 Armed 状态，且这一帧不带触发，排除 armedNow 的干扰
-        coordinator.update(frame(60), machine.update(observation(), 0))
-
-        // 安全门误报期间，恰好这一帧收到了角色1的UB脉冲
-        machine.forceSafety("control-recognition-failed:raw_untrustworthy")
-        val duringSafety = coordinator.update(
-            frame(60, triggered = setOf(CharacterRole.ROLE_1)),
-            machine.snapshot("control-recognition-failed:raw_untrustworthy")
-        )
-        assertEquals(ControlSafetyState.SAFETY_PAUSING, duringSafety.controlStep.safety)
-
-        // safety 恢复 RUNNING 之后，这次脉冲不应该已经彻底丢失
-        val recovered = coordinator.update(frame(60), machine.update(observation(), 100))
-        assertEquals("role1", recovered.activeNodeId)
-        assertTrue(recovered.busy)
-    }
-
-    @Test fun `consuming one character ub clears ambiguous same-pulse roles`() {
-        val machine = BattleControlStateMachine()
-        val coordinator = coordinator(
-            machine,
-            node(
-                "role4",
-                14,
-                target(auto = AxisToggleState.ON),
-                CharacterUbTrigger(CharacterRole.ROLE_4, "角色4")
-            ),
-            node(
-                "role3",
-                13,
-                target(auto = AxisToggleState.OFF),
-                CharacterUbTrigger(CharacterRole.ROLE_3, "角色3")
-            )
-        )
-        val observed = machine.update(observation(), 0)
-        coordinator.update(frame(14), observed)
-
-        val consumed = coordinator.update(
-            frame(14, triggered = setOf(CharacterRole.ROLE_3, CharacterRole.ROLE_4)),
-            observed
-        )
-        assertEquals("role4", consumed.activeNodeId)
-
-        val autoOn = observation(auto = VisualToggleState.ON)
-        val next = coordinator.update(frame(13, wallMs = 20), machine.update(autoOn, 20))
-
-        assertEquals("role3", next.activeNodeId)
-        assertNull(machine.snapshot().desired)
-    }
-
-    @Test fun `axis 223 node 057 batches both set changes before auto`() {
+    @Test fun `character ub executes target inside ub even when templates are untrustworthy`() {
         val machine = BattleControlStateMachine()
         val coordinator = coordinator(
             machine,
             node(
                 "057",
                 57,
-                target(
-                    auto = AxisToggleState.ON,
-                    roles = listOf(
-                        AxisToggleState.OFF,
-                        AxisToggleState.ON,
-                        AxisToggleState.ON,
-                        AxisToggleState.OFF,
-                        AxisToggleState.ON
-                    )
-                ),
+                target(auto = AxisToggleState.ON),
                 CharacterUbTrigger(CharacterRole.ROLE_2, "角色2")
             )
         )
-        val before = observation(
-            auto = VisualToggleState.OFF,
-            roles = listOf(
-                VisualToggleState.OFF,
-                VisualToggleState.ON,
-                VisualToggleState.OFF,
-                VisualToggleState.ON,
-                VisualToggleState.ON
-            )
-        )
-        machine.update(before, 0)
-        coordinator.update(frame(57, wallMs = 0), machine.snapshot())
 
+        coordinator.update(frame(57), machine.snapshot()) // arm first
         val triggered = coordinator.update(
-            frame(57, triggered = setOf(CharacterRole.ROLE_2), wallMs = 10),
+            frame(57, trustworthy = false, triggered = setOf(CharacterRole.ROLE_2), wallMs = 10),
             machine.snapshot("control-hold-trustworthy")
+        )
+
+        assertEquals(listOf(ControlAction.TapAuto), triggered.controlActions)
+        assertFalse(triggered.busy)
+    }
+
+    @Test fun `046 polluted visual cannot add role5 tap`() {
+        val machine = BattleControlStateMachine()
+        val clean = observation(
+            auto = VisualToggleState.OFF,
+            roles = mask("XOOXO")
+        )
+        val authority = AuthoritativeControlState().apply { seedIfAbsent(clean.toControlState()) }
+        val coordinator = SwitchControlCoordinator(
+            stateMachine = machine,
+            opening = null,
+            nodes = listOf(
+                node(
+                    "046",
+                    46,
+                    target(
+                        auto = AxisToggleState.ON,
+                        roles = axisMask("XOXOO")
+                    ),
+                    CharacterUbTrigger(CharacterRole.ROLE_5, "角色5")
+                )
+            ),
+            authoritativeControls = authority
+        )
+        machine.update(clean, 0)
+        coordinator.update(frame(46), machine.snapshot())
+
+        // The animation-polluted visual says ROLE5 is OFF (XOOXX), but planning
+        // must remain based on clean authoritative XOOXO.
+        val polluted = observation(auto = VisualToggleState.OFF, roles = mask("XOOXX"))
+        val triggered = coordinator.update(
+            frame(46, trustworthy = false, triggered = setOf(CharacterRole.ROLE_5), wallMs = 20),
+            machine.update(polluted, 20)
         )
 
         assertEquals(
@@ -201,201 +131,115 @@ class SwitchControlCoordinatorTest {
             ),
             triggered.controlActions
         )
-        assertNull(machine.snapshot().desired)
-
-        val finalTarget = observation(
-            auto = VisualToggleState.ON,
-            roles = listOf(
-                VisualToggleState.OFF,
-                VisualToggleState.ON,
-                VisualToggleState.ON,
-                VisualToggleState.OFF,
-                VisualToggleState.ON
-            )
-        )
-        val completed = coordinator.update(
-            frame(56, wallMs = 300),
-            machine.update(finalTarget, 300)
-        )
-        assertFalse(completed.busy)
-        assertTrue(completed.controlActions.isEmpty())
+        assertTrue(ControlAction.TapRole(CharacterRole.ROLE_5) !in triggered.controlActions)
     }
 
-    @Test fun `switch batch never retries while ub visual hold is active`() {
+    @Test fun `visual contradiction never causes automatic retry`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = coordinator(
+            machine,
+            node("first", 60, target(roles = axisMask("XXOXX")))
+        )
+
+        val first = coordinator.update(frame(60), machine.snapshot())
+        assertEquals(listOf(ControlAction.TapRole(CharacterRole.ROLE_3)), first.controlActions)
+
+        repeat(5) { index ->
+            val staleOff = machine.update(observation(), 100L + index)
+            val later = coordinator.update(frame(59, wallMs = 100L + index), staleOff)
+            assertTrue(later.controlActions.isEmpty())
+        }
+    }
+
+    @Test fun `missed exact-clock character ub still enters safety`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = coordinator(
+            machine,
+            node(
+                "103",
+                63,
+                target(),
+                CharacterUbTrigger(CharacterRole.ROLE_3, "角色3")
+            )
+        )
+        coordinator.update(frame(63, wallMs = 0), machine.snapshot())
+
+        val missed = coordinator.update(frame(62, wallMs = 100), machine.snapshot())
+
+        assertEquals(ControlSafetyState.SAFETY_PAUSING, missed.controlStep.safety)
+        assertTrue(missed.controlStep.reason.orEmpty().startsWith("switch-character-ub-missed:103:ROLE_3:63->62"))
+        assertTrue(missed.controlActions.isEmpty())
+    }
+
+    @Test fun `cached ub from earlier game second cannot satisfy newly armed node`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = coordinator(
+            machine,
+            node(
+                "103",
+                63,
+                target(auto = AxisToggleState.ON),
+                CharacterUbTrigger(CharacterRole.ROLE_3, "角色3")
+            )
+        )
+
+        coordinator.update(
+            frame(64, triggered = setOf(CharacterRole.ROLE_3), wallMs = 0),
+            machine.snapshot()
+        )
+        val armed = coordinator.update(frame(63, wallMs = 100), machine.snapshot())
+        val stillWaiting = coordinator.update(frame(63, wallMs = 200), machine.snapshot())
+
+        assertTrue(armed.controlActions.isEmpty())
+        assertTrue(stillWaiting.controlActions.isEmpty())
+        assertEquals("103", stillWaiting.activeNodeId)
+    }
+
+    @Test fun `safety pause freezes switch runtime`() {
         val machine = BattleControlStateMachine()
         val coordinator = coordinator(machine, node("first", 60, target(auto = AxisToggleState.ON)))
-        machine.update(observation(), 0)
-        coordinator.update(frame(60, wallMs = 0), machine.snapshot())
+        machine.forceSafety("test-safety")
 
-        val held = coordinator.update(
-            frame(60, wallMs = 1500),
-            machine.snapshot("control-hold-trustworthy")
-        )
+        val held = coordinator.update(frame(60), machine.snapshot("test-safety"))
+
+        assertEquals(ControlSafetyState.SAFETY_PAUSING, held.controlStep.safety)
         assertTrue(held.controlActions.isEmpty())
-
-        val retry = coordinator.update(
-            frame(60, wallMs = 1510),
-            machine.update(observation(), 1510)
-        )
-        assertEquals(listOf(ControlAction.TapAuto), retry.controlActions)
     }
 
-    @Test fun `successful role tap is not repeated when ub effect briefly hides its set badge`() {
+    @Test fun `reset clears predicted state and uses new seed`() {
         val machine = BattleControlStateMachine()
-        val targetRoles = listOf(
-            VisualToggleState.OFF,
-            VisualToggleState.OFF,
-            VisualToggleState.ON,
-            VisualToggleState.ON,
-            VisualToggleState.OFF
+        val authority = AuthoritativeControlState().apply { seedIfAbsent(observation().toControlState()) }
+        val coordinator = SwitchControlCoordinator(
+            stateMachine = machine,
+            opening = null,
+            nodes = listOf(node("old", 60, target(auto = AxisToggleState.ON))),
+            authoritativeControls = authority
         )
-        val coordinator = coordinator(
-            machine,
-            node(
-                "035",
-                35,
-                target(
-                    auto = AxisToggleState.ON,
-                    roles = listOf(
-                        AxisToggleState.OFF,
-                        AxisToggleState.OFF,
-                        AxisToggleState.ON,
-                        AxisToggleState.ON,
-                        AxisToggleState.OFF
-                    )
-                ),
-                CharacterUbTrigger(CharacterRole.ROLE_4, "角色4")
-            )
-        )
-        val before = observation(
-            auto = VisualToggleState.OFF,
-            roles = listOf(
-                VisualToggleState.OFF,
-                VisualToggleState.ON,
-                VisualToggleState.OFF,
-                VisualToggleState.ON,
-                VisualToggleState.OFF
-            )
-        )
-        machine.update(before, 0)
-        coordinator.update(frame(35, wallMs = 0), machine.snapshot())
+        coordinator.update(frame(60), machine.snapshot())
 
-        val triggered = coordinator.update(
-            frame(35, triggered = setOf(CharacterRole.ROLE_4), wallMs = 10),
-            machine.snapshot("control-hold-trustworthy"),
-            trustworthyObservation = before
+        coordinator.reset(
+            opening = null,
+            nodes = listOf(node("new", 50, target(auto = AxisToggleState.OFF)))
         )
-        assertEquals(
-            listOf(
-                ControlAction.TapRole(CharacterRole.ROLE_2),
-                ControlAction.TapRole(CharacterRole.ROLE_3),
-                ControlAction.TapAuto
-            ),
-            triggered.controlActions
-        )
+        val newSeed = observation(auto = VisualToggleState.ON)
+        coordinator.seedControlState(newSeed.toControlState())
 
-        val reachedTarget = observation(auto = VisualToggleState.ON, roles = targetRoles)
-        val oldObserved = machine.snapshot("control-hold-trustworthy")
-        coordinator.update(
-            frame(35, wallMs = 500),
-            oldObserved,
-            trustworthyObservation = reachedTarget
-        )
-
-        val badgeHiddenRoles = targetRoles.toMutableList().apply {
-            this[CharacterRole.ROLE_3.ordinal] = VisualToggleState.OFF
-        }
-        val badgeHidden = observation(auto = VisualToggleState.ON, roles = badgeHiddenRoles)
-        val badgeHiddenState = BattleControlState(
-            auto = VisualToggleState.ON,
-            globalSet = VisualToggleState.OFF,
-            roles = CharacterRole.entries.zip(badgeHiddenRoles).toMap()
-        )
-
-        repeat(2) { index ->
-            val result = coordinator.update(
-                frame(35, wallMs = 1_300L + index * 100L),
-                machine.snapshot("no-control-target").copy(observed = badgeHiddenState),
-                trustworthyObservation = badgeHidden
-            )
-            assertTrue(result.controlActions.isEmpty())
-        }
-
-        val recovered = coordinator.update(
-            frame(35, wallMs = 1_500),
-            machine.snapshot("no-control-target").copy(observed = badgeHiddenState),
-            trustworthyObservation = reachedTarget
-        )
-        assertTrue(recovered.controlActions.isEmpty())
-    }
-
-    @Test fun `confirmed role tap becomes retryable after persistent clean contradiction`() {
-        val machine = BattleControlStateMachine()
-        val coordinator = coordinator(
-            machine,
-            node(
-                "first",
-                60,
-                target(
-                    roles = listOf(
-                        AxisToggleState.OFF,
-                        AxisToggleState.OFF,
-                        AxisToggleState.ON,
-                        AxisToggleState.OFF,
-                        AxisToggleState.OFF
-                    )
-                )
-            )
-        )
-        val before = observation()
-        machine.update(before, 0)
-        val initial = coordinator.update(frame(60, wallMs = 0), machine.snapshot())
-        assertEquals(listOf(ControlAction.TapRole(CharacterRole.ROLE_3)), initial.controlActions)
-
-        val role3On = observation(
-            roles = listOf(
-                VisualToggleState.OFF,
-                VisualToggleState.OFF,
-                VisualToggleState.ON,
-                VisualToggleState.OFF,
-                VisualToggleState.OFF
-            )
-        )
-        coordinator.update(
-            frame(60, wallMs = 500),
-            machine.snapshot("control-hold-trustworthy"),
-            trustworthyObservation = role3On
-        )
-
-        val offState = BattleControlState(
-            auto = VisualToggleState.OFF,
-            globalSet = VisualToggleState.OFF,
-            roles = all(VisualToggleState.OFF)
-        )
-        val firstContradiction = coordinator.update(
-            frame(60, wallMs = 1_100),
-            machine.snapshot("no-control-target").copy(observed = offState),
-            trustworthyObservation = before
-        )
-        assertTrue(firstContradiction.controlActions.isEmpty())
-        val secondContradiction = coordinator.update(
-            frame(60, wallMs = 1_200),
-            machine.snapshot("no-control-target").copy(observed = offState),
-            trustworthyObservation = before
-        )
-        assertTrue(secondContradiction.controlActions.isEmpty())
-        val thirdContradiction = coordinator.update(
-            frame(60, wallMs = 1_300),
-            machine.snapshot("no-control-target").copy(observed = offState),
-            trustworthyObservation = before
-        )
-        assertEquals(listOf(ControlAction.TapRole(CharacterRole.ROLE_3)), thirdContradiction.controlActions)
+        val result = coordinator.update(frame(50), machine.snapshot())
+        assertEquals(listOf(ControlAction.TapAuto), result.controlActions)
     }
 
     private fun coordinator(
         machine: BattleControlStateMachine,
         vararg nodes: SwitchAxisNode
-    ) = SwitchControlCoordinator(machine, opening = null, nodes = nodes.toList())
+    ): SwitchControlCoordinator {
+        val authority = AuthoritativeControlState().apply { seedIfAbsent(observation().toControlState()) }
+        return SwitchControlCoordinator(
+            machine,
+            opening = null,
+            nodes = nodes.toList(),
+            authoritativeControls = authority
+        )
+    }
 
     private fun node(
         id: String,
@@ -423,7 +267,8 @@ class SwitchControlCoordinatorTest {
         clockSeconds = clock,
         triggeredRoles = triggered,
         controlsTrustworthy = trustworthy,
-        wallMs = wallMs
+        wallMs = wallMs,
+        triggeredRoleClockSeconds = triggered.associateWith { clock }
     )
 
     private fun observation(
@@ -441,6 +286,9 @@ class SwitchControlCoordinatorTest {
         consistent = true
     )
 
-    private fun all(state: VisualToggleState) = CharacterRole.entries.associateWith { state }
-   
+    private fun mask(value: String): List<VisualToggleState> =
+        value.map { if (it == 'O') VisualToggleState.ON else VisualToggleState.OFF }
+
+    private fun axisMask(value: String): List<AxisToggleState> =
+        value.map { if (it == 'O') AxisToggleState.ON else AxisToggleState.OFF }
 }

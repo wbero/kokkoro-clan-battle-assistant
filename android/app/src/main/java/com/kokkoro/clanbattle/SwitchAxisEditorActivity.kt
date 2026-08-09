@@ -33,6 +33,7 @@ class SwitchAxisEditorActivity : Activity() {
     private lateinit var library: AxisLibrary
     private lateinit var nameInput: EditText
     private lateinit var roleInputs: List<EditText>
+    private lateinit var roleUbInputs: List<EditText>
     private lateinit var table: LinearLayout
     private lateinit var openingRow: GridRow
     private val rows = mutableListOf<GridRow>()
@@ -96,6 +97,11 @@ class SwitchAxisEditorActivity : Activity() {
                     layoutParams = column(ROLE_WEIGHT)
                 }
             }
+            addView(note("UB技能名用于识别浪花中间文字；角色昵称只用于显示，不参与识别。五个UB名要么全部留空走旧识别，要么全部填写启用技能名识别。"))
+            roleUbInputs = draft.roleUbSkillNames.mapIndexed { index, value ->
+                edit("角色${index + 1}UB（游戏内技能名）", value)
+            }
+            roleUbInputs.forEach { addView(it, matchWidth()) }
 
             table = LinearLayout(this@SwitchAxisEditorActivity).apply {
                 orientation = LinearLayout.VERTICAL
@@ -145,6 +151,7 @@ class SwitchAxisEditorActivity : Activity() {
             roleNames = roleInputs.mapIndexed { index, input ->
                 input.text.toString().trim().ifBlank { "角色${index + 1}" }
             },
+            roleUbSkillNames = roleUbInputs.map { it.text.toString().trim() },
             opening = openingRow.target(),
             openingMessage = openingRow.message(),
             nodes = nodes

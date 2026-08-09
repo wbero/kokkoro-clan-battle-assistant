@@ -28,8 +28,43 @@ object AxisValidator {
         if (document.clickIntervalMs !in 1..5_000) {
             issues += issue(null, "invalid-click-interval", "点击间隔必须在 1..5000 毫秒")
         }
+        validateRoleUbSkillNames(document, issues)
 
         return AxisValidationResult(issues)
+    }
+
+    private fun validateRoleUbSkillNames(
+        document: AxisDocument,
+        issues: MutableList<AxisValidationIssue>
+    ) {
+        val configured = document.roleUbSkillNames()
+        // Backward compatibility: axes without any 角色NUB fields continue to
+        // use the legacy TP/flash identity path. Once skill-name OCR is opted in,
+        // all five battle slots must be declared. Partial configuration would
+        // make an unconfigured character UB indistinguishable from a Boss banner.
+        if (configured.isEmpty()) return
+
+        com.kokkoro.clanbattle.recognition.CharacterRole.entries.forEach { role ->
+            if (role !in configured) {
+                issues += issue(
+                    null,
+                    "missing-role-ub-skill-name",
+                    "启用技能名识别后，${role.ubSkillHeaderKey()} 必须填写游戏内实际显示的 UB 技能名称"
+                )
+            }
+        }
+
+        configured.entries
+            .groupBy { it.value.trim() }
+            .filterKeys(String::isNotBlank)
+            .filterValues { entries -> entries.size > 1 }
+            .forEach { (name, entries) ->
+                issues += issue(
+                    null,
+                    "duplicate-role-ub-skill-name",
+                    "UB 技能名称“$name”同时分配给 ${entries.joinToString { "角色${it.key.ordinal + 1}" }}，无法唯一识别"
+                )
+            }
     }
 
     private fun validateSequence(

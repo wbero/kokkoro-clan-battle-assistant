@@ -9,6 +9,7 @@ import com.kokkoro.clanbattle.recognition.PixelImage
 import com.kokkoro.clanbattle.recognition.RecognitionResult
 import com.kokkoro.clanbattle.recognition.UbBannerDetection
 import com.kokkoro.clanbattle.recognition.RoleUbFlashDetection
+import com.kokkoro.clanbattle.recognition.UbSkillNameDetection
 import com.kokkoro.clanbattle.control.BattleControlObservation
 import com.kokkoro.clanbattle.control.ControlCrops
 import com.kokkoro.clanbattle.control.ControlStep
@@ -44,6 +45,7 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
         energy: EnergyDetectionResult? = null,
         ubBanner: UbBannerDetection? = null,
         roleUbFlash: RoleUbFlashDetection? = null,
+        ubSkillName: UbSkillNameDetection? = null,
         rawTpCandidateRoles: Set<CharacterRole> = emptySet(),
         slowTpFallbackRoles: Set<CharacterRole> = emptySet()
     ) {
@@ -54,8 +56,13 @@ class ClockDebugRecorder(private val context: Context) : AutoCloseable {
                 recognition.confidence, recognition.reason, filter?.accepted, filter?.timeSeconds,
                 filter?.reason, filter?.source, dropped.get(), ubBanner?.active,
                 ubBanner?.rawPresent, ubBanner?.score, ubBanner?.colorScore,
-                ubBanner?.leftScore, ubBanner?.rightScore, roleUbFlash?.role?.name,
-                roleUbFlash?.rawRole?.name, roleUbFlash?.strongestScore,
+                ubBanner?.leftScore, ubBanner?.rightScore,
+                ubSkillName?.role?.name, ubSkillName?.bestRole?.name,
+                ubSkillName?.recognizedText, ubSkillName?.expectedName,
+                ubSkillName?.score, ubSkillName?.margin, ubSkillName?.gameClockSeconds,
+                roleUbFlash?.role?.name,
+                roleUbFlash?.rawRole?.name, roleUbFlash?.borderlineRole?.name,
+                roleUbFlash?.strongestScore,
                 roleUbFlash?.margin,
                 rawTpCandidateRoles.sortedBy { it.ordinal }.joinToString("|"),
                 slowTpFallbackRoles.sortedBy { it.ordinal }.joinToString("|")))

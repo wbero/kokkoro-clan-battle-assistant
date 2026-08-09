@@ -107,6 +107,25 @@ class RoleUbFlashDetectorTest {
     }
 
     @Test
+    fun `high strength narrow margin flash is exposed only as a corroboration hint`() {
+        val result = RoleUbFlashDetector().detect(
+            syntheticCompetingFlash(
+                strongestRole = CharacterRole.ROLE_3,
+                strongestFraction = 0.86f,
+                neighbourRole = CharacterRole.ROLE_4,
+                neighbourFraction = 0.75f
+            )
+        )
+
+        assertNull(result.rawRole)
+        assertNull(result.role)
+        assertEquals(CharacterRole.ROLE_3, result.borderlineRole)
+        assertTrue(result.strongestScore >= RoleUbFlashDetector.DEFAULT_IMMEDIATE_SCORE)
+        assertTrue(result.margin >= RoleUbFlashDetector.DEFAULT_CORROBORATED_MINIMUM_MARGIN)
+        assertTrue(result.margin < RoleUbFlashDetector.DEFAULT_MINIMUM_MARGIN)
+    }
+
+    @Test
     fun `same detector geometry works for every role slot`() {
         CharacterRole.entries.forEach { role ->
             val result = RoleUbFlashDetector().detect(syntheticFlash(role))
@@ -161,6 +180,30 @@ class RoleUbFlashDetectorTest {
         repeat(height) { y ->
             repeat(fillWidth) { offset ->
                 pixels[y * width + left + offset] = rgb(255, 240, 120)
+            }
+        }
+        return PixelImage(width, height, pixels)
+    }
+
+    private fun syntheticCompetingFlash(
+        strongestRole: CharacterRole,
+        strongestFraction: Float,
+        neighbourRole: CharacterRole,
+        neighbourFraction: Float
+    ): PixelImage {
+        val width = RoleUbFlashDetector.REFERENCE_WIDTH
+        val height = 40
+        val pixels = IntArray(width * height) { rgb(20, 20, 20) }
+        listOf(
+            strongestRole to strongestFraction,
+            neighbourRole to neighbourFraction
+        ).forEach { (role, fillFraction) ->
+            val left = role.ordinal * RoleUbFlashDetector.ROLE_STRIDE
+            val fillWidth = (RoleUbFlashDetector.ROLE_WIDTH * fillFraction).toInt()
+            repeat(height) { y ->
+                repeat(fillWidth) { offset ->
+                    pixels[y * width + left + offset] = rgb(255, 240, 120)
+                }
             }
         }
         return PixelImage(width, height, pixels)

@@ -13,8 +13,16 @@ class RoleUbBannerGate(
 ) {
     private val pendingCandidates = mutableMapOf<CharacterRole, Long>()
     private val cycleCandidates = mutableMapOf<CharacterRole, Long>()
+    // Keep a bounded history of every recent release role in addition to the
+    // newest causal cohort. The normal TP path still uses only the newest
+    // cohort, but a high-strength portrait flash whose margin narrowly misses
+    // the normal threshold may use this history as independent corroboration.
+    private val pendingCandidateHistory = mutableMapOf<CharacterRole, Long>()
+    private val cycleCandidateHistory = mutableMapOf<CharacterRole, Long>()
     private var pendingFlashCandidate: Pair<CharacterRole, Long>? = null
     private var cycleFlashCandidate: Pair<CharacterRole, Long>? = null
+    private var pendingBorderlineFlashCandidate: Pair<CharacterRole, Long>? = null
+    private var cycleBorderlineFlashCandidate: Pair<CharacterRole, Long>? = null
     private var bannerCycleOpen = false
     private var bannerCycleStartedAtNanos: Long? = null
     private var cycleConfirmed = false
@@ -24,7 +32,10 @@ class RoleUbBannerGate(
         require(quickRecoveryCancellationNanos >= 0L)
     }
 
-    private fun acceptLatePreBannerFlash(flashRoleTimesNanos: Map<CharacterRole, Long>) {
+    private fun acceptLatePreBannerFlash(
+        flashRoleTimesNanos: Map<CharacterRole, Long>,
+        borderlineFlashRoleTimesNanos: Map<CharacterRole, Long>
+    ) {
         val cycleStartedAt = bannerCycleStartedAtNanos ?: return
         latestFlash(flashRoleTimesNanos)
             ?.takeIf { (_, timestamp) ->
@@ -33,10 +44,37 @@ class RoleUbBannerGate(
                     cycleStartedAt - timestamp <= maxConfirmationDelayNanos
             }
             ?.let { cycleFlashCandidate = it }
+        latestFlash(borderlineFlashRoleTimesNanos)
+            ?.takeIf { (_, timestamp) ->
+                !cycleConfirmed &&
+                    timestamp <= cycleStartedAt &&
+                    cycleStartedAt - timestamp <= maxConfirmationDelayNanos
+            }
+            ?.let { cycleBorderlineFlashCandidate = it }
     }
 
     private fun latestFlash(values: Map<CharacterRole, Long>): Pair<CharacterRole, Long>? =
         values.maxByOrNull { (_, timestamp) -> timestamp }?.toPair()
+
+    private fun mergeCandidateHistory(
+        target: MutableMap<CharacterRole, Long>,
+        values: Map<CharacterRole, Long>,
+        latestAllowedTimestamp: Long = Long.MAX_VALUE
+    ) {
+        values.forEach { (role, timestamp) ->
+            if (timestamp > latestAllowedTimestamp) return@forEach
+            val current = target[role]
+            if (current == null || timestamp > current) target[role] = timestamp
+        }
+    }
+
+    private fun isCorroboratedBorderlineFlash(
+        flash: Pair<CharacterRole, Long>,
+        candidateHistory: Map<CharacterRole, Long>
+    ): Boolean {
+        val candidateAt = candidateHistory[flash.first] ?: return false
+        return candidateAt <= flash.second && flash.second - candidateAt <= maxConfirmationDelayNanos
+    }
 
     private fun latestReleaseCohort(
         values: Map<CharacterRole, Long>,
@@ -73,10 +111,19 @@ class RoleUbBannerGate(
         bannerActive: Boolean,
         bannerFrameTimestampNanos: Long,
         currentlyFullRoles: Set<CharacterRole> = emptySet(),
-        flashRoleTimesNanos: Map<CharacterRole, Long> = emptyMap()
+        flashRoleTimesNanos: Map<CharacterRole, Long> = emptyMap(),
+        borderlineFlashRoleTimesNanos: Map<CharacterRole, Long> = emptyMap()
     ): Map<CharacterRole, Long> {
         val wasBannerCycleOpen = bannerCycleOpen
         val newBannerCycle = bannerRawPresent && !wasBannerCycleOpen
+
+        if (!wasBannerCycleOpen) {
+            mergeCandidateHistory(
+                pendingCandidateHistory,
+                candidateTimesNanos,
+                bannerFrameTimestampNanos
+            )
+        }
 
         if (wasBannerCycleOpen) {
             // The TP fast path can deliver a timestamped candidate one slow
@@ -91,9 +138,10 @@ class RoleUbBannerGate(
                         cycleStartedAt - timestamp <= maxConfirmationDelayNanos
                 }
                 mergeLatestReleaseCohort(cycleCandidates, eligible, cycleStartedAt)
+                mergeCandidateHistory(cycleCandidateHistory, eligible, cycleStartedAt)
             }
             candidateTimesNanos.keys.forEach(pendingCandidates::remove)
-            acceptLatePreBannerFlash(flashRoleTimesNanos)
+            acceptLatePreBannerFlash(flashRoleTimesNanos, borderlineFlashRoleTimesNanos)
         } else if (!newBannerCycle) {
             if (candidateTimesNanos.isNotEmpty()) {
                 // EnergySampleBuffer can deliver several high-frequency release
@@ -104,6 +152,9 @@ class RoleUbBannerGate(
                 mergeLatestReleaseCohort(pendingCandidates, candidateTimesNanos)
             }
             latestFlash(flashRoleTimesNanos)?.let { pendingFlashCandidate = it }
+            latestFlash(borderlineFlashRoleTimesNanos)?.let {
+                pendingBorderlineFlashCandidate = it
+            }
         }
 
         if (!wasBannerCycleOpen && !newBannerCycle) {
@@ -113,8 +164,19 @@ class RoleUbBannerGate(
                 currentCandidateRoles = candidateTimesNanos.keys,
                 nowNanos = bannerFrameTimestampNanos
             )
+            cancelQuickRecoveries(
+                candidates = pendingCandidateHistory,
+                currentlyFullRoles = currentlyFullRoles,
+                currentCandidateRoles = candidateTimesNanos.keys,
+                nowNanos = bannerFrameTimestampNanos
+            )
             pruneExpired(pendingCandidates, bannerFrameTimestampNanos)
+            pruneExpired(pendingCandidateHistory, bannerFrameTimestampNanos)
             pendingFlashCandidate = pendingFlashCandidate?.takeIf { (_, timestamp) ->
+                timestamp <= bannerFrameTimestampNanos &&
+                    bannerFrameTimestampNanos - timestamp <= maxConfirmationDelayNanos
+            }
+            pendingBorderlineFlashCandidate = pendingBorderlineFlashCandidate?.takeIf { (_, timestamp) ->
                 timestamp <= bannerFrameTimestampNanos &&
                     bannerFrameTimestampNanos - timestamp <= maxConfirmationDelayNanos
             }
@@ -130,22 +192,39 @@ class RoleUbBannerGate(
                 )
             }
             pruneExpired(pendingCandidates, bannerFrameTimestampNanos)
+            pruneExpired(pendingCandidateHistory, bannerFrameTimestampNanos)
             cycleCandidates.clear()
             cycleCandidates.putAll(pendingCandidates.filterValues { timestamp ->
+                timestamp <= bannerFrameTimestampNanos &&
+                    bannerFrameTimestampNanos - timestamp <= maxConfirmationDelayNanos
+            })
+            cycleCandidateHistory.clear()
+            cycleCandidateHistory.putAll(pendingCandidateHistory.filterValues { timestamp ->
                 timestamp <= bannerFrameTimestampNanos &&
                     bannerFrameTimestampNanos - timestamp <= maxConfirmationDelayNanos
             })
             cycleFlashCandidate = latestFlash(flashRoleTimesNanos)
                 ?.takeIf { (_, timestamp) -> timestamp <= bannerFrameTimestampNanos }
                 ?: pendingFlashCandidate
+            cycleBorderlineFlashCandidate = latestFlash(borderlineFlashRoleTimesNanos)
+                ?.takeIf { (_, timestamp) -> timestamp <= bannerFrameTimestampNanos }
+                ?: pendingBorderlineFlashCandidate
             pendingCandidates.clear()
+            pendingCandidateHistory.clear()
             pendingFlashCandidate = null
+            pendingBorderlineFlashCandidate = null
             cycleConfirmed = false
         }
 
         if (newBannerCycle || wasBannerCycleOpen) {
             cancelQuickRecoveries(
                 candidates = cycleCandidates,
+                currentlyFullRoles = currentlyFullRoles,
+                currentCandidateRoles = candidateTimesNanos.keys,
+                nowNanos = bannerFrameTimestampNanos
+            )
+            cancelQuickRecoveries(
+                candidates = cycleCandidateHistory,
                 currentlyFullRoles = currentlyFullRoles,
                 currentCandidateRoles = candidateTimesNanos.keys,
                 nowNanos = bannerFrameTimestampNanos
@@ -158,10 +237,19 @@ class RoleUbBannerGate(
         val flashConfirmed = cycleFlashCandidate?.takeIf {
             !cycleConfirmed && (newBannerCycle || wasBannerCycleOpen)
         }
+        val borderlineFlashConfirmed = cycleBorderlineFlashCandidate?.takeIf { flash ->
+            !cycleConfirmed &&
+                (newBannerCycle || wasBannerCycleOpen) &&
+                isCorroboratedBorderlineFlash(flash, cycleCandidateHistory)
+        }
         val confirmed = when {
             flashConfirmed != null -> {
                 cycleConfirmed = true
                 mapOf(flashConfirmed.first to flashConfirmed.second)
+            }
+            borderlineFlashConfirmed != null -> {
+                cycleConfirmed = true
+                mapOf(borderlineFlashConfirmed.first to borderlineFlashConfirmed.second)
             }
             !cycleConfirmed && cycleCandidates.size == 1 &&
                 (newBannerCycle || wasBannerCycleOpen) -> {
@@ -174,7 +262,9 @@ class RoleUbBannerGate(
         bannerCycleOpen = bannerRawPresent || bannerActive
         if (!bannerCycleOpen) {
             cycleCandidates.clear()
+            cycleCandidateHistory.clear()
             cycleFlashCandidate = null
+            cycleBorderlineFlashCandidate = null
             bannerCycleStartedAtNanos = null
             cycleConfirmed = false
         }
@@ -184,8 +274,12 @@ class RoleUbBannerGate(
     fun reset() {
         pendingCandidates.clear()
         cycleCandidates.clear()
+        pendingCandidateHistory.clear()
+        cycleCandidateHistory.clear()
         pendingFlashCandidate = null
         cycleFlashCandidate = null
+        pendingBorderlineFlashCandidate = null
+        cycleBorderlineFlashCandidate = null
         bannerCycleOpen = false
         bannerCycleStartedAtNanos = null
         cycleConfirmed = false

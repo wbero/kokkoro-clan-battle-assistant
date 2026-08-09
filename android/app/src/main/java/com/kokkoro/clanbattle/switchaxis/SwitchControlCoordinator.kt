@@ -6,13 +6,14 @@ import com.kokkoro.clanbattle.axis.SwitchAxisNode
 import com.kokkoro.clanbattle.axis.SwitchAxisOpening
 import com.kokkoro.clanbattle.axis.SwitchControlTarget
 import com.kokkoro.clanbattle.control.BattleControlStateMachine
-import com.kokkoro.clanbattle.control.BattleControlObservation
 import com.kokkoro.clanbattle.control.BattleControlState
+import com.kokkoro.clanbattle.control.AuthoritativeControlState
 import com.kokkoro.clanbattle.control.ControlAction
 import com.kokkoro.clanbattle.control.ControlSafetyState
 import com.kokkoro.clanbattle.control.ControlStep
 import com.kokkoro.clanbattle.control.OpeningControlTarget
 import com.kokkoro.clanbattle.control.VisualToggleState
+import com.kokkoro.clanbattle.control.actionsFrom
 import com.kokkoro.clanbattle.recognition.CharacterRole
 
 data class SwitchCoordinatorResult(
@@ -29,18 +30,13 @@ class SwitchControlCoordinator(
     opening: SwitchAxisOpening?,
     nodes: List<SwitchAxisNode>,
     openingGraceSeconds: Int = 0,
-    private val clickIntervalMs: Int = 100
+    private val clickIntervalMs: Int = 100,
+    private val authoritativeControls: AuthoritativeControlState = AuthoritativeControlState()
 ) {
     private var runtime = SwitchAxisRuntime(opening, nodes, openingGraceSeconds)
     private var nodesById = nodes.associateBy(SwitchAxisNode::id)
     private var convergingNodeId: String? = null
     private var convergingTarget: OpeningControlTarget? = null
-    private var batchDispatchedAtMs: Long? = null
-    private var batchActionCount = 0
-    private var batchRetryCount = 0
-    private val dispatchedControlActions = mutableSetOf<ControlAction>()
-    private val confirmedControlActions = mutableSetOf<ControlAction>()
-    private val confirmedActionMismatchFrames = mutableMapOf<ControlAction, Int>()
     private var pauseFrame: SwitchRuntimeCommand.EnterPauseFrame? = null
 
     // Role UB triggers are single-frame pulses. If safety briefly leaves RUNNING
@@ -49,7 +45,12 @@ class SwitchControlCoordinator(
     // Latch each observed role trigger with a wall-clock timestamp and keep
     // replaying it into the frame fed to the runtime until it expires or safety
     // recovers and consumes it.
-    private val recentRoleUbEvents = mutableMapOf<CharacterRole, Long>()
+    private data class RecentRoleUbEvent(
+        val wallMs: Long,
+        val clockSeconds: Int?
+    )
+
+    private val recentRoleUbEvents = mutableMapOf<CharacterRole, RecentRoleUbEvent>()
 
     init {
         require(clickIntervalMs >= 1)
@@ -61,8 +62,7 @@ class SwitchControlCoordinator(
 
     fun update(
         frame: SwitchFrameInput,
-        controlStep: ControlStep,
-        trustworthyObservation: BattleControlObservation? = null
+        controlStep: ControlStep
     ): SwitchCoordinatorResult {
         latchRoleUbEvents(frame)
 
@@ -74,7 +74,7 @@ class SwitchControlCoordinator(
         }
 
         if (convergingNodeId != null) {
-            advanceConvergence(frame, controlStep, trustworthyObservation)?.let { return it }
+            advanceConvergence(controlStep)?.let { return it }
         }
 
         val replayedFrame = frame.withReplayedRoleUbEvents()
@@ -85,20 +85,32 @@ class SwitchControlCoordinator(
                 pauseFrame = command
                 result()
             }
+            is SwitchRuntimeCommand.MissedCharacterUb -> {
+                val reason =
+                    "switch-character-ub-missed:${command.nodeId}:${command.role.name}:" +
+                        "${command.expectedClockSeconds}->${command.observedClockSeconds}"
+                stateMachine.forceSafety(reason)
+                result(stateMachine.snapshot(reason))
+            }
             is SwitchRuntimeCommand.Converge -> {
                 pauseFrame = null
                 convergingNodeId = command.nodeId
                 convergingTarget = command.target.toControlTarget()
-                batchDispatchedAtMs = null
-                batchActionCount = 0
-                batchRetryCount = 0
                 stateMachine.clearDesired()
                 if (nodesById[command.nodeId]?.trigger is CharacterUbTrigger) {
                     recentRoleUbEvents.clear()
                 }
-                advanceConvergence(frame, controlStep, trustworthyObservation) ?: result(controlStep)
+                advanceConvergence(controlStep) ?: result(controlStep)
             }
         }
+    }
+
+    fun seedControlState(state: BattleControlState?) {
+        authoritativeControls.seedIfAbsent(state)
+    }
+
+    fun resetControlState() {
+        authoritativeControls.reset()
     }
 
     fun confirmPauseFrame(nodeId: String) {
@@ -117,6 +129,7 @@ class SwitchControlCoordinator(
         openingGraceSeconds: Int = 0
     ) {
         stateMachine.clearDesired()
+        authoritativeControls.reset()
         runtime = SwitchAxisRuntime(opening, nodes, openingGraceSeconds)
         nodesById = nodes.associateBy(SwitchAxisNode::id)
         clearConvergence()
@@ -124,132 +137,61 @@ class SwitchControlCoordinator(
         recentRoleUbEvents.clear()
     }
 
-    private fun advanceConvergence(
-        frame: SwitchFrameInput,
-        controlStep: ControlStep,
-        trustworthyObservation: BattleControlObservation?
-    ): SwitchCoordinatorResult? {
+    private fun advanceConvergence(controlStep: ControlStep): SwitchCoordinatorResult? {
         val nodeId = convergingNodeId ?: return null
         val target = convergingTarget ?: return null
-        val current = controlStep.observed
+        val current = authoritativeControls.snapshot() ?: return result(controlStep)
 
-        if (current != null && target.matches(current)) {
+        if (target.matches(current)) {
             runtime.confirmConvergence(nodeId)
             clearConvergence()
             return null
         }
 
-        observeDispatchedActionResults(
-            observation = trustworthyObservation,
-            target = target,
-            allowMismatchConfirmation = controlStep.reason == "no-control-target"
-        )
-
-        if (!frame.controlsTrustworthy || current == null) {
-            return result(controlStep)
-        }
-
-        val dispatchedAt = batchDispatchedAtMs
-        if (dispatchedAt == null) {
-            val actions = target.actionsFrom(current)
-            if (actions.isEmpty()) return result(controlStep)
-            markBatchDispatched(frame.wallMs, actions)
-            return result(controlStep, actions)
-        }
-
-        val confirmationDeadline = dispatchedAt + BATCH_CONFIRM_TIMEOUT_MS +
-            (batchActionCount - 1).coerceAtLeast(0) * clickIntervalMs.toLong()
-        if (frame.wallMs < confirmationDeadline) {
-            return result(controlStep)
-        }
-
-        // A UB banner/tail can leave the last trustworthy control snapshot stale.
-        // Initial clicks are allowed immediately at the trigger synchronization
-        // point, but retries must wait for a normal fresh observation frame.
-        if (controlStep.reason != "no-control-target") {
-            return result(controlStep)
-        }
-
-        val remaining = target.actionsFrom(current)
-        val retryable = remaining.filterNot { it in confirmedControlActions }
-        if (remaining.isEmpty()) return result(controlStep)
-        if (retryable.isEmpty()) return result(controlStep)
-        if (batchRetryCount >= BATCH_MAX_RETRIES) {
-            val reason = "switch-batch-confirmation-failed:$nodeId"
-            stateMachine.forceSafety(reason)
-            return result(stateMachine.snapshot(reason))
-        }
-
-        batchRetryCount++
-        markBatchDispatched(frame.wallMs, retryable)
-        return result(controlStep, retryable)
-    }
-
-    private fun markBatchDispatched(nowMs: Long, actions: List<ControlAction>) {
-        batchDispatchedAtMs = nowMs
-        batchActionCount = actions.size
-        dispatchedControlActions += actions
-    }
-
-    /**
-     * Switch batches bypass the sequential state-machine click confirmation, so a UB
-     * visual hold can keep [ControlStep.observed] on the pre-click state even after a
-     * control has visibly reached its target. Remember that stronger per-control
-     * evidence. A brief animation-obscured reverse read must not cause a second tap
-     * that would undo the successful first tap.
-     *
-     * A remembered success is released only after the opposite state is seen on
-     * several consecutive normal (non-hold) trustworthy frames. That keeps genuine
-     * click failures recoverable without reacting to a one-frame SET badge occlusion.
-     */
-    private fun observeDispatchedActionResults(
-        observation: BattleControlObservation?,
-        target: OpeningControlTarget,
-        allowMismatchConfirmation: Boolean
-    ) {
-        val state = observation?.toState() ?: return
-        dispatchedControlActions.forEach { action ->
-            if (target.actionMatches(action, state)) {
-                confirmedControlActions += action
-                confirmedActionMismatchFrames.remove(action)
-            } else if (action in confirmedControlActions) {
-                if (!allowMismatchConfirmation) {
-                    confirmedActionMismatchFrames.remove(action)
-                    return@forEach
-                }
-                val frames = (confirmedActionMismatchFrames[action] ?: 0) + 1
-                if (frames >= CONFIRMED_ACTION_MISMATCH_FRAMES) {
-                    confirmedControlActions -= action
-                    confirmedActionMismatchFrames.remove(action)
-                } else {
-                    confirmedActionMismatchFrames[action] = frames
-                }
-            }
-        }
+        val actions = target.actionsFrom(current)
+        if (actions.isEmpty()) return result(controlStep)
+        authoritativeControls.apply(actions)
+        // Internal state is the control truth after automatic toggles.  Do not
+        // wait for animation-corrupted SET templates before releasing the node;
+        // visual recognition is an independent desync audit in FrameProcessor.
+        runtime.confirmConvergence(nodeId)
+        clearConvergence()
+        return result(controlStep, actions)
     }
 
     private fun clearConvergence() {
         convergingNodeId = null
         convergingTarget = null
-        batchDispatchedAtMs = null
-        batchActionCount = 0
-        batchRetryCount = 0
-        dispatchedControlActions.clear()
-        confirmedControlActions.clear()
-        confirmedActionMismatchFrames.clear()
     }
 
     private fun latchRoleUbEvents(frame: SwitchFrameInput) {
-        frame.triggeredRoles.forEach { role -> recentRoleUbEvents[role] = frame.wallMs }
-        recentRoleUbEvents.entries.removeIf { (_, atMs) -> frame.wallMs - atMs > ROLE_UB_EVENT_TTL_MS }
+        frame.triggeredRoles.forEach { role ->
+            recentRoleUbEvents[role] = RecentRoleUbEvent(
+                wallMs = frame.wallMs,
+                clockSeconds = frame.triggeredRoleClockSeconds[role] ?: frame.clockSeconds
+            )
+        }
+        recentRoleUbEvents.entries.removeIf { (_, event) ->
+            frame.wallMs - event.wallMs > ROLE_UB_EVENT_TTL_MS
+        }
     }
 
-    private fun SwitchFrameInput.withReplayedRoleUbEvents(): SwitchFrameInput =
-        if (recentRoleUbEvents.isEmpty()) {
-            this
-        } else {
-            copy(triggeredRoles = triggeredRoles + recentRoleUbEvents.keys)
+    private fun SwitchFrameInput.withReplayedRoleUbEvents(): SwitchFrameInput {
+        if (recentRoleUbEvents.isEmpty()) return this
+        val activeNodeTime = runtime.snapshot().nodeId
+            ?.let(nodesById::get)
+            ?.timeSeconds
+        val replayed = recentRoleUbEvents.filterValues { event ->
+            event.clockSeconds == clockSeconds ||
+                (activeNodeTime != null && event.clockSeconds == activeNodeTime)
         }
+        if (replayed.isEmpty()) return this
+        return copy(
+            triggeredRoles = triggeredRoles + replayed.keys,
+            triggeredRoleClockSeconds = triggeredRoleClockSeconds +
+                replayed.mapValues { (_, event) -> event.clockSeconds }
+        )
+    }
 
     private fun result(
         controlStep: ControlStep = stateMachine.snapshot(),
@@ -283,61 +225,7 @@ class SwitchControlCoordinator(
         return true
     }
 
-    private fun OpeningControlTarget.actionsFrom(current: BattleControlState): List<ControlAction> {
-        val actions = mutableListOf<ControlAction>()
-        roles?.let { wantedRoles ->
-            val allWantedOn = wantedRoles.values.all { it == VisualToggleState.ON }
-            val allWantedOff = wantedRoles.values.all { it == VisualToggleState.OFF }
-            when {
-                allWantedOn && current.globalSet == VisualToggleState.OFF ->
-                    actions += ControlAction.TapGlobalSet
-                allWantedOff && current.globalSet == VisualToggleState.ON ->
-                    actions += ControlAction.TapGlobalSet
-                else -> CharacterRole.entries.forEach { role ->
-                    if (current.roles.getValue(role) != wantedRoles.getValue(role)) {
-                        actions += ControlAction.TapRole(role)
-                    }
-                }
-            }
-        }
-        auto?.let { wanted ->
-            if (current.auto != wanted) actions += ControlAction.TapAuto
-        }
-        return actions
-    }
-
-    private fun OpeningControlTarget.actionMatches(
-        action: ControlAction,
-        current: BattleControlState
-    ): Boolean {
-        return when (action) {
-            ControlAction.TapAuto -> auto == null || current.auto == auto
-            ControlAction.TapGlobalSet -> {
-                val wantedRoles = roles ?: return true
-                val wantedGlobal = when {
-                    wantedRoles.values.all { it == VisualToggleState.ON } -> VisualToggleState.ON
-                    wantedRoles.values.all { it == VisualToggleState.OFF } -> VisualToggleState.OFF
-                    else -> return false
-                }
-                current.globalSet == wantedGlobal &&
-                    CharacterRole.entries.all { role -> current.roles.getValue(role) == wantedRoles.getValue(role) }
-            }
-            is ControlAction.TapRole -> roles?.get(action.role) == current.roles.getValue(action.role)
-            ControlAction.None,
-            ControlAction.TapMenu -> true
-        }
-    }
-
-    private fun BattleControlObservation.toState() = BattleControlState(
-        auto = auto.state,
-        globalSet = globalSet.state,
-        roles = roles.mapValues { it.value.state }
-    )
-
     private companion object {
         const val ROLE_UB_EVENT_TTL_MS = 3000L
-        const val BATCH_CONFIRM_TIMEOUT_MS = 1000L
-        const val BATCH_MAX_RETRIES = 1
-        const val CONFIRMED_ACTION_MISMATCH_FRAMES = 3
     }
 }

@@ -18,8 +18,10 @@ import com.kokkoro.clanbattle.axis.AxisLibrary
 import com.kokkoro.clanbattle.axis.AxisParser
 import com.kokkoro.clanbattle.axis.AxisType
 import com.kokkoro.clanbattle.axis.ActionType
+import com.kokkoro.clanbattle.axis.roleUbSkillNames
 import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.control.AndroidControlTemplateLoader
+import com.kokkoro.clanbattle.control.AuthoritativeControlState
 import com.kokkoro.clanbattle.control.BattleControlObservation
 import com.kokkoro.clanbattle.control.BattleControlRecognizer
 import com.kokkoro.clanbattle.control.BattleControlObservationFilter
@@ -33,6 +35,7 @@ import com.kokkoro.clanbattle.control.FilteredControlObservation
 import com.kokkoro.clanbattle.control.ControlStep
 import com.kokkoro.clanbattle.control.CoordinatedActionStep
 import com.kokkoro.clanbattle.control.OpeningControlTarget
+import com.kokkoro.clanbattle.control.toControlState
 import com.kokkoro.clanbattle.control.VerifiedActionCoordinator
 import com.kokkoro.clanbattle.control.VisualToggleState
 import com.kokkoro.clanbattle.recognition.AndroidTemplateLoader
@@ -48,6 +51,7 @@ import com.kokkoro.clanbattle.recognition.UbBannerDetector
 import com.kokkoro.clanbattle.recognition.RoleUbBannerGate
 import com.kokkoro.clanbattle.recognition.RoleUbFlashDetection
 import com.kokkoro.clanbattle.recognition.RoleUbFlashDetector
+import com.kokkoro.clanbattle.recognition.AndroidUbSkillNameRecognizer
 import com.kokkoro.clanbattle.scheduler.GameStateDetector
 import com.kokkoro.clanbattle.scheduler.GameState
 import com.kokkoro.clanbattle.scheduler.BossUbDetector
@@ -63,13 +67,13 @@ import com.kokkoro.clanbattle.switchaxis.SwitchControlCoordinator
 import com.kokkoro.clanbattle.switchaxis.SwitchFrameInput
 import java.util.Locale
 import java.util.concurrent.CancellationException
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 
 data class FrameStatus(
     val text: String,
@@ -98,6 +102,35 @@ fun actionExecutionBlockReason(dryRun: Boolean, accessibilityConnected: Boolean)
     !accessibilityConnected -> "无障碍服务未启用，点击不会执行"
     else -> null
 }
+
+internal fun shouldSeedAuthoritativeControls(
+    axisType: AxisType,
+    battleRunning: Boolean,
+    sessionReady: Boolean,
+    openingControlsConfirmed: Boolean
+): Boolean =
+    battleRunning &&
+        sessionReady &&
+        (axisType == AxisType.SWITCH || openingControlsConfirmed)
+
+internal fun shouldAuditAuthoritativeControls(
+    nowMs: Long,
+    holdUntilMs: Long,
+    verifyUntilMs: Long,
+    battleRunning: Boolean,
+    controlsTrustworthy: Boolean,
+    controlFrameHasUbEvidence: Boolean,
+    holdControlsForUbBanner: Boolean,
+    characterUbActive: Boolean
+): Boolean =
+    battleRunning &&
+        controlsTrustworthy &&
+        !controlFrameHasUbEvidence &&
+        !holdControlsForUbBanner &&
+        !characterUbActive &&
+        verifyUntilMs > holdUntilMs &&
+        nowMs > holdUntilMs &&
+        nowMs <= verifyUntilMs
 
 fun accessibilityGestureFailureMessage(event: GestureDispatchEvent): String = when (event.status) {
     GestureDispatchStatus.CANCELLED -> "无障碍点击被系统取消，请重新开启无障碍服务"
@@ -242,7 +275,8 @@ private data class ParallelFrameRecognition(
     val energy: EnergyDetectionResult?,
     val controls: ControlDetection?,
     val ubBanner: UbBannerDetection,
-    val roleUbFlash: RoleUbFlashDetection
+    val roleUbFlash: RoleUbFlashDetection,
+    val ubBannerImage: PixelImage?
 )
 
 private data class SwitchDiagnosticContext(
@@ -272,9 +306,10 @@ class FrameProcessor(
     // frames. One state-machine confirmation is therefore enough here and saves
     // one full recognition cycle between dependent SET/AUTO clicks.
     private val controlStateMachine = BattleControlStateMachine(requiredConfirmationFrames = 1)
+    private val authoritativeControls = AuthoritativeControlState()
     private val actionCoordinator = VerifiedActionCoordinator(
         controlStateMachine,
-        AppPreferences.roleSetFallbackGraceMs(appContext).toLong()
+        authoritativeControls
     )
     private val filter = RecognitionFilter(
         minConfidence = REAL_DEVICE_CLOCK_MIN_CONFIDENCE,
@@ -289,6 +324,7 @@ class FrameProcessor(
     )
     private val roleUbBannerGate = RoleUbBannerGate()
     private val roleUbFlashDetector = RoleUbFlashDetector()
+    private val ubSkillNameRecognizer = AndroidUbSkillNameRecognizer()
     // TP 采样与完整识别解耦：满 TP 可能只存在一帧（快充 UB），
     // 而完整识别一轮约 60ms，靠它采样会漏掉大部分快充事件。
     private val energyLock = Any()
@@ -304,10 +340,10 @@ class FrameProcessor(
     private val bossUbDetector = BossUbDetector(
         earlyConfirmationHoldMs = AppPreferences.bossUbEarlyConfirmationHoldMs(appContext).toLong()
     )
-    private val pendingGestureFailure = AtomicReference<GestureDispatchEvent?>(null)
+    private val pendingGestureFailures = ConcurrentLinkedQueue<GestureDispatchEvent>()
     private val executor = ActionExecutor(appContext, messageCallback) { event ->
         if (event.status != GestureDispatchStatus.COMPLETED) {
-            pendingGestureFailure.compareAndSet(null, event)
+            pendingGestureFailures.add(event)
         }
     }
     private val recognitionThreadId = AtomicInteger(0)
@@ -340,12 +376,18 @@ class FrameProcessor(
     // "before battle opening". Keep the last filtered clock only for display;
     // execution continues to use the current filtered result/runtime state.
     private var lastActionPreviewClockSeconds: Int? = null
-    private val pendingSwitchRoleUbEvents = mutableSetOf<CharacterRole>()
+    private val pendingSwitchRoleUbEvents = mutableMapOf<CharacterRole, Int?>()
     // UB animation can cover all SET/AUTO badges for a short, expected window.
     // Hold the last trustworthy control state during that window instead of
     // turning the animation into an automatic safety pause.
     private var controlTransientHoldUntilMs = 0L
     private var ubBannerHoldUntilMs = 0L
+    // Internal SET/AUTO state is updated when an automatic tap is queued.  Give
+    // the game and the visual recognizer a short settling window before using
+    // templates as a desync audit.  The audit itself is also bounded: ordinary
+    // battle frames are too noisy to continuously police deterministic state.
+    private var controlAuthorityAuditHoldUntilMs = 0L
+    private var controlAuthorityAuditVerifyUntilMs = 0L
     @Volatile private var roleTapSafe = false
     // Tracks whether the switch-axis runtime is currently busy (node armed,
     // converging, or pause-frame entered) so that the safety gate can hold
@@ -374,19 +416,21 @@ class FrameProcessor(
         ubBannerDetector.reset()
         roleUbFlashDetector.reset()
         roleUbBannerGate.reset()
+        ubSkillNameRecognizer.reset()
         gameStateDetector.reset()
         bossUbDetector.configureEarlyConfirmationHoldMs(
             AppPreferences.bossUbEarlyConfirmationHoldMs(appContext).toLong()
         )
         bossUbDetector.reset()
         controlStateMachine.reset()
+        authoritativeControls.reset()
+        pendingGestureFailures.clear()
         controlObservationFilter.reset()
         controlObservationSafetyGate.reset()
         controlTransientHoldUntilMs = 0L
         ubBannerHoldUntilMs = 0L
-        actionCoordinator.configureRoleSetFallbackGraceMs(
-            AppPreferences.roleSetFallbackGraceMs(appContext).toLong()
-        )
+        controlAuthorityAuditHoldUntilMs = 0L
+        controlAuthorityAuditVerifyUntilMs = 0L
         actionCoordinator.reset()
         installAxis(document)
         controlStateMachine.setDesired(openingControlTarget)
@@ -528,18 +572,34 @@ class FrameProcessor(
             visualObstruction = rawEnergy?.visualObstruction == true,
             captureTimestampNanos = captureTimestampNanos
         )
+        val nearFullFallbackCandidateTimes = slowFrameNearFullReleaseFallbackCandidates(
+            previous = previousSlowEnergyCharacters,
+            current = rawEnergy?.characters,
+            dropThreshold = AppPreferences.energyDropThreshold(appContext),
+            visualObstruction = rawEnergy?.visualObstruction == true,
+            captureTimestampNanos = captureTimestampNanos
+        )
         // A slow-frame full->low transition is stronger evidence than raw
         // high-frequency candidates accumulated since the previous slow frame.
         // If both sources agree on at least one role, keep only those
         // corroborated strong roles; otherwise retain the slow fallback so it
         // can still rescue a detector miss. This prevents an animation-induced
         // later false candidate from stealing the following skill-name banner.
-        val rawCandidateTimes = prioritizeRoleUbCandidates(
+        val prioritizedCandidateTimes = prioritizeRoleUbCandidates(
             detectorCandidateTimes,
             slowFallbackCandidateTimes
         )
+        // A real UB can be captured at ~0.90 instead of "full" on some phones.
+        // Keep those high->low roles as additional members of the same slow-frame
+        // cohort instead of lowering EnergyDetector's global full threshold.
+        // RoleUbBannerGate will still require a new banner and can cancel a
+        // neighbour that immediately recovers.
+        val rawCandidateTimes = prioritizedCandidateTimes +
+            nearFullFallbackCandidateTimes.filterKeys { it !in prioritizedCandidateTimes }
+        val diagnosticSlowFallbackCandidateTimes =
+            slowFallbackCandidateTimes + nearFullFallbackCandidateTimes
         previousSlowEnergyCharacters = rawEnergy?.characters
-        val confirmedRoleTimes = roleUbBannerGate.update(
+        val legacyConfirmedRoleTimes = roleUbBannerGate.update(
             candidateTimesNanos = rawCandidateTimes,
             currentlyFullRoles = rawEnergy?.characters
                 ?.filterValues { state -> state.isFull }
@@ -550,9 +610,37 @@ class FrameProcessor(
             bannerFrameTimestampNanos = captureTimestampNanos,
             flashRoleTimesNanos = roleUbFlash.role
                 ?.let { role -> mapOf(role to captureTimestampNanos) }
+                .orEmpty(),
+            borderlineFlashRoleTimesNanos = roleUbFlash.borderlineRole
+                ?.takeIf { roleUbFlash.role == null }
+                ?.let { role -> mapOf(role to captureTimestampNanos) }
                 .orEmpty()
         )
+        val skillNameDetection = ubSkillNameRecognizer.update(
+            bannerImage = parallelRecognition.ubBannerImage,
+            bannerRawPresent = ubBanner.rawPresent,
+            bannerActive = ubBanner.active,
+            captureTimestampNanos = captureTimestampNanos,
+            gameClockSeconds = recognition.timeSeconds.takeIf { recognition.ok }
+                ?: lastActionPreviewClockSeconds
+        )
+        // With any 角色NUB metadata configured, banner text is authoritative for
+        // character identity. TP/portrait evidence stays active only for early
+        // control freezing and diagnostics; it cannot override the skill name.
+        val confirmedRoleTimes = if (ubSkillNameRecognizer.configured) {
+            skillNameDetection
+                ?.role
+                ?.let { role -> mapOf(role to skillNameDetection.captureTimestampNanos) }
+                .orEmpty()
+        } else {
+            legacyConfirmedRoleTimes
+        }
+        val confirmedRoleClockSeconds = skillNameDetection
+            ?.role
+            ?.let { role -> mapOf(role to skillNameDetection.gameClockSeconds) }
+            .orEmpty()
         val energy = rawEnergy?.withConfirmedRoleUbEvents(confirmedRoleTimes)
+        val confirmedTriggeredRoles = confirmedRoleTimes.keys
         if (ubBanner.rawPresent || ubBanner.active) {
             ubBannerHoldUntilMs = maxOf(ubBannerHoldUntilMs, start + UB_BANNER_CONTROL_TAIL_MS)
         }
@@ -563,12 +651,21 @@ class FrameProcessor(
         val controls = filteredControls.observation
         val trustworthyControls = controls.takeIf { filteredControls.trustworthy }
         roleTapSafe = filteredControls.trustworthy && menuScore >= MENU_TRUST_THRESHOLD
+        val controlFrameHasUbEvidence =
+            rawCandidateTimes.isNotEmpty() ||
+                roleUbFlash.borderlineRole != null ||
+                ubBanner.rawPresent ||
+                ubBanner.active ||
+                rawEnergy?.visualObstruction == true
         // 画未经跨帧过滤的原始观察：调试时需要看到识别器当帧真正读到什么，
         // 而不是被过滤器锁住的旧稳定状态。
         publishDebugOverlay(image, controlDetection?.observation, energy, ubBanner)
         if (!sessionGate.shouldEvaluate(recognition.timeSeconds)) {
             if (axis.type == AxisType.SWITCH && !sessionGate.isWaiting()) {
-                pendingSwitchRoleUbEvents += energy?.triggeredRoles.orEmpty()
+                val eventClockSeconds = recognition.timeSeconds ?: lastActionPreviewClockSeconds
+                confirmedTriggeredRoles.forEach { role ->
+                    pendingSwitchRoleUbEvents[role] = confirmedRoleClockSeconds[role] ?: eventClockSeconds
+                }
             }
             if (debugEnabled) recorder().record(
                 currentFrameId,
@@ -580,8 +677,9 @@ class FrameProcessor(
                 energy,
                 ubBanner,
                 roleUbFlash,
+                skillNameDetection,
                 rawTpCandidateRoles = rawCandidateTimes.keys,
-                slowTpFallbackRoles = slowFallbackCandidateTimes.keys
+                slowTpFallbackRoles = diagnosticSlowFallbackCandidateTimes.keys
             )
             val elapsed = SystemClock.elapsedRealtime() - start
             statusCallback(
@@ -607,29 +705,40 @@ class FrameProcessor(
             energy,
             ubBanner,
             roleUbFlash,
+            skillNameDetection,
             rawTpCandidateRoles = rawCandidateTimes.keys,
-            slowTpFallbackRoles = slowFallbackCandidateTimes.keys
+            slowTpFallbackRoles = diagnosticSlowFallbackCandidateTimes.keys
         )
         val usable = filtered.accepted || filtered.reason == "same-time"
         val sessionReady = usable && sessionGate.onAccepted(filtered.timeSeconds)
         val battleRunning = !sessionGate.isWaiting()
-        val triggeredRoles = energy?.triggeredRoles.orEmpty()
+        if (
+            shouldSeedAuthoritativeControls(
+                axisType = axis.type,
+                battleRunning = battleRunning,
+                sessionReady = sessionReady,
+                openingControlsConfirmed = openingControlsConfirmed
+            ) &&
+            filteredControls.trustworthy &&
+            !controlFrameHasUbEvidence
+        ) {
+            // Never seed from a pre-battle/loading template frame.  For switch
+            // axes the first executable clock/control frame establishes truth;
+            // sequence axes wait until their explicit opening target is done.
+            authoritativeControls.seedIfAbsent(trustworthyControls?.toControlState())
+        }
+        val triggeredRoles = confirmedTriggeredRoles
         if (axis.type == AxisType.SWITCH && battleRunning) {
-            pendingSwitchRoleUbEvents += triggeredRoles
+            val eventClockSeconds = filtered.timeSeconds ?: lastActionPreviewClockSeconds
+            triggeredRoles.forEach { role ->
+                pendingSwitchRoleUbEvents[role] = confirmedRoleClockSeconds[role] ?: eventClockSeconds
+            }
         }
         val switchTriggeredRoles = if (axis.type == AxisType.SWITCH) {
-            pendingSwitchRoleUbEvents.toSet()
+            pendingSwitchRoleUbEvents.keys.toSet()
         } else {
             triggeredRoles
         }
-        val tpBelowThresholdRoles = energy?.characters
-            ?.filterValues { it.blueRatio < AppPreferences.energyDropThreshold(appContext) }
-            ?.keys
-            .orEmpty()
-        val tpFullRoles = energy?.characters
-            ?.filterValues { it.isFull }
-            ?.keys
-            .orEmpty()
         val acceptedClockSeconds = filtered.timeSeconds.takeIf { usable }
         val gameState = if (battleRunning) {
             gameStateDetector.update(acceptedClockSeconds, energy)
@@ -650,14 +759,39 @@ class FrameProcessor(
         if (gameState != null && !gameState.isCharacterUbActive()) {
             controlTransientHoldUntilMs = 0L
         }
+        val authorityAuditAllowed = shouldAuditAuthoritativeControls(
+            nowMs = start,
+            holdUntilMs = controlAuthorityAuditHoldUntilMs,
+            verifyUntilMs = controlAuthorityAuditVerifyUntilMs,
+            battleRunning = battleRunning,
+            controlsTrustworthy = filteredControls.trustworthy,
+            controlFrameHasUbEvidence = controlFrameHasUbEvidence,
+            holdControlsForUbBanner = holdControlsForUbBanner,
+            characterUbActive = gameState.isCharacterUbActive()
+        )
+        val authorityAudit = authoritativeControls.audit(
+            visual = trustworthyControls?.toControlState(),
+            allowed = authorityAuditAllowed
+        )
+        if (
+            authorityAuditAllowed &&
+            authorityAudit.expected != null &&
+            authorityAudit.expected == authorityAudit.visual
+        ) {
+            // One clean matching observation proves the just-issued click batch.
+            // Stop auditing until another automatic control action is dispatched.
+            controlAuthorityAuditVerifyUntilMs = 0L
+        }
+        if (authorityAudit.desynchronized) {
+            val reason = "control-state-desync"
+            controlStateMachine.forceSafety(reason)
+            messageCallback("SET/AUTO 与内部状态连续不一致，已安全暂停")
+        }
         if (battleRunning && axis.type == AxisType.SEQUENCE) {
             actionCoordinator.observeFrame(
                 triggeredRoles,
                 acceptedClockSeconds,
-                start,
-                tpBelowThresholdRoles,
-                tpFullRoles,
-                energy?.visualObstruction == true
+                start
             )
             sequenceRuntime?.observeRoleUbEvents(triggeredRoles)
         }
@@ -665,9 +799,11 @@ class FrameProcessor(
         val detectedBossUb = if (sessionReady && menuScore >= MENU_TRUST_THRESHOLD) {
             bossUbDetector.update(
                 requireNotNull(filtered.timeSeconds),
-                energy?.triggeredRoles.orEmpty(),
+                triggeredRoles,
                 start,
-                energy?.visualObstruction == true
+                // A matched skill name is authoritative character-UB evidence
+                // even while the TP strip is visually obstructed by that UB.
+                visualObstruction = energy?.visualObstruction == true && skillNameDetection?.role == null
             )
         } else {
             null
@@ -681,7 +817,13 @@ class FrameProcessor(
         }
         val bossUbEvent = bossUbDetector.latestEvent(start)
 
-        pendingGestureFailure.getAndSet(null)?.let { failure ->
+        var firstGestureFailure: GestureDispatchEvent? = null
+        while (true) {
+            val failure = pendingGestureFailures.poll() ?: break
+            firstGestureFailure = firstGestureFailure ?: failure
+            failure.controlAction?.let(authoritativeControls::rollback)
+        }
+        firstGestureFailure?.let { failure ->
             val reason = "accessibility-gesture-${failure.status.name.lowercase(Locale.US)}"
             controlStateMachine.abandonPendingAction(reason)
             controlStateMachine.forceSafety(reason)
@@ -716,10 +858,10 @@ class FrameProcessor(
                             triggeredRoles = switchTriggeredRoles,
                             controlsTrustworthy = controlsTrustworthy,
                             wallMs = start,
-                            bossUbEvent = bossUbEvent
+                            bossUbEvent = bossUbEvent,
+                            triggeredRoleClockSeconds = pendingSwitchRoleUbEvents.toMap()
                         ),
-                        controlStep,
-                        trustworthyObservation = trustworthyControls.takeIf { controlsTrustworthy }
+                        controlStep
                     )
                     executor.executeControlActions(
                         coordinated.controlActions,
@@ -727,6 +869,13 @@ class FrameProcessor(
                         image.height,
                         axis.clickIntervalMs
                     )
+                    if (coordinated.controlActions.isNotEmpty()) {
+                        armControlAuthorityAudit(
+                            nowMs = start,
+                            actionCount = coordinated.controlActions.size,
+                            clickIntervalMs = axis.clickIntervalMs
+                        )
+                    }
                     pendingSwitchRoleUbEvents.clear()
                     switchAxisBusy = coordinated.busy
                     activeNodeId = coordinated.activeNodeId
@@ -777,10 +926,7 @@ class FrameProcessor(
                         controlStep,
                         start,
                         triggeredRoles,
-                        acceptedClockSeconds,
-                        tpBelowThresholdRoles,
-                        tpFullRoles,
-                        energy?.visualObstruction == true
+                        acceptedClockSeconds
                     )
                     sequenceProgress = coordinated
                     executeControlAction(coordinated.newControlAction, image.width, image.height)
@@ -830,10 +976,7 @@ class FrameProcessor(
                                     controlStep,
                                     start,
                                     triggeredRoles,
-                                    filtered.timeSeconds,
-                                    tpBelowThresholdRoles,
-                                    tpFullRoles,
-                                    energy?.visualObstruction == true
+                                    filtered.timeSeconds
                                 )
                                 sequenceProgress = coordinated
                                 executeControlAction(coordinated.newControlAction, image.width, image.height)
@@ -958,8 +1101,12 @@ class FrameProcessor(
         gameStateDetector.reset()
         controlStateMachine.abandonPendingAction()
         actionCoordinator.restartAfterRecognitionPause()
+        authoritativeControls.reset()
+        pendingGestureFailures.clear()
         sequenceRuntime?.clearRecognitionEvidence()
         switchCoordinator?.clearRecognitionEvidence()
+        controlAuthorityAuditHoldUntilMs = 0L
+        controlAuthorityAuditVerifyUntilMs = 0L
         switchAxisBusy = false
         roleTapSafe = false
     }
@@ -989,6 +1136,7 @@ class FrameProcessor(
         // Let the at-most-three current ROI tasks finish. shutdownNow() can remove
         // a queued Future before it starts and leave the capture thread waiting on it.
         recognitionExecutor.shutdown()
+        ubSkillNameRecognizer.close()
         executor.close()
         recorder?.close()
         recorder = null
@@ -1003,6 +1151,7 @@ class FrameProcessor(
     private fun installAxis(document: AxisDocument) {
         axis = document
         actionCoordinator.configureRoleAliases(document.header)
+        ubSkillNameRecognizer.configure(document.roleUbSkillNames())
         activeAxisId = AppPreferences.selectedAxisId(appContext).orEmpty()
         openingControlTarget = if (document.type == AxisType.SEQUENCE) {
             OpeningControlTarget.from(document)
@@ -1020,7 +1169,8 @@ class FrameProcessor(
                 opening = document.switchOpenings.singleOrNull(),
                 nodes = document.switchNodes,
                 openingGraceSeconds = OPENING_GRACE_SECONDS,
-                clickIntervalMs = document.clickIntervalMs
+                clickIntervalMs = document.clickIntervalMs,
+                authoritativeControls = authoritativeControls
             )
         } else {
             null
@@ -1279,7 +1429,8 @@ class FrameProcessor(
                 energy = null,
                 controls = null,
                 ubBanner = UbBannerDetection(active = false, score = 0.0, rawPresent = false),
-                roleUbFlash = RoleUbFlashDetection.empty()
+                roleUbFlash = RoleUbFlashDetection.empty(),
+                ubBannerImage = ubBannerImage
             )
         }
 
@@ -1291,7 +1442,8 @@ class FrameProcessor(
             ubBanner = awaitOrNull(ubBannerFuture)
                 ?: UbBannerDetection(active = false, score = 0.0, rawPresent = false),
             roleUbFlash = awaitOrNull(roleUbFlashFuture)
-                ?: RoleUbFlashDetection.empty()
+                ?: RoleUbFlashDetection.empty(),
+            ubBannerImage = ubBannerImage
         )
     }
 
@@ -1571,6 +1723,17 @@ class FrameProcessor(
         }
 
     private fun executeControlAction(action: ControlAction, width: Int, height: Int) {
+        if (
+            action == ControlAction.TapAuto ||
+            action == ControlAction.TapGlobalSet ||
+            action is ControlAction.TapRole
+        ) {
+            armControlAuthorityAudit(
+                nowMs = SystemClock.elapsedRealtime(),
+                actionCount = 1,
+                clickIntervalMs = 0
+            )
+        }
         when (action) {
             ControlAction.TapAuto -> executor.tapAuto(width, height)
             ControlAction.TapGlobalSet -> executor.tapGlobalSet(width, height)
@@ -1578,6 +1741,21 @@ class FrameProcessor(
             ControlAction.TapMenu -> executor.tapMenu(width, height)
             ControlAction.None -> Unit
         }
+    }
+
+    private fun armControlAuthorityAudit(
+        nowMs: Long,
+        actionCount: Int,
+        clickIntervalMs: Int
+    ) {
+        if (actionCount <= 0) return
+        val holdUntil = nowMs + CONTROL_AUTHORITY_AUDIT_SETTLE_MS +
+            (actionCount - 1).coerceAtLeast(0) * clickIntervalMs.toLong()
+        controlAuthorityAuditHoldUntilMs = maxOf(controlAuthorityAuditHoldUntilMs, holdUntil)
+        controlAuthorityAuditVerifyUntilMs = maxOf(
+            controlAuthorityAuditVerifyUntilMs,
+            holdUntil + CONTROL_AUTHORITY_AUDIT_VERIFY_MS
+        )
     }
 
     /** 叠加层关闭时不做任何几何计算，保证正常运行路径零额外开销。 */
@@ -1782,6 +1960,8 @@ class FrameProcessor(
         const val UB_CONTROL_MAX_HOLD_MS = 8_000L
         const val RECOGNITION_WORKER_COUNT = 4
         const val UB_BANNER_CONTROL_TAIL_MS = 750L
+        const val CONTROL_AUTHORITY_AUDIT_SETTLE_MS = 1_000L
+        const val CONTROL_AUTHORITY_AUDIT_VERIFY_MS = 1_500L
 
         fun emptyAxis() = AxisDocument(AxisType.SEQUENCE, 100, emptyMap(), emptyList())
     }
@@ -1822,6 +2002,30 @@ internal fun slowFrameReleaseFallbackCandidates(
         val before = previous[role] ?: return@mapNotNull null
         val after = current[role] ?: return@mapNotNull null
         if (before.isFull && after.blueRatio < dropThreshold) {
+            role to captureTimestampNanos
+        } else {
+            null
+        }
+    }.toMap()
+}
+
+internal fun slowFrameNearFullReleaseFallbackCandidates(
+    previous: Map<CharacterRole, com.kokkoro.clanbattle.recognition.CharacterEnergyState>?,
+    current: Map<CharacterRole, com.kokkoro.clanbattle.recognition.CharacterEnergyState>?,
+    dropThreshold: Float,
+    visualObstruction: Boolean,
+    captureTimestampNanos: Long,
+    minimumBeforeRatio: Float = 0.85f
+): Map<CharacterRole, Long> {
+    if (previous == null || current == null || visualObstruction) return emptyMap()
+    return CharacterRole.entries.mapNotNull { role ->
+        val before = previous[role] ?: return@mapNotNull null
+        val after = current[role] ?: return@mapNotNull null
+        if (
+            !before.isFull &&
+            before.blueRatio >= minimumBeforeRatio &&
+            after.blueRatio < dropThreshold
+        ) {
             role to captureTimestampNanos
         } else {
             null

@@ -28,17 +28,24 @@ data class VisualSwitchNode(
 data class SwitchAxisVisualDraft(
     val name: String = "新建开关轴",
     val roleNames: List<String> = List(5) { "角色${it + 1}" },
+    val roleUbSkillNames: List<String> = List(5) { "" },
     val opening: VisualSwitchTarget = VisualSwitchTarget(),
     val openingMessage: String = "",
     val nodes: List<VisualSwitchNode> = emptyList()
 ) {
-    init { require(roleNames.size == 5) }
+    init {
+        require(roleNames.size == 5)
+        require(roleUbSkillNames.size == 5)
+    }
 
     fun toStandardText(): String = buildList {
         add("轴类型=开关")
         add("轴名称=${name.ifBlank { "未命名开关轴" }}")
         roleNames.forEachIndexed { index, roleName ->
             if (roleName.isNotBlank() && roleName != "角色${index + 1}") add("角色${index + 1}=$roleName")
+        }
+        roleUbSkillNames.forEachIndexed { index, skillName ->
+            if (skillName.isNotBlank()) add("角色${index + 1}UB=${skillName.trim()}")
         }
         add("")
         add("[轴开局] | ${opening.fields()}${openingMessage.messageField()}")
@@ -79,6 +86,7 @@ data class SwitchAxisVisualDraft(
             return SwitchAxisVisualDraft(
                 name = document.header["轴名称"].orEmpty().ifBlank { "未命名开关轴" },
                 roleNames = (1..5).map { document.header["角色$it"].orEmpty().ifBlank { "角色$it" } },
+                roleUbSkillNames = (1..5).map { document.header["角色${it}UB"].orEmpty() },
                 opening = opening,
                 openingMessage = document.switchOpenings.single().target.message.orEmpty(),
                 nodes = nodes

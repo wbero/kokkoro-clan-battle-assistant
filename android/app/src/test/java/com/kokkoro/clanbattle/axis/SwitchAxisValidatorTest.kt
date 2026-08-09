@@ -73,4 +73,55 @@ class SwitchAxisValidatorTest {
 
         assertTrue(AxisValidator.validate(axis).issues.any { it.code == "invalid-boss-delay" })
     }
+
+    @Test fun `skill name mode requires all five battle roles`() {
+        val axis = AxisParser.parse(
+            """
+            轴类型=开关
+            角色1UB=公主突袭
+            [轴开局] | SET=关,关,关,关,关 | AUTO=关
+            1:03 | UB后=角色3 | SET=关,关,开,关,关 | AUTO=关
+            """.trimIndent()
+        )
+
+        val result = AxisValidator.validate(axis)
+
+        assertTrue(result.issues.any { it.code == "missing-role-ub-skill-name" })
+    }
+
+    @Test fun `skill name mode accepts complete unique mappings`() {
+        val axis = AxisParser.parse(
+            """
+            轴类型=开关
+            角色1UB=公主突袭
+            角色2UB=新年棱镜
+            角色3UB=猫咪组合技
+            角色4UB=星光斩击
+            角色5UB=极光圣域
+            [轴开局] | SET=关,关,关,关,关 | AUTO=关
+            1:03 | UB后=角色3 | SET=关,关,开,关,关 | AUTO=关
+            0:35 | UB后=角色4 | SET=关,关,开,开,关 | AUTO=开
+            """.trimIndent()
+        )
+
+        assertTrue(AxisValidator.validate(axis).issues.toString(), AxisValidator.validate(axis).isValid)
+    }
+
+    @Test fun `skill name mode rejects duplicate names because identity is ambiguous`() {
+        val axis = AxisParser.parse(
+            """
+            轴类型=开关
+            角色1UB=公主突袭
+            角色2UB=新年棱镜
+            角色3UB=同名技能
+            角色4UB=同名技能
+            角色5UB=极光圣域
+            [轴开局] | SET=关,关,关,关,关 | AUTO=关
+            1:03 | UB后=角色3 | SET=关,关,开,关,关 | AUTO=关
+            0:35 | UB后=角色4 | SET=关,关,开,开,关 | AUTO=开
+            """.trimIndent()
+        )
+
+        assertTrue(AxisValidator.validate(axis).issues.any { it.code == "duplicate-role-ub-skill-name" })
+    }
 }

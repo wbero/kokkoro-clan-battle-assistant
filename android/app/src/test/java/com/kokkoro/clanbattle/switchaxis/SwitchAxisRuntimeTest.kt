@@ -81,13 +81,9 @@ class SwitchAxisRuntimeTest {
         )
     }
 
-    @Test fun `character ub on arming frame cannot satisfy node`() {
+    @Test fun `time tagged character ub on arming frame satisfies its own node`() {
         val runtime = runtime(node("role4", 57, CharacterUbTrigger(CharacterRole.ROLE_4, "角色4"))).openedAt(89)
 
-        assertEquals(
-            SwitchRuntimeCommand.None,
-            runtime.update(frame(clock = 57, triggered = setOf(CharacterRole.ROLE_4)))
-        )
         assertTrue(
             runtime.update(frame(clock = 57, triggered = setOf(CharacterRole.ROLE_4)))
                 is SwitchRuntimeCommand.Converge
@@ -104,42 +100,67 @@ class SwitchAxisRuntimeTest {
         )
     }
 
-    @Test fun `character ub survives a temporarily untrustworthy control frame`() {
+    @Test fun `character ub node cannot consume a later ub from the same role`() {
+        val runtime = runtime(node("role3", 63, CharacterUbTrigger(CharacterRole.ROLE_3, "角色3"))).openedAt(89)
+        runtime.update(frame(clock = 63))
+
+        val missed = runtime.update(
+            frame(clock = 61, triggered = setOf(CharacterRole.ROLE_3))
+        ) as SwitchRuntimeCommand.MissedCharacterUb
+
+        assertEquals("role3", missed.nodeId)
+        assertEquals(CharacterRole.ROLE_3, missed.role)
+        assertEquals(63, missed.expectedClockSeconds)
+        assertEquals(61, missed.observedClockSeconds)
+    }
+
+    @Test fun `character ub converges immediately inside animation without trustworthy controls`() {
         val runtime = runtime(node("role1", 69, CharacterUbTrigger(CharacterRole.ROLE_1, "角色1"))).openedAt(89)
         runtime.update(frame(clock = 69))
 
-        assertEquals(
-            SwitchRuntimeCommand.None,
+        assertTrue(
             runtime.update(
                 frame(
                     clock = 69,
                     triggered = setOf(CharacterRole.ROLE_1),
                     trustworthy = false
                 )
-            )
-        )
-        assertTrue(
-            runtime.update(frame(clock = 69, trustworthy = true))
-                is SwitchRuntimeCommand.Converge
+            ) is SwitchRuntimeCommand.Converge
         )
     }
 
-    @Test fun `manual recognition pause discards a pending character ub`() {
+    @Test fun `character ub is consumed at its exact second rather than deferred to later visual frame`() {
         val runtime = runtime(node("role1", 69, CharacterUbTrigger(CharacterRole.ROLE_1, "角色1"))).openedAt(89)
         runtime.update(frame(clock = 69))
-        runtime.update(
-            frame(
-                clock = 69,
-                triggered = setOf(CharacterRole.ROLE_1),
-                trustworthy = false
-            )
-        )
+
+        val command = runtime.update(
+                frame(
+                    clock = 69,
+                    triggered = setOf(CharacterRole.ROLE_1),
+                    trustworthy = false
+                )
+            ) as SwitchRuntimeCommand.Converge
+        assertEquals("role1", command.nodeId)
+    }
+
+    @Test fun `manual recognition pause does not fabricate a character ub`() {
+        val runtime = runtime(node("role1", 69, CharacterUbTrigger(CharacterRole.ROLE_1, "角色1"))).openedAt(89)
+        runtime.update(frame(clock = 69))
 
         runtime.clearRecognitionEvidence()
 
         assertEquals(
             SwitchRuntimeCommand.None,
-            runtime.update(frame(clock = 69, trustworthy = true))
+            runtime.update(frame(clock = 69, trustworthy = false))
+        )
+        assertTrue(
+            runtime.update(
+                frame(
+                    clock = 69,
+                    triggered = setOf(CharacterRole.ROLE_1),
+                    trustworthy = false
+                )
+            ) is SwitchRuntimeCommand.Converge
         )
     }
 

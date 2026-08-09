@@ -70,13 +70,29 @@ class ActionExecutor(
         val commands: List<QueuedCommand.Tap> = actions.mapNotNull { action ->
             when (action) {
                 ControlAction.TapAuto ->
-                    QueuedCommand.Tap(ActionCoordinates.autoButton, HorizontalAnchor.RIGHT_CONTROL)
+                    QueuedCommand.Tap(
+                        ActionCoordinates.autoButton,
+                        HorizontalAnchor.RIGHT_CONTROL,
+                        controlAction = action
+                    )
                 ControlAction.TapGlobalSet ->
-                    QueuedCommand.Tap(ActionCoordinates.globalSet, HorizontalAnchor.RIGHT_CONTROL)
+                    QueuedCommand.Tap(
+                        ActionCoordinates.globalSet,
+                        HorizontalAnchor.RIGHT_CONTROL,
+                        controlAction = action
+                    )
                 is ControlAction.TapRole ->
-                    QueuedCommand.Tap(ActionCoordinates.role(action.role), HorizontalAnchor.CENTER)
+                    QueuedCommand.Tap(
+                        ActionCoordinates.role(action.role),
+                        HorizontalAnchor.CENTER,
+                        controlAction = action
+                    )
                 ControlAction.TapMenu ->
-                    QueuedCommand.Tap(ActionCoordinates.menu, HorizontalAnchor.TOP_HUD)
+                    QueuedCommand.Tap(
+                        ActionCoordinates.menu,
+                        HorizontalAnchor.TOP_HUD,
+                        controlAction = action
+                    )
                 ControlAction.None -> null
             }
         }
@@ -88,7 +104,7 @@ class ActionExecutor(
                 if (index > 0 && !sleepUntilNextAction(clickIntervalMs.toLong())) {
                     return@enqueue
                 }
-                tapNow(command.point, frameWidth, frameHeight, command.anchor)
+                tapNow(command.point, frameWidth, frameHeight, command.anchor, command.controlAction)
             }
         }
     }
@@ -100,16 +116,40 @@ class ActionExecutor(
     }
 
     fun tapAuto(width: Int, height: Int) =
-        enqueueTap(ActionCoordinates.autoButton, width, height, HorizontalAnchor.RIGHT_CONTROL)
+        enqueueTap(
+            ActionCoordinates.autoButton,
+            width,
+            height,
+            HorizontalAnchor.RIGHT_CONTROL,
+            ControlAction.TapAuto
+        )
 
     fun tapGlobalSet(width: Int, height: Int) =
-        enqueueTap(ActionCoordinates.globalSet, width, height, HorizontalAnchor.RIGHT_CONTROL)
+        enqueueTap(
+            ActionCoordinates.globalSet,
+            width,
+            height,
+            HorizontalAnchor.RIGHT_CONTROL,
+            ControlAction.TapGlobalSet
+        )
 
     fun tapRole(role: CharacterRole, width: Int, height: Int) =
-        enqueueTap(ActionCoordinates.role(role), width, height, HorizontalAnchor.CENTER)
+        enqueueTap(
+            ActionCoordinates.role(role),
+            width,
+            height,
+            HorizontalAnchor.CENTER,
+            ControlAction.TapRole(role)
+        )
 
     fun tapMenu(width: Int, height: Int) =
-        enqueueTap(ActionCoordinates.menu, width, height, HorizontalAnchor.TOP_HUD)
+        enqueueTap(
+            ActionCoordinates.menu,
+            width,
+            height,
+            HorizontalAnchor.TOP_HUD,
+            ControlAction.TapMenu
+        )
 
     /**
      * All automatic battle gestures share one action looper. Calls return
@@ -117,8 +157,14 @@ class ActionExecutor(
      * retain their required order. The pause-frame menu has its own explicit
      * focus sequence and is intentionally not mixed into this queue.
      */
-    private fun enqueueTap(point: ReferencePoint, width: Int, height: Int, anchor: HorizontalAnchor) {
-        enqueue { tapNow(point, width, height, anchor) }
+    private fun enqueueTap(
+        point: ReferencePoint,
+        width: Int,
+        height: Int,
+        anchor: HorizontalAnchor,
+        controlAction: ControlAction? = null
+    ) {
+        enqueue { tapNow(point, width, height, anchor, controlAction) }
     }
 
     private fun enqueue(action: () -> Unit) {
@@ -128,9 +174,15 @@ class ActionExecutor(
         }
     }
 
-    private fun tapNow(point: ReferencePoint, width: Int, height: Int, anchor: HorizontalAnchor) {
+    private fun tapNow(
+        point: ReferencePoint,
+        width: Int,
+        height: Int,
+        anchor: HorizontalAnchor,
+        controlAction: ControlAction? = null
+    ) {
         if (!AppPreferences.dryRun(context)) {
-            tapScaledNow(point.x, point.y, width, height, anchor)
+            tapScaledNow(point.x, point.y, width, height, anchor, controlAction)
         }
     }
 
@@ -139,7 +191,8 @@ class ActionExecutor(
         referenceY: Int,
         width: Int,
         height: Int,
-        anchor: HorizontalAnchor
+        anchor: HorizontalAnchor,
+        controlAction: ControlAction? = null
     ) {
         if (AppPreferences.dryRun(context)) return
         val x = GameCoordinateMapper.mapX(referenceX, width, height, anchor)
@@ -154,7 +207,8 @@ class ActionExecutor(
                 mappedY = y,
                 frameWidth = width,
                 frameHeight = height,
-                anchor = anchor
+                anchor = anchor,
+                controlAction = controlAction
             )
             Log.i(ACTION_LOG_TAG, "gesture-result=$status $event")
             gestureResultListener(event)
@@ -169,7 +223,8 @@ class ActionExecutor(
                     mappedY = y,
                     frameWidth = width,
                     frameHeight = height,
-                    anchor = anchor
+                    anchor = anchor,
+                    controlAction = controlAction
                 )
             )
         }
@@ -196,7 +251,11 @@ class ActionExecutor(
     }
 
     private sealed interface QueuedCommand {
-        data class Tap(val point: ReferencePoint, val anchor: HorizontalAnchor) : QueuedCommand
+        data class Tap(
+            val point: ReferencePoint,
+            val anchor: HorizontalAnchor,
+            val controlAction: ControlAction? = null
+        ) : QueuedCommand
         data class Notify(val message: String) : QueuedCommand
     }
 
@@ -214,5 +273,6 @@ data class GestureDispatchEvent(
     val mappedY: Float,
     val frameWidth: Int,
     val frameHeight: Int,
-    val anchor: HorizontalAnchor
+    val anchor: HorizontalAnchor,
+    val controlAction: ControlAction? = null
 )

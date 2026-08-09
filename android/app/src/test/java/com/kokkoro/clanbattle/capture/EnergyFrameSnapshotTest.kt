@@ -73,6 +73,32 @@ class EnergyFrameSnapshotTest {
     }
 
     @Test
+    fun `near full slow frame fallback captures phone underread without accepting ordinary tp`() {
+        val fallback = slowFrameNearFullReleaseFallbackCandidates(
+            previous = energyStates(role1 = 0.78f, role4 = 0.899f),
+            current = energyStates(role1 = 0.0f, role4 = 0.0f),
+            dropThreshold = 0.30f,
+            visualObstruction = false,
+            captureTimestampNanos = 100L
+        )
+
+        assertEquals(mapOf(CharacterRole.ROLE_4 to 100L), fallback)
+    }
+
+    @Test
+    fun `near full slow frame fallback is disabled during visual obstruction`() {
+        val fallback = slowFrameNearFullReleaseFallbackCandidates(
+            previous = energyStates(role4 = 0.91f),
+            current = energyStates(role4 = 0.0f),
+            dropThreshold = 0.30f,
+            visualObstruction = true,
+            captureTimestampNanos = 100L
+        )
+
+        assertTrue(fallback.isEmpty())
+    }
+
+    @Test
     fun `corroborated full to low role suppresses unrelated later detector candidate`() {
         val detector = mapOf(
             CharacterRole.ROLE_1 to 90L,

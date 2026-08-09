@@ -25,6 +25,7 @@ class SwitchAxisVisualDraftTest {
         val draft = SwitchAxisVisualDraft(
             name = "可视化示例",
             roleNames = listOf("A", "B", "C", "D", "E"),
+            roleUbSkillNames = listOf("UBA", "UBB", "UBC", "UBD", "UBE"),
             opening = target,
             nodes = listOf(
                 VisualSwitchNode(80, target = target),
@@ -39,9 +40,12 @@ class SwitchAxisVisualDraftTest {
 
         assertTrue(AxisValidator.validate(parsed).issues.toString(), AxisValidator.validate(parsed).isValid)
         assertTrue(text.contains("1:16 | UB后=角色3"))
+        assertTrue(text.contains("角色3UB=UBC"))
         assertTrue(text.contains("0:30 | UB后=BOSS | 延迟=1.20"))
         assertTrue(text.contains("0:18 | 卡帧=角色5"))
-        assertNotNull(SwitchAxisVisualDraft.from(parsed))
+        val roundTrip = SwitchAxisVisualDraft.from(parsed)
+        assertNotNull(roundTrip)
+        assertEquals("UBC", roundTrip?.roleUbSkillNames?.get(2))
     }
 
     @Test fun `boss delay zero serializes as an immediate valid switch trigger`() {

@@ -43,7 +43,6 @@ import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.config.parseBossUbEarlyConfirmationHoldMs
 import com.kokkoro.clanbattle.config.parseEnergyThresholdPercents
 import com.kokkoro.clanbattle.config.parsePauseFrameSettings
-import com.kokkoro.clanbattle.config.parseRoleSetFallbackGraceMs
 import com.kokkoro.clanbattle.config.parseStandalonePauseTier
 import com.kokkoro.clanbattle.config.StandalonePauseSettings
 import com.kokkoro.clanbattle.pauseframe.PauseFrameOverlay
@@ -321,8 +320,6 @@ class MainActivity : Activity() {
 
         content.addView(buildBossUbEarlyConfirmationCard(), matchWidth(top = 12))
 
-        content.addView(buildRoleSetFallbackCard(), matchWidth(top = 12))
-
         content.addView(buildPauseFrameCard(), matchWidth(top = 12))
 
         content.addView(buildStandalonePauseCard(), matchWidth(top = 12))
@@ -552,42 +549,6 @@ class MainActivity : Activity() {
         if (!::standalonePauseButton.isInitialized) return
         val enabled = AppPreferences.standalonePauseEnabled(this)
         standalonePauseButton.text = if (enabled) "关闭卡帧悬浮窗" else "开启卡帧悬浮窗"
-    }
-
-    private fun buildRoleSetFallbackCard(): LinearLayout {
-        val card = UiKit.card(this)
-        card.addView(caption("顺序轴 SET 兜底"))
-        card.addView(TextView(this).apply {
-            text = "倒计时越过角色动作的书写时间后，再等待指定毫秒数；仍未识别到 UB 时关闭该角色 SET。"
-            textSize = 12f
-            setTextColor(UiKit.TEXT_SECONDARY)
-            setPadding(0, dp(4), 0, dp(6))
-        })
-        val graceInput = thresholdInput(AppPreferences.roleSetFallbackGraceMs(this))
-        card.addView(thresholdRow("额外等待", graceInput, suffix = "ms"))
-        card.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(0, dp(4), 0, 0)
-            addView(textButton("恢复默认", UiKit.TEXT_SECONDARY, enabled = true) {
-                graceInput.setText(AppPreferences.DEFAULT_ROLE_SET_FALLBACK_GRACE_MS.toString())
-            })
-            addView(textButton("保存兜底", UiKit.ACCENT_DARK, enabled = true) {
-                val parsed = parseRoleSetFallbackGraceMs(graceInput.text.toString())
-                if (parsed == null) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "额外等待必须为 0~${AppPreferences.MAX_ROLE_SET_FALLBACK_GRACE_MS}ms",
-                        Toast.LENGTH_LONG
-                    ).show()
-                } else {
-                    AppPreferences.setRoleSetFallbackGraceMs(this@MainActivity, parsed)
-                    graceInput.setText(parsed.toString())
-                    Toast.makeText(this@MainActivity, "已保存，下一场战斗生效", Toast.LENGTH_SHORT).show()
-                }
-            })
-        }, matchWidth())
-        return card
     }
 
     private fun buildBossUbEarlyConfirmationCard(): LinearLayout {

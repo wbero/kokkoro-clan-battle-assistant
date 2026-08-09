@@ -3,6 +3,7 @@ package com.kokkoro.clanbattle.recognition
 data class RoleUbFlashDetection(
     val role: CharacterRole?,
     val rawRole: CharacterRole?,
+    val borderlineRole: CharacterRole?,
     val scores: Map<CharacterRole, Float>,
     val strongestScore: Float,
     val margin: Float
@@ -11,6 +12,7 @@ data class RoleUbFlashDetection(
         fun empty(): RoleUbFlashDetection = RoleUbFlashDetection(
             role = null,
             rawRole = null,
+            borderlineRole = null,
             scores = CharacterRole.entries.associateWith { 0f },
             strongestScore = 0f,
             margin = 0f
@@ -30,6 +32,7 @@ data class RoleUbFlashDetection(
 class RoleUbFlashDetector(
     private val minimumScore: Float = DEFAULT_MINIMUM_SCORE,
     private val minimumMargin: Float = DEFAULT_MINIMUM_MARGIN,
+    private val corroboratedMinimumMargin: Float = DEFAULT_CORROBORATED_MINIMUM_MARGIN,
     private val immediateScore: Float = DEFAULT_IMMEDIATE_SCORE,
     private val minimumConsecutiveFrames: Int = DEFAULT_MINIMUM_CONSECUTIVE_FRAMES
 ) {
@@ -39,6 +42,7 @@ class RoleUbFlashDetector(
     init {
         require(minimumScore in 0f..1f)
         require(minimumMargin in 0f..1f)
+        require(corroboratedMinimumMargin in 0f..minimumMargin)
         require(immediateScore in minimumScore..1f)
         require(minimumConsecutiveFrames >= 1)
     }
@@ -53,6 +57,14 @@ class RoleUbFlashDetector(
         val margin = strongest.value - secondScore
         val rawRole = strongest.key.takeIf {
             strongest.value >= minimumScore && margin >= minimumMargin
+        }
+        // Some real phones slightly smear the portrait-origin burst across the
+        // neighbouring slot. Do not lower the normal identity margin globally;
+        // expose only a high-strength borderline role so RoleUbBannerGate can
+        // use it when an independent TP-release history corroborates the same
+        // role. By itself this hint is never a confirmed UB identity.
+        val borderlineRole = strongest.key.takeIf {
+            strongest.value >= immediateScore && margin >= corroboratedMinimumMargin
         }
 
         if (rawRole == null) {
@@ -77,6 +89,7 @@ class RoleUbFlashDetector(
             // the following moving skill-name banner confirms the UB.
             role = confirmedRole,
             rawRole = rawRole,
+            borderlineRole = borderlineRole,
             scores = scores,
             strongestScore = strongest.value,
             margin = margin
@@ -113,6 +126,7 @@ class RoleUbFlashDetector(
         // for capture variation without accepting the weak expanding tail.
         const val DEFAULT_MINIMUM_SCORE = 0.70f
         const val DEFAULT_MINIMUM_MARGIN = 0.12f
+        const val DEFAULT_CORROBORATED_MINIMUM_MARGIN = 0.10f
         // Real-phone replay contains a valid one-frame ROLE_5 origin at
         // 0.78065 immediately before the UB-name banner. All other confirmed
         // phone origins in the same runs are >= 0.825, while known ordinary /

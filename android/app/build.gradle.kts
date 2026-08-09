@@ -31,13 +31,14 @@ android {
         applicationId = "com.kokkoro.clanbattle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20100
-        versionName = "2.1.0"
+        versionCode = 30000
+        versionName = "3.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     sourceSets["main"].assets.srcDirs("../../assets", "src/main/assets")
+    sourceSets["androidTest"].assets.srcDir(layout.buildDirectory.dir("generated/ubVideoReplayAssets"))
 
     signingConfigs {
         create("release") {
@@ -92,6 +93,9 @@ tasks.configureEach {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation(files("libs/pngj-2.1.0.jar"))
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }

@@ -6,6 +6,64 @@ import org.junit.Test
 
 class RoleUbBannerGateTest {
     @Test
+    fun `tp corroborated borderline flash can recover an older true role from a newer false cohort`() {
+        val gate = RoleUbBannerGate(maxConfirmationDelayNanos = 1_000L)
+
+        assertTrue(
+            gate.update(
+                candidateTimesNanos = mapOf(CharacterRole.ROLE_3 to 100L),
+                bannerRawPresent = false,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 100L
+            ).isEmpty()
+        )
+        assertTrue(
+            gate.update(
+                candidateTimesNanos = mapOf(CharacterRole.ROLE_5 to 150L),
+                borderlineFlashRoleTimesNanos = mapOf(CharacterRole.ROLE_3 to 150L),
+                bannerRawPresent = false,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 150L
+            ).isEmpty()
+        )
+
+        assertEquals(
+            mapOf(CharacterRole.ROLE_3 to 150L),
+            gate.update(
+                candidateTimesNanos = emptyMap(),
+                bannerRawPresent = true,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 200L
+            )
+        )
+    }
+
+    @Test
+    fun `borderline flash without same role tp history cannot identify a ub`() {
+        val gate = RoleUbBannerGate(maxConfirmationDelayNanos = 1_000L)
+
+        assertTrue(
+            gate.update(
+                candidateTimesNanos = mapOf(CharacterRole.ROLE_5 to 150L),
+                borderlineFlashRoleTimesNanos = mapOf(CharacterRole.ROLE_3 to 150L),
+                bannerRawPresent = false,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 150L
+            ).isEmpty()
+        )
+
+        assertEquals(
+            mapOf(CharacterRole.ROLE_5 to 150L),
+            gate.update(
+                candidateTimesNanos = emptyMap(),
+                bannerRawPresent = true,
+                bannerActive = false,
+                bannerFrameTimestampNanos = 200L
+            )
+        )
+    }
+
+    @Test
     fun `portrait flash overrides a false tp candidate before the same banner`() {
         val gate = RoleUbBannerGate(maxConfirmationDelayNanos = 1_000L)
 

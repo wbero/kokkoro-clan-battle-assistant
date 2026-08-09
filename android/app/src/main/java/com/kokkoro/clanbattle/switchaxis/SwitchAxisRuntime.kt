@@ -16,7 +16,9 @@ data class SwitchFrameInput(
     val triggeredRoles: Set<CharacterRole>,
     val controlsTrustworthy: Boolean,
     val wallMs: Long,
-    val bossUbEvent: BossUbEvent? = null
+    val bossUbEvent: BossUbEvent? = null,
+    val triggeredRoleClockSeconds: Map<CharacterRole, Int?> =
+        triggeredRoles.associateWith { clockSeconds }
 )
 
 sealed interface SwitchRuntimeCommand {
@@ -30,6 +32,13 @@ sealed interface SwitchRuntimeCommand {
     data class EnterPauseFrame(
         val nodeId: String,
         val role: CharacterRole
+    ) : SwitchRuntimeCommand
+
+    data class MissedCharacterUb(
+        val nodeId: String,
+        val role: CharacterRole,
+        val expectedClockSeconds: Int,
+        val observedClockSeconds: Int
     ) : SwitchRuntimeCommand
 }
 
@@ -79,15 +88,13 @@ class SwitchAxisRuntime(
         }
 
         enqueueCrossedNodes(frame.clockSeconds)
-        var armedNow = false
         val current = active ?: crossedNodes.pollFirst()?.let {
             ActiveNode(node = it, armedAtWallMs = frame.wallMs).also { armed ->
                 active = armed
-                armedNow = true
             }
         } ?: return SwitchRuntimeCommand.None
 
-        return commandFor(current, frame, armedNow)
+        return commandFor(current, frame)
     }
 
     fun confirmPauseFrame(nodeId: String) {
@@ -187,8 +194,7 @@ class SwitchAxisRuntime(
 
     private fun commandFor(
         active: ActiveNode,
-        frame: SwitchFrameInput,
-        armedNow: Boolean
+        frame: SwitchFrameInput
     ): SwitchRuntimeCommand {
         if (active.state == ActiveState.Converging) {
             return SwitchRuntimeCommand.Converge(active.node.id, active.node.target)
@@ -198,11 +204,39 @@ class SwitchAxisRuntime(
             TimedTrigger -> convergeWhenTrustworthy(active, frame)
             is CharacterUbTrigger -> {
                 val role = trigger.role
-                if (!armedNow && role != null && role in frame.triggeredRoles) {
+                val clockSeconds = frame.clockSeconds
+                val matchingEventClock = role?.let(frame.triggeredRoleClockSeconds::get)
+                if (
+                    role != null &&
+                    role in frame.triggeredRoles &&
+                    matchingEventClock == active.node.timeSeconds
+                ) {
                     active.characterUbObserved = true
                 }
+                if (
+                    !active.characterUbObserved &&
+                    role != null &&
+                    clockSeconds != null &&
+                    clockSeconds < active.node.timeSeconds
+                ) {
+                    return SwitchRuntimeCommand.MissedCharacterUb(
+                        nodeId = active.node.id,
+                        role = role,
+                        expectedClockSeconds = active.node.timeSeconds,
+                        observedClockSeconds = clockSeconds
+                    )
+                }
+                // “1:03 | UB后=角色3” means the ROLE_3 UB captured at 1:03,
+                // not an arbitrary later/earlier ROLE_3. The event carries its
+                // capture-time game clock so it can survive a temporary safety /
+                // control hold without becoming valid for another node second.
                 if (active.characterUbObserved) {
-                    convergeWhenTrustworthy(active, frame)
+                    // A matched character skill name is the synchronization
+                    // point.  SET/AUTO must be changed inside the UB animation,
+                    // so do not block this transition on animation-corrupted
+                    // control templates.
+                    active.state = ActiveState.Converging
+                    SwitchRuntimeCommand.Converge(active.node.id, active.node.target)
                 } else {
                     SwitchRuntimeCommand.None
                 }
