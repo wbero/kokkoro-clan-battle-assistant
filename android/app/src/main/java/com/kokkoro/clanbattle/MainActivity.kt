@@ -229,6 +229,21 @@ class MainActivity : Activity() {
             setPadding(dp(32), 0, 0, 0)
         })
 
+        content.addView(CheckBox(this).apply {
+            text = "剩 1 秒且轴操作完成后自动暂停游戏"
+            setTextColor(UiKit.TEXT_PRIMARY)
+            isChecked = AppPreferences.autoPauseAtOneSecondAfterAxis(this@MainActivity)
+            setOnCheckedChangeListener { _, checked ->
+                AppPreferences.setAutoPauseAtOneSecondAfterAxis(this@MainActivity, checked)
+            }
+        }, matchWidth(top = 10))
+        content.addView(TextView(this).apply {
+            text = "开启后，可信时钟到 0:01 才进入待暂停状态；若此时还有轴操作会先执行完，全部完成后再打开游戏菜单暂停。"
+            textSize = 12f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(dp(32), 0, 0, 0)
+        })
+
         content.addView(primaryButton("开始原生截图") { requestCapture() }, matchWidth(top = 14))
         content.addView(secondaryButton("准备新战斗") {
             startService(

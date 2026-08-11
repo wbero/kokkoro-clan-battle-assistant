@@ -123,6 +123,9 @@ class SwitchControlCoordinator(
         recentRoleUbEvents.clear()
     }
 
+    fun isFinished(): Boolean =
+        convergingNodeId == null && pauseFrame == null && runtime.isFinished()
+
     fun reset(
         opening: SwitchAxisOpening?,
         nodes: List<SwitchAxisNode>,

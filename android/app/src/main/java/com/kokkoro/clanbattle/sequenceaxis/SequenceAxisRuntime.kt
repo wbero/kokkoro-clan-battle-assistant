@@ -164,6 +164,9 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
         )
     }
 
+    fun isFinished(): Boolean =
+        active == null && crossed.isEmpty() && remaining.isEmpty()
+
     private fun enqueueCrossed(clockSeconds: Int?) {
         if (clockSeconds == null) return
         val due = remaining.filter { clockSeconds <= it.timeSeconds }

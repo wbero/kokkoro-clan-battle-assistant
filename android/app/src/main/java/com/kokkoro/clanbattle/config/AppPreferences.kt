@@ -8,6 +8,7 @@ object AppPreferences {
     private const val KEY_AXIS_TEXT = "axis_text"
     private const val KEY_AXIS_NAME = "axis_name"
     private const val KEY_DRY_RUN = "dry_run"
+    private const val KEY_AUTO_PAUSE_AT_ONE_SECOND_AFTER_AXIS = "auto_pause_at_one_second_after_axis"
     private const val KEY_CLOCK_DEBUG = "clock_debug"
     private const val KEY_REGION_OVERLAY = "region_overlay"
     private const val KEY_SELECTED_AXIS_ID = "selected_axis_id"
@@ -53,6 +54,8 @@ object AppPreferences {
     fun axisText(context: Context): String = prefs(context).getString(KEY_AXIS_TEXT, "").orEmpty()
     fun axisName(context: Context): String = prefs(context).getString(KEY_AXIS_NAME, "未选择").orEmpty()
     fun dryRun(context: Context): Boolean = prefs(context).getBoolean(KEY_DRY_RUN, true)
+    fun autoPauseAtOneSecondAfterAxis(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_AUTO_PAUSE_AT_ONE_SECOND_AFTER_AXIS, false)
     fun clockDebugEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_CLOCK_DEBUG, false)
     fun selectedAxisId(context: Context): String? = prefs(context).getString(KEY_SELECTED_AXIS_ID, null)
     fun axisSelectionLocked(context: Context): Boolean =
@@ -64,6 +67,10 @@ object AppPreferences {
 
     fun setDryRun(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean(KEY_DRY_RUN, value).apply()
+    }
+
+    fun setAutoPauseAtOneSecondAfterAxis(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_AUTO_PAUSE_AT_ONE_SECOND_AFTER_AXIS, value).apply()
     }
 
     fun setClockDebugEnabled(context: Context, value: Boolean) {

@@ -105,6 +105,22 @@ fun actionExecutionBlockReason(dryRun: Boolean, accessibilityConnected: Boolean)
     else -> null
 }
 
+internal fun automaticBattlePauseReason(
+    enabled: Boolean,
+    alreadyRequested: Boolean,
+    battleRunning: Boolean,
+    executionBlocked: Boolean,
+    safety: ControlSafetyState,
+    oneSecondReached: Boolean,
+    axisOperationsFinished: Boolean
+): String? {
+    if (!enabled || alreadyRequested || !battleRunning || executionBlocked) return null
+    if (safety != ControlSafetyState.RUNNING) return null
+    return if (oneSecondReached && axisOperationsFinished) {
+        "one-second-axis-operations-finished"
+    } else null
+}
+
 internal fun shouldSeedAuthoritativeControls(
     axisType: AxisType,
     battleRunning: Boolean,
@@ -378,6 +394,8 @@ class FrameProcessor(
     // "before battle opening". Keep the last filtered clock only for display;
     // execution continues to use the current filtered result/runtime state.
     private var lastActionPreviewClockSeconds: Int? = null
+    private var automaticBattlePauseArmed = false
+    private var automaticBattlePauseRequested = false
     private val pendingSwitchRoleUbEvents = mutableMapOf<CharacterRole, Int?>()
     // UB animation can cover all SET/AUTO badges for a short, expected window.
     // Hold the last trustworthy control state during that window instead of
@@ -440,6 +458,8 @@ class FrameProcessor(
         lastPauseFrameNodeId = null
         lastPromptNodeId = null
         lastActionPreviewClockSeconds = null
+        automaticBattlePauseArmed = false
+        automaticBattlePauseRequested = false
         pendingSwitchRoleUbEvents.clear()
         switchAxisBusy = false
         sessionGate.prepare()
@@ -1011,6 +1031,47 @@ class FrameProcessor(
         } else if (battleRunning) {
             controlStep = trustworthyControls?.let(controlStateMachine::observeOnly) ?: controlStateMachine.snapshot()
             scheduleReason = "execution-blocked"
+        }
+
+        val axisOperationsFinished = when (axis.type) {
+            AxisType.SWITCH -> switchCoordinator?.isFinished() == true
+            AxisType.SEQUENCE ->
+                openingControlsConfirmed &&
+                    sequenceRuntime?.isFinished() == true &&
+                    !actionCoordinator.isBusy()
+        }
+        val automaticPauseEnabled = AppPreferences.autoPauseAtOneSecondAfterAxis(appContext)
+        if (
+            automaticPauseEnabled &&
+            !automaticBattlePauseRequested &&
+            battleRunning &&
+            executionWarning == null &&
+            controlStep.safety == ControlSafetyState.RUNNING &&
+            acceptedClockSeconds == 1
+        ) {
+            automaticBattlePauseArmed = true
+        }
+        automaticBattlePauseReason(
+            enabled = automaticPauseEnabled,
+            alreadyRequested = automaticBattlePauseRequested,
+            battleRunning = battleRunning,
+            executionBlocked = executionWarning != null,
+            safety = controlStep.safety,
+            oneSecondReached = automaticBattlePauseArmed,
+            axisOperationsFinished = axisOperationsFinished
+        )?.let { reason ->
+            automaticBattlePauseRequested = true
+            controlStateMachine.forceSafety(reason)
+            // Same-frame pause is safe because ActionExecutor serializes all
+            // automatic gestures. If the last axis tap was queued above, MENU is
+            // appended after it; if MENU is not trustworthy yet, SAFETY_PAUSING
+            // stays latched and updateControls() retries on the next frame.
+            controlStep = controlStateMachine.updateMenu(menuScore)
+            executeControlAction(controlStep.action, image.width, image.height)
+            scheduleReason = reason
+            val message = "已到 0:01 且轴操作全部完成，正在自动暂停"
+            Log.i(SAFETY_LOG_TAG, "source=automatic-end-pause reason=$reason")
+            messageCallback(message)
         }
 
         val elapsed = SystemClock.elapsedRealtime() - start

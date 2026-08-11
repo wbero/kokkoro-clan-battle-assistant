@@ -19,12 +19,27 @@ class SwitchAxisRuntimeTest {
     @Test fun `opening waits at ninety then emits from eighty nine`() {
         val runtime = runtime()
 
+        assertTrue(!runtime.isFinished())
         assertEquals(SwitchRuntimeCommand.None, runtime.update(frame(clock = 90)))
         val opening = runtime.update(frame(clock = 89)) as SwitchRuntimeCommand.Converge
         assertEquals("opening-1", opening.nodeId)
         runtime.confirmConvergence(opening.nodeId)
 
         assertEquals(SwitchRuntimeCommand.None, runtime.update(frame(clock = 89)))
+        assertTrue(runtime.isFinished())
+    }
+
+    @Test fun `runtime only finishes after the last crossed node converges`() {
+        val last = node("last", 60, TimedTrigger)
+        val runtime = runtime(last).openedAt(89)
+
+        assertTrue(!runtime.isFinished())
+        val command = runtime.update(frame(clock = 60)) as SwitchRuntimeCommand.Converge
+        assertEquals("last", command.nodeId)
+        assertTrue(!runtime.isFinished())
+
+        runtime.confirmConvergence("last")
+        assertTrue(runtime.isFinished())
     }
 
     @Test fun `opening waits past the old window for the first trustworthy controls`() {

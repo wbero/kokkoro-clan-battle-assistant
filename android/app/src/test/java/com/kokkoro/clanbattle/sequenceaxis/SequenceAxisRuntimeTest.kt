@@ -181,8 +181,11 @@ class SequenceAxisRuntimeTest {
         val second = event("second", 59, TimedTrigger)
         val runtime = SequenceAxisRuntime(listOf(first, second))
 
+        assertTrue(!runtime.isFinished())
         assertEquals(first, (runtime.update(frame(58)) as SequenceRuntimeCommand.Dispatch).event)
+        assertTrue(!runtime.isFinished())
         assertEquals(second, (runtime.update(frame(58)) as SequenceRuntimeCommand.Dispatch).event)
+        assertTrue(runtime.isFinished())
     }
 
     @Test fun `boss node does not dispatch from time and delay alone`() {

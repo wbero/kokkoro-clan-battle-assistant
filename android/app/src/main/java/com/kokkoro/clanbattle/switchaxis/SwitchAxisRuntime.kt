@@ -133,6 +133,13 @@ class SwitchAxisRuntime(
         else -> null
     }
 
+    fun isFinished(): Boolean =
+        !openingPending &&
+            !openingConverging &&
+            active == null &&
+            crossedNodes.isEmpty() &&
+            remainingNodes.isEmpty()
+
     fun snapshot(): SwitchRuntimeSnapshot {
         if (openingConverging) {
             return SwitchRuntimeSnapshot(
