@@ -2,8 +2,10 @@ package com.kokkoro.clanbattle
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.BitmapDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -26,16 +28,29 @@ import com.kokkoro.clanbattle.axis.VisualAxisTime
 import com.kokkoro.clanbattle.axis.VisualSwitchNode
 import com.kokkoro.clanbattle.axis.VisualSwitchTarget
 import com.kokkoro.clanbattle.axis.VisualSwitchTrigger
+import com.kokkoro.clanbattle.character.AndroidCharacterLibrary
+import com.kokkoro.clanbattle.character.CharacterLibraryEntry
+import com.kokkoro.clanbattle.character.CharacterPickerDialog
+import com.kokkoro.clanbattle.character.CharacterSelection
 import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.ui.UiKit
 
 class SwitchAxisEditorActivity : Activity() {
+    private data class RoleSlot(
+        val name: String,
+        val ubName: String,
+        val entry: CharacterLibraryEntry? = null,
+        val sixStar: Boolean = false
+    )
+
     private lateinit var library: AxisLibrary
+    private val characterLibrary by lazy { AndroidCharacterLibrary.load(this) }
     private lateinit var nameInput: EditText
-    private lateinit var roleInputs: List<EditText>
-    private lateinit var roleUbInputs: List<EditText>
+    private lateinit var roleButtons: List<Button>
+    private lateinit var headerRoleCells: List<TextView>
     private lateinit var table: LinearLayout
     private lateinit var openingRow: GridRow
+    private val roleSlots = MutableList(5) { index -> RoleSlot("角色${index + 1}", "") }
     private val rows = mutableListOf<GridRow>()
     private var editingAxisId: String? = null
     private var initialText = ""
@@ -50,6 +65,7 @@ class SwitchAxisEditorActivity : Activity() {
         editingAxisId = intent.getStringExtra(EXTRA_AXIS_ID)
         val draft = loadDraft() ?: return
         initialText = draft.toStandardText()
+        applyDraft(draft)
         setContentView(buildContent(draft))
     }
 
@@ -77,6 +93,82 @@ class SwitchAxisEditorActivity : Activity() {
         return draft
     }
 
+    private fun chooseRole(index: Int) {
+        CharacterPickerDialog.show(this, characterLibrary, roleSlots[index].name.takeUnless { it.startsWith("角色") }.orEmpty()) { selection ->
+            if (roleSlots.withIndex().any { (otherIndex, slot) -> otherIndex != index && slot.entry?.unitId == selection.entry.unitId }) {
+                Toast.makeText(this, "同一队伍不能重复选择同一角色", Toast.LENGTH_SHORT).show()
+                return@show
+            }
+            val knownUbName = selection.ubName
+            if (!knownUbName.isNullOrBlank()) {
+                applyRoleSelection(index, selection, knownUbName)
+                return@show
+            }
+
+            val ubInput = edit("游戏内显示的UB技能名", "")
+            val dialog = AlertDialog.Builder(this)
+                .setTitle("${selection.entry.name} · 补充UB技能名")
+                .setMessage("角色已收录，但当前数据库没有该角色的UB数据。填写一次游戏内显示的UB技能名即可用于本轴识别。")
+                .setView(ubInput)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("确定", null)
+                .create()
+            dialog.setOnShowListener {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    val ubName = ubInput.text.toString().trim()
+                    if (ubName.isBlank()) {
+                        ubInput.error = "UB技能名不能为空"
+                        return@setOnClickListener
+                    }
+                    applyRoleSelection(index, selection, ubName)
+                    dialog.dismiss()
+                }
+            }
+            dialog.show()
+        }
+    }
+
+    private fun applyRoleSelection(index: Int, selection: CharacterSelection, ubName: String) {
+        roleSlots[index] = RoleSlot(selection.entry.name, ubName, selection.entry, selection.sixStar)
+        updateRoleButton(index)
+        if (::headerRoleCells.isInitialized) headerRoleCells[index].text = selection.entry.name
+    }
+
+    private fun updateRoleButton(index: Int) {
+        val slot = roleSlots[index]
+        roleButtons[index].apply {
+            text = buildString {
+                append(slot.name)
+                if (slot.entry?.ubPlus != null) append(if (slot.sixStar) "\n6★" else "\n普通UB")
+                else if (slot.ubName.isNotBlank()) append("\nUB已配置")
+            }
+            setCompoundDrawables(null, null, null, null)
+            slot.entry?.iconAsset?.let { path ->
+                runCatching { assets.open(path).use(BitmapFactory::decodeStream) }.getOrNull()?.let { bitmap ->
+                    val size = dp(48)
+                    val drawable = BitmapDrawable(resources, bitmap).apply { setBounds(0, 0, size, size) }
+                    setCompoundDrawables(null, drawable, null, null)
+                    compoundDrawablePadding = dp(2)
+                }
+            }
+        }
+    }
+
+    private fun applyDraft(draft: SwitchAxisVisualDraft) {
+        draft.roleNames.forEachIndexed { index, name ->
+            val ubName = draft.roleUbSkillNames[index]
+            val entry = characterLibrary.search(name, 100).firstOrNull { candidate ->
+                candidate.name == name || name in candidate.aliases
+            }
+            roleSlots[index] = RoleSlot(
+                name = name,
+                ubName = ubName,
+                entry = entry,
+                sixStar = entry?.ubPlus?.name == ubName && ubName.isNotBlank()
+            )
+        }
+    }
+
     private fun buildContent(draft: SwitchAxisVisualDraft) = ScrollView(this).apply {
         addView(LinearLayout(this@SwitchAxisEditorActivity).apply {
             orientation = LinearLayout.VERTICAL
@@ -85,23 +177,25 @@ class SwitchAxisEditorActivity : Activity() {
             addView(UiKit.pageHeader(this@SwitchAxisEditorActivity, "开关轴表格编辑器") {
                 onBackPressedDispatcherCompat()
             })
-            addView(note("共用表头，勾选表示 SET/AUTO 开。点击每行时间格可设置定时、角色 UB 后、Boss 延迟或卡帧。"))
+            addView(note("共用表头，勾选表示 SET/AUTO 开。角色从角色库选择并自动带入头像、昵称与UB名；点击每行时间格可设置定时、角色 UB 后、Boss 延迟或卡帧。"))
             nameInput = edit("轴名称", draft.name)
             addView(nameInput, matchWidth())
 
-            roleInputs = draft.roleNames.mapIndexed { index, value ->
-                edit("角色${index + 1}", value).apply {
-                    gravity = Gravity.CENTER
+            addView(note("五个角色都从角色库选择后会自动写入角色NUB，运行时直接启用UB技能名识别。六星角色可选择普通UB或UB+。旧轴如果不重新选角色，会保留原有角色名和UB配置。"))
+            roleButtons = (0 until 5).map { index ->
+                Button(this@SwitchAxisEditorActivity).apply {
+                    isAllCaps = false
                     textSize = 11f
-                    setPadding(0, 0, 0, 0)
-                    layoutParams = column(ROLE_WEIGHT)
+                    minWidth = 0
+                    setPadding(dp(2), dp(4), dp(2), dp(4))
+                    setOnClickListener { chooseRole(index) }
                 }
             }
-            addView(note("UB技能名用于识别浪花中间文字；角色昵称只用于显示，不参与识别。五个UB名要么全部留空走旧识别，要么全部填写启用技能名识别。"))
-            roleUbInputs = draft.roleUbSkillNames.mapIndexed { index, value ->
-                edit("角色${index + 1}UB（游戏内技能名）", value)
-            }
-            roleUbInputs.forEach { addView(it, matchWidth()) }
+            addView(LinearLayout(this@SwitchAxisEditorActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                roleButtons.forEach { addView(it, LinearLayout.LayoutParams(0, dp(92), 1f)) }
+            }, matchWidth())
+            roleButtons.indices.forEach(::updateRoleButton)
 
             table = LinearLayout(this@SwitchAxisEditorActivity).apply {
                 orientation = LinearLayout.VERTICAL
@@ -127,7 +221,8 @@ class SwitchAxisEditorActivity : Activity() {
         orientation = LinearLayout.HORIZONTAL
         setBackgroundColor(Color.rgb(225, 230, 237))
         addView(cell("时间/触发", TIME_WEIGHT))
-        roleInputs.forEach(::addView)
+        headerRoleCells = roleSlots.map { slot -> cell(slot.name, ROLE_WEIGHT).apply { textSize = 9f } }
+        headerRoleCells.forEach(::addView)
         addView(cell("AUTO", AUTO_WEIGHT))
         addView(cell("备注", NOTE_WEIGHT))
         addView(cell("删", ACTION_WEIGHT))
@@ -148,10 +243,8 @@ class SwitchAxisEditorActivity : Activity() {
         val nodes = rows.map { it.node(showErrors) ?: return null }
         val draft = SwitchAxisVisualDraft(
             name = nameInput.text.toString().trim().ifBlank { "未命名开关轴" },
-            roleNames = roleInputs.mapIndexed { index, input ->
-                input.text.toString().trim().ifBlank { "角色${index + 1}" }
-            },
-            roleUbSkillNames = roleUbInputs.map { it.text.toString().trim() },
+            roleNames = roleSlots.mapIndexed { index, slot -> slot.name.trim().ifBlank { "角色${index + 1}" } },
+            roleUbSkillNames = roleSlots.map { it.ubName.trim() },
             opening = openingRow.target(),
             openingMessage = openingRow.message(),
             nodes = nodes
