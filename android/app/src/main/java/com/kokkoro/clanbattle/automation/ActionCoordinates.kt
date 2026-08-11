@@ -26,6 +26,10 @@ object ActionCoordinates {
     fun menuRole(role: CharacterRole): ReferencePoint =
         ReferencePoint(960 + (role.ordinal - 2) * 174, 490)
 
+    // 主菜单“战斗设定”中的 AUTO 按钮中心。新版菜单仍保持居中布局；
+    // 在 2048x931 截图上映射约为 (1024,629)。
+    val menuAuto = ReferencePoint(960, 730)
+
     // 对话框右侧空白战斗区域，用于关闭菜单遮罩并恢复战斗。
     val menuOutside = ReferencePoint(1600, 540)
 }

@@ -1,6 +1,7 @@
 package com.kokkoro.clanbattle.pauseframe
 
 import com.kokkoro.clanbattle.recognition.CharacterRole
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -77,6 +78,33 @@ class PauseFrameSessionTest {
         assertTrue(diagnostics.any { it.action == "confirm" && it.result == "requested" })
         assertTrue(diagnostics.any { it.action == "tap-role" && it.result == "success" })
         assertTrue(diagnostics.any { it.action == "dismiss" && it.result == "success" })
+    }
+
+    @Test fun `confirm auto taps menu auto then dismisses it`() {
+        val log = mutableListOf<String>()
+        val diagnostics = mutableListOf<PauseFrameDiagnosticEvent>()
+        val scheduler = FakeScheduler(log)
+        val session = PauseFrameSession(
+            FakePort(log), scheduler,
+            perFrameMs = 40, focusTransitionMs = 1_000, menuSettleMs = 300, tapGapMs = 150,
+            diagnosticCallback = diagnostics::add
+        )
+        session.enter("auto-node", PauseFrameTarget.Auto)
+        var completed: PauseFrameResult? = null
+
+        val accepted = session.confirm { completed = it }
+        scheduler.runNext()
+        scheduler.runNext()
+
+        assertTrue(accepted.accepted)
+        assertEquals(PauseFrameTarget.Auto, completed?.confirmedTarget)
+        assertEquals(null, completed?.confirmedRole)
+        assertTrue(completed?.readyForConvergence == true)
+        assertEquals(
+            listOf("focus:on", "focus:off", "delay:1300", "menu-auto", "delay:150", "dismiss"),
+            log
+        )
+        assertTrue(diagnostics.any { it.action == "tap-auto" && it.result == "success" })
     }
 
     @Test fun `focus acquisition failure enters failed state without tapping`() {
@@ -200,6 +228,11 @@ class PauseFrameSessionTest {
 
         override fun tapMenuRole(role: CharacterRole): Boolean {
             log += "menu-tap:${role.name}"
+            return tapResult
+        }
+
+        override fun tapMenuAuto(): Boolean {
+            log += "menu-auto"
             return tapResult
         }
 

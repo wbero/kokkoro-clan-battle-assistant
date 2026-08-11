@@ -21,7 +21,9 @@ data class VisualSwitchNode(
 ) {
     init {
         require(timeSeconds in 0..90)
-        require(triggerRoleIndex in 0..4)
+        require(triggerRoleIndex in 0..5)
+        require(trigger != VisualSwitchTrigger.CHARACTER_UB || triggerRoleIndex in 0..4)
+        require(trigger != VisualSwitchTrigger.PAUSE_FRAME || triggerRoleIndex in 0..5)
     }
 }
 
@@ -71,7 +73,10 @@ data class SwitchAxisVisualDraft(
                 }
                 val role = when (val source = node.trigger) {
                     is CharacterUbTrigger -> source.role?.ordinal ?: return null
-                    is PauseFrameTrigger -> source.role?.ordinal ?: return null
+                    is PauseFrameTrigger -> when (val pauseTarget = source.target ?: return null) {
+                        is PauseFrameTarget.Role -> pauseTarget.role.ordinal
+                        PauseFrameTarget.Auto -> 5
+                    }
                     else -> 0
                 }
                 VisualSwitchNode(
@@ -121,7 +126,7 @@ private fun VisualSwitchNode.triggerFields(): String = when (trigger) {
     VisualSwitchTrigger.TIMED -> ""
     VisualSwitchTrigger.CHARACTER_UB -> "UB后=角色${triggerRoleIndex + 1}"
     VisualSwitchTrigger.BOSS_DELAY -> "UB后=BOSS | 延迟=${"%.2f".format(java.util.Locale.US, bossDelayMs / 1_000.0)}"
-    VisualSwitchTrigger.PAUSE_FRAME -> "卡帧=角色${triggerRoleIndex + 1}"
+    VisualSwitchTrigger.PAUSE_FRAME -> if (triggerRoleIndex == 5) "卡帧=AUTO" else "卡帧=角色${triggerRoleIndex + 1}"
 }
 
 private fun String.messageField(): String = if (isBlank()) "" else " | 提示=${trim().replace('|', '｜')}"

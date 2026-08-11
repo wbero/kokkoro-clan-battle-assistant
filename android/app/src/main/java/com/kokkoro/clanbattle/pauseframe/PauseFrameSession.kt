@@ -1,5 +1,6 @@
 package com.kokkoro.clanbattle.pauseframe
 
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
 import com.kokkoro.clanbattle.recognition.CharacterRole
 
 enum class PauseFrameState { IDLE, SOFT_PAUSED, ADVANCING, CONFIRMING, MANUAL_MENU, FAILED }
@@ -11,7 +12,8 @@ data class PauseFrameSnapshot(
     val nodeId: String?,
     val role: CharacterRole?,
     val blocksScheduler: Boolean,
-    val mode: PauseFrameMode? = null
+    val mode: PauseFrameMode? = null,
+    val target: PauseFrameTarget? = null
 )
 
 data class PauseFrameResult(
@@ -20,7 +22,8 @@ data class PauseFrameResult(
     val nodeId: String? = null,
     val confirmedRole: CharacterRole? = null,
     val readyForConvergence: Boolean = false,
-    val mode: PauseFrameMode? = null
+    val mode: PauseFrameMode? = null,
+    val confirmedTarget: PauseFrameTarget? = null
 )
 
 data class PauseFrameDiagnosticEvent(
@@ -28,7 +31,8 @@ data class PauseFrameDiagnosticEvent(
     val role: CharacterRole?,
     val action: String,
     val result: String,
-    val mode: PauseFrameMode? = null
+    val mode: PauseFrameMode? = null,
+    val target: PauseFrameTarget? = null
 )
 
 class PauseFrameSession(
@@ -42,24 +46,27 @@ class PauseFrameSession(
 ) {
     private var state = PauseFrameState.IDLE
     private var nodeId: String? = null
-    private var role: CharacterRole? = null
+    private var target: PauseFrameTarget? = null
     private var mode: PauseFrameMode? = null
     private var generation = 0L
 
     fun enter(nodeId: String, role: CharacterRole): PauseFrameResult =
-        enter(PauseFrameMode.AXIS, nodeId, role)
+        enter(nodeId, PauseFrameTarget.Role(role))
+
+    fun enter(nodeId: String, target: PauseFrameTarget): PauseFrameResult =
+        enter(PauseFrameMode.AXIS, nodeId, target)
 
     fun enterManual(): PauseFrameResult = enter(PauseFrameMode.MANUAL, null, null)
 
     private fun enter(
         mode: PauseFrameMode,
         nodeId: String?,
-        role: CharacterRole?
+        target: PauseFrameTarget?
     ): PauseFrameResult {
         if (state != PauseFrameState.IDLE) return result(accepted = false)
         generation++
         this.nodeId = nodeId
-        this.role = role
+        this.target = target
         this.mode = mode
         diagnose("enter", "requested")
         val acquired = focusPort.acquireFocus()
@@ -108,21 +115,28 @@ class PauseFrameSession(
             return result(accepted = false)
         }
         val confirmedNode = nodeId
-        val confirmedRole = role ?: return fail()
+        val confirmedTarget = target ?: return fail()
+        val confirmedRole = (confirmedTarget as? PauseFrameTarget.Role)?.role
         diagnose("confirm", "requested")
         state = PauseFrameState.CONFIRMING
         val released = focusPort.releaseFocus()
         diagnose("focus-release", if (released) "success" else "failed")
         if (!released) return fail()
         val confirmGeneration = generation
-        // 软卡帧时暂停菜单已经打开；直接点菜单头像设置 SET，再点菜单外恢复战斗。
-        scheduler.schedule(focusTransitionMs + menuSettleMs) tapAvatar@{
-            if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@tapAvatar
-            val tapped = focusPort.tapMenuRole(confirmedRole)
-            diagnose("tap-role", if (tapped) "success" else "failed")
+        // 软卡帧时暂停菜单已经打开；按目标点击角色 SET 或 AUTO，再点菜单外恢复战斗。
+        scheduler.schedule(focusTransitionMs + menuSettleMs) tapTarget@{
+            if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@tapTarget
+            val tapped = when (confirmedTarget) {
+                is PauseFrameTarget.Role -> focusPort.tapMenuRole(confirmedTarget.role)
+                PauseFrameTarget.Auto -> focusPort.tapMenuAuto()
+            }
+            diagnose(
+                if (confirmedTarget is PauseFrameTarget.Role) "tap-role" else "tap-auto",
+                if (tapped) "success" else "failed"
+            )
             if (!tapped) {
                 onComplete(fail())
-                return@tapAvatar
+                return@tapTarget
             }
             scheduler.schedule(tapGapMs) closeMenu@{
                 if (generation != confirmGeneration || state != PauseFrameState.CONFIRMING) return@closeMenu
@@ -134,7 +148,7 @@ class PauseFrameSession(
                 }
                 state = PauseFrameState.IDLE
                 nodeId = null
-                role = null
+                target = null
                 mode = null
                 onComplete(
                     PauseFrameResult(
@@ -142,6 +156,7 @@ class PauseFrameSession(
                         state = state,
                         nodeId = confirmedNode,
                         confirmedRole = confirmedRole,
+                        confirmedTarget = confirmedTarget,
                         readyForConvergence = true,
                         mode = PauseFrameMode.AXIS
                     )
@@ -175,7 +190,7 @@ class PauseFrameSession(
         diagnose("manual-resume", "requested")
         state = PauseFrameState.IDLE
         nodeId = null
-        role = null
+        target = null
         mode = null
         return PauseFrameResult(
             accepted = true,
@@ -193,16 +208,17 @@ class PauseFrameSession(
         }
         state = PauseFrameState.IDLE
         nodeId = null
-        role = null
+        target = null
         mode = null
     }
 
     fun snapshot() = PauseFrameSnapshot(
         state = state,
         nodeId = nodeId,
-        role = role,
+        role = (target as? PauseFrameTarget.Role)?.role,
         blocksScheduler = state != PauseFrameState.IDLE,
-        mode = mode
+        mode = mode,
+        target = target
     )
 
     private fun fail(): PauseFrameResult {
@@ -218,6 +234,15 @@ class PauseFrameSession(
     )
 
     private fun diagnose(action: String, result: String) {
-        diagnosticCallback(PauseFrameDiagnosticEvent(nodeId, role, action, result, mode))
+        diagnosticCallback(
+            PauseFrameDiagnosticEvent(
+                nodeId = nodeId,
+                role = (target as? PauseFrameTarget.Role)?.role,
+                action = action,
+                result = result,
+                mode = mode,
+                target = target
+            )
+        )
     }
 }

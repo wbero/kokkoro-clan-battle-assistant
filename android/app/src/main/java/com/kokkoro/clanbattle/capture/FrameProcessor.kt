@@ -18,6 +18,8 @@ import com.kokkoro.clanbattle.axis.AxisLibrary
 import com.kokkoro.clanbattle.axis.AxisParser
 import com.kokkoro.clanbattle.axis.AxisType
 import com.kokkoro.clanbattle.axis.ActionType
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
+import com.kokkoro.clanbattle.axis.label
 import com.kokkoro.clanbattle.axis.roleUbSkillNames
 import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.control.AndroidControlTemplateLoader
@@ -289,7 +291,7 @@ private data class SwitchDiagnosticContext(
 class FrameProcessor(
     context: Context,
     private val statusCallback: (FrameStatus) -> Unit,
-    private val pauseFrameCallback: (String, com.kokkoro.clanbattle.recognition.CharacterRole) -> Unit = { _, _ -> },
+    private val pauseFrameCallback: (String, PauseFrameTarget) -> Unit = { _, _ -> },
     private val battleLockCallback: () -> Unit = {},
     private val messageCallback: (String) -> Unit = {},
     private val debugOverlayCallback: (DebugOverlayFrame?) -> Unit = {}
@@ -894,7 +896,7 @@ class FrameProcessor(
                     coordinated.pauseFrame?.let { request ->
                         if (lastPauseFrameNodeId != request.nodeId) {
                             lastPauseFrameNodeId = request.nodeId
-                            pauseFrameCallback(request.nodeId, request.role)
+                            pauseFrameCallback(request.nodeId, request.target)
                         }
                     }
                     if (debugEnabled) {
@@ -908,7 +910,7 @@ class FrameProcessor(
                         )
                     }
                     scheduleReason = when {
-                        coordinated.pauseFrame != null -> "pause-frame:${coordinated.pauseFrame.role.name}"
+                        coordinated.pauseFrame != null -> "pause-frame:${coordinated.pauseFrame.target.label()}"
                         coordinated.activeNodeId != null -> "switch-node:${coordinated.activeNodeId}"
                         else -> "switch-waiting"
                     }
@@ -959,12 +961,12 @@ class FrameProcessor(
                             }
                             is SequenceRuntimeCommand.EnterPauseFrame -> {
                                 activeNodeId = command.nodeId
-                                actionCoordinator.clearRecentRoleUb(command.role)
+                                command.role?.let(actionCoordinator::clearRecentRoleUb)
                                 if (lastPauseFrameNodeId != command.nodeId) {
                                     lastPauseFrameNodeId = command.nodeId
-                                    pauseFrameCallback(command.nodeId, command.role)
+                                    pauseFrameCallback(command.nodeId, command.target)
                                 }
-                                scheduleReason = "pause-frame:${command.role.name}"
+                                scheduleReason = "pause-frame:${command.target.label()}"
                             }
                             is SequenceRuntimeCommand.Dispatch -> {
                                 actionCoordinator.enqueue(
@@ -1077,7 +1079,17 @@ class FrameProcessor(
     /** Arms the latched safety pause for an explicit user recovery attempt. */
     fun requestSafetyRecovery(): Boolean = controlStateMachine.requestSafetyRecovery()
 
-    fun confirmPauseFrame(nodeId: String) {
+    fun confirmPauseFrame(nodeId: String, target: PauseFrameTarget) {
+        // The pause menu click is an automatic control operation too.  Record it
+        // in the same deterministic state used by normal battle taps before the
+        // runtime continues, otherwise switch-axis convergence can plan from a
+        // stale pre-menu state.
+        authoritativeControls.applyPauseFrameTarget(target)
+        armControlAuthorityAudit(
+            nowMs = SystemClock.elapsedRealtime(),
+            actionCount = 1,
+            clickIntervalMs = 0
+        )
         switchCoordinator?.confirmPauseFrame(nodeId)
         sequenceRuntime?.confirmPauseFrame(nodeId)
     }
@@ -1735,9 +1747,9 @@ class FrameProcessor(
             )
         }
         when (action) {
-            ControlAction.TapAuto -> executor.tapAuto(width, height)
-            ControlAction.TapGlobalSet -> executor.tapGlobalSet(width, height)
-            is ControlAction.TapRole -> executor.tapRole(action.role, width, height)
+            ControlAction.TapAuto -> executor.tapAuto(width, height, axis.clickIntervalMs)
+            ControlAction.TapGlobalSet -> executor.tapGlobalSet(width, height, axis.clickIntervalMs)
+            is ControlAction.TapRole -> executor.tapRole(action.role, width, height, axis.clickIntervalMs)
             ControlAction.TapMenu -> executor.tapMenu(width, height)
             ControlAction.None -> Unit
         }

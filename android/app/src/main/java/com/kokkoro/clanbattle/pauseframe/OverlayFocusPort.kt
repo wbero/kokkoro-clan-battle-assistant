@@ -10,6 +10,9 @@ interface OverlayFocusPort {
     /** 卡帧确定：在主菜单“队伍情况”里点击该角色头像，设置其 SET。 */
     fun tapMenuRole(role: CharacterRole): Boolean
 
+    /** 卡帧确定：在主菜单“战斗设定”里点击 AUTO。 */
+    fun tapMenuAuto(): Boolean
+
     /** 点击菜单外空白处，关闭菜单遮罩、恢复战斗。 */
     fun dismissMenu(): Boolean
 }

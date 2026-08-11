@@ -6,6 +6,7 @@ import com.kokkoro.clanbattle.axis.AxisEvent
 import com.kokkoro.clanbattle.axis.BossDelayTrigger
 import com.kokkoro.clanbattle.axis.CharacterUbTrigger
 import com.kokkoro.clanbattle.axis.PauseFrameTrigger
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
 import com.kokkoro.clanbattle.axis.TimedTrigger
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import com.kokkoro.clanbattle.scheduler.BossUbEvent
@@ -151,6 +152,28 @@ class SequenceAxisRuntimeTest {
         val command = runtime.update(frame(60)) as SequenceRuntimeCommand.Dispatch
 
         assertEquals(roleClick("角色4") + roleClick("角色2"), command.event.actions)
+    }
+
+    @Test fun `pause frame auto toggles in menu and removes duplicate click auto action`() {
+        val pause = event(
+            "pause-auto",
+            60,
+            PauseFrameTrigger(null, "AUTO"),
+            actions = listOf(
+                AxisAction(ActionType.CLICK_AUTO),
+                AxisAction(ActionType.NOTIFY, message = "after-auto")
+            )
+        )
+        val runtime = SequenceAxisRuntime(listOf(pause))
+
+        val enter = runtime.update(frame(60)) as SequenceRuntimeCommand.EnterPauseFrame
+        assertEquals(PauseFrameTarget.Auto, enter.target)
+
+        runtime.confirmPauseFrame("pause-auto")
+        val command = runtime.update(frame(60)) as SequenceRuntimeCommand.Dispatch
+
+        assertEquals(listOf(ActionType.NOTIFY), command.event.actions.map { it.type })
+        assertTrue(command.rolesAlreadySet.isEmpty())
     }
 
     @Test fun `clock skip preserves source order`() {

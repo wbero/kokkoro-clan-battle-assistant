@@ -18,10 +18,24 @@ data class BossDelayTrigger(
     val rawDelay: String?
 ) : SwitchNodeTrigger
 
+sealed interface PauseFrameTarget {
+    data class Role(val role: CharacterRole) : PauseFrameTarget
+    data object Auto : PauseFrameTarget
+}
+
 data class PauseFrameTrigger(
     val role: CharacterRole?,
     val rawRole: String
-) : SwitchNodeTrigger
+) : SwitchNodeTrigger {
+    val target: PauseFrameTarget?
+        get() = role?.let(PauseFrameTarget::Role)
+            ?: PauseFrameTarget.Auto.takeIf { rawRole.equals("AUTO", ignoreCase = true) }
+}
+
+fun PauseFrameTarget.label(): String = when (this) {
+    is PauseFrameTarget.Role -> "角色${role.ordinal + 1}"
+    PauseFrameTarget.Auto -> "AUTO"
+}
 
 data class ConflictingSwitchTrigger(
     val ubAfter: String,

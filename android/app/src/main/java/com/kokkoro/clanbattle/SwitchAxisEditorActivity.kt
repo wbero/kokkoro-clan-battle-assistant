@@ -287,7 +287,7 @@ class SwitchAxisEditorActivity : Activity() {
                 VisualSwitchTrigger.TIMED -> "定时"
                 VisualSwitchTrigger.CHARACTER_UB -> "UB${triggerRoleIndex + 1}"
                 VisualSwitchTrigger.BOSS_DELAY -> "B+${"%.2f".format(java.util.Locale.US, bossDelayMs / 1_000.0)}"
-                VisualSwitchTrigger.PAUSE_FRAME -> "卡${triggerRoleIndex + 1}"
+                VisualSwitchTrigger.PAUSE_FRAME -> if (triggerRoleIndex == 5) "卡AUTO" else "卡${triggerRoleIndex + 1}"
             }
             triggerCell.text = "${VisualAxisTime.format(timeSeconds!!)}\n$marker"
         }
@@ -301,7 +301,7 @@ class SwitchAxisEditorActivity : Activity() {
             }
             val roleInput = Spinner(this@SwitchAxisEditorActivity).apply {
                 adapter = ArrayAdapter(this@SwitchAxisEditorActivity, android.R.layout.simple_spinner_dropdown_item,
-                    (1..5).map { "角色$it" })
+                    (1..5).map { "角色$it" } + "AUTO")
                 setSelection(triggerRoleIndex)
             }
             val delayInput = edit("Boss 延迟秒数", "%.2f".format(java.util.Locale.US, bossDelayMs / 1_000.0))
@@ -337,6 +337,10 @@ class SwitchAxisEditorActivity : Activity() {
                     val parsedDelay = delayInput.text.toString().toDoubleOrNull()?.let { (it * 1_000).toLong() }
                     if (selected == VisualSwitchTrigger.BOSS_DELAY && (parsedDelay == null || parsedDelay !in 0..30_000)) {
                         delayInput.error = "延迟必须在 0～30 秒之间"
+                        return@setOnClickListener
+                    }
+                    if (selected == VisualSwitchTrigger.CHARACTER_UB && roleInput.selectedItemPosition == 5) {
+                        Toast.makeText(this@SwitchAxisEditorActivity, "角色 UB 后不能选择 AUTO", Toast.LENGTH_SHORT).show()
                         return@setOnClickListener
                     }
                     timeSeconds = parsedTime

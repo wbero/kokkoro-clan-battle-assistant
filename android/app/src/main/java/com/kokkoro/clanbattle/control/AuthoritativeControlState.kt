@@ -1,5 +1,6 @@
 package com.kokkoro.clanbattle.control
 
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
 import com.kokkoro.clanbattle.recognition.CharacterRole
 
 /**
@@ -51,6 +52,12 @@ class AuthoritativeControlState(
     fun apply(actions: Iterable<ControlAction>): BattleControlState? {
         actions.forEach(::apply)
         return current
+    }
+
+    /** The automatic pause menu performs the same deterministic toggles as battle controls. */
+    fun applyPauseFrameTarget(target: PauseFrameTarget): BattleControlState? = when (target) {
+        is PauseFrameTarget.Role -> apply(ControlAction.TapRole(target.role))
+        PauseFrameTarget.Auto -> apply(ControlAction.TapAuto)
     }
 
     /** All automatic control operations are toggles, so the same action is its inverse. */

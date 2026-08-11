@@ -3,6 +3,7 @@ package com.kokkoro.clanbattle.automation
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
 import com.kokkoro.clanbattle.axis.ActionType
@@ -11,6 +12,20 @@ import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.control.ControlAction
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import java.util.concurrent.atomic.AtomicBoolean
+
+internal const val MIN_ACCESSIBILITY_TAP_SPACING_MS = 30L
+
+internal fun remainingTapSpacingMs(
+    lastTapDispatchedAtMs: Long?,
+    nowMs: Long,
+    clickIntervalMs: Int
+): Long {
+    require(clickIntervalMs >= 0)
+    val last = lastTapDispatchedAtMs ?: return 0L
+    val required = maxOf(clickIntervalMs.toLong(), MIN_ACCESSIBILITY_TAP_SPACING_MS)
+    val elapsed = (nowMs - last).coerceAtLeast(0L)
+    return (required - elapsed).coerceAtLeast(0L)
+}
 
 class ActionExecutor(
     private val context: Context,
@@ -22,6 +37,9 @@ class ActionExecutor(
     private val thread = HandlerThread("kokkoro-actions").apply { start() }
     private val handler = Handler(thread.looper)
     private val closed = AtomicBoolean(false)
+    // Only touched on the action HandlerThread.  Separate enqueue() calls still
+    // belong to one physical gesture stream, so they must share the same spacing.
+    private var lastTapDispatchedAtMs: Long? = null
 
     fun execute(events: List<AxisEvent>, frameWidth: Int, frameHeight: Int, clickIntervalMs: Int) {
         if (events.isEmpty()) return
@@ -42,16 +60,11 @@ class ActionExecutor(
         if (commands.isEmpty()) return
 
         enqueue {
-            var previousWasTap = false
             commands.forEach { command ->
                 if (closed.get()) return@enqueue
                 when (command) {
                     is QueuedCommand.Tap -> {
-                        if (previousWasTap && !sleepUntilNextAction(clickIntervalMs.toLong())) {
-                            return@enqueue
-                        }
-                        tapNow(command.point, frameWidth, frameHeight, command.anchor)
-                        previousWasTap = true
+                        if (!dispatchSpacedTap(command, frameWidth, frameHeight, clickIntervalMs)) return@enqueue
                     }
                     is QueuedCommand.Notify -> showToast(command.message)
                 }
@@ -99,12 +112,9 @@ class ActionExecutor(
         if (commands.isEmpty()) return
 
         enqueue {
-            commands.forEachIndexed { index, command ->
+            commands.forEach { command ->
                 if (closed.get()) return@enqueue
-                if (index > 0 && !sleepUntilNextAction(clickIntervalMs.toLong())) {
-                    return@enqueue
-                }
-                tapNow(command.point, frameWidth, frameHeight, command.anchor, command.controlAction)
+                if (!dispatchSpacedTap(command, frameWidth, frameHeight, clickIntervalMs)) return@enqueue
             }
         }
     }
@@ -115,31 +125,34 @@ class ActionExecutor(
         thread.quitSafely()
     }
 
-    fun tapAuto(width: Int, height: Int) =
+    fun tapAuto(width: Int, height: Int, clickIntervalMs: Int = 0) =
         enqueueTap(
             ActionCoordinates.autoButton,
             width,
             height,
             HorizontalAnchor.RIGHT_CONTROL,
-            ControlAction.TapAuto
+            ControlAction.TapAuto,
+            clickIntervalMs
         )
 
-    fun tapGlobalSet(width: Int, height: Int) =
+    fun tapGlobalSet(width: Int, height: Int, clickIntervalMs: Int = 0) =
         enqueueTap(
             ActionCoordinates.globalSet,
             width,
             height,
             HorizontalAnchor.RIGHT_CONTROL,
-            ControlAction.TapGlobalSet
+            ControlAction.TapGlobalSet,
+            clickIntervalMs
         )
 
-    fun tapRole(role: CharacterRole, width: Int, height: Int) =
+    fun tapRole(role: CharacterRole, width: Int, height: Int, clickIntervalMs: Int = 0) =
         enqueueTap(
             ActionCoordinates.role(role),
             width,
             height,
             HorizontalAnchor.CENTER,
-            ControlAction.TapRole(role)
+            ControlAction.TapRole(role),
+            clickIntervalMs
         )
 
     fun tapMenu(width: Int, height: Int) =
@@ -148,7 +161,8 @@ class ActionExecutor(
             width,
             height,
             HorizontalAnchor.TOP_HUD,
-            ControlAction.TapMenu
+            ControlAction.TapMenu,
+            0
         )
 
     /**
@@ -162,9 +176,35 @@ class ActionExecutor(
         width: Int,
         height: Int,
         anchor: HorizontalAnchor,
-        controlAction: ControlAction? = null
+        controlAction: ControlAction? = null,
+        clickIntervalMs: Int = 0
     ) {
-        enqueue { tapNow(point, width, height, anchor, controlAction) }
+        enqueue {
+            dispatchSpacedTap(
+                QueuedCommand.Tap(point, anchor, controlAction),
+                width,
+                height,
+                clickIntervalMs
+            )
+        }
+    }
+
+    private fun dispatchSpacedTap(
+        command: QueuedCommand.Tap,
+        width: Int,
+        height: Int,
+        clickIntervalMs: Int
+    ): Boolean {
+        val delayMs = remainingTapSpacingMs(
+            lastTapDispatchedAtMs,
+            SystemClock.elapsedRealtime(),
+            clickIntervalMs
+        )
+        if (delayMs > 0L && !sleepUntilNextAction(delayMs)) return false
+        if (closed.get()) return false
+        tapNow(command.point, width, height, command.anchor, command.controlAction)
+        lastTapDispatchedAtMs = SystemClock.elapsedRealtime()
+        return true
     }
 
     private fun enqueue(action: () -> Unit) {

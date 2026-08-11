@@ -71,4 +71,27 @@ class SwitchAxisVisualDraftTest {
         assertEquals(BossDelayTrigger(0, "0.00"), parsed.switchNodes.single().trigger)
         assertTrue(AxisValidator.validate(parsed).issues.toString(), AxisValidator.validate(parsed).isValid)
     }
+
+    @Test fun `pause frame auto round trips through the visual draft`() {
+        val target = VisualSwitchTarget(listOf(false, true, false, true, false), autoOn = true)
+        val draft = SwitchAxisVisualDraft(
+            opening = VisualSwitchTarget(listOf(false, false, false, false, false), autoOn = false),
+            nodes = listOf(
+                VisualSwitchNode(
+                    timeSeconds = 69,
+                    trigger = VisualSwitchTrigger.PAUSE_FRAME,
+                    triggerRoleIndex = 5,
+                    target = target
+                )
+            )
+        )
+
+        val text = draft.toStandardText()
+        val parsed = AxisParser.parse(text)
+        val roundTrip = SwitchAxisVisualDraft.from(parsed)
+
+        assertTrue(text.contains("1:09 | 卡帧=AUTO"))
+        assertEquals(PauseFrameTarget.Auto, (parsed.switchNodes.single().trigger as PauseFrameTrigger).target)
+        assertEquals(5, roundTrip?.nodes?.single()?.triggerRoleIndex)
+    }
 }

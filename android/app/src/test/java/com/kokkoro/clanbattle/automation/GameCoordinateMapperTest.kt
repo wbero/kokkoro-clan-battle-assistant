@@ -1,5 +1,6 @@
 package com.kokkoro.clanbattle.automation
 
+import com.kokkoro.clanbattle.recognition.CharacterRole
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -99,5 +100,39 @@ class GameCoordinateMapperTest {
         // area (about 269 device pixels), placing the clock crop over MENU.
         assertEquals(2176.2f, clockInSafeArea, 0.2f)
         assertEquals(269.3f, clockAtPhysicalRight - clockInSafeArea, 0.2f)
+    }
+
+    @Test fun `new 2048 by 931 pause menu maps role and auto taps to measured centers`() {
+        GameCoordinateCalibration.reset()
+        val width = 2048
+        val height = 931
+        val expectedRoleXs = listOf(723.6f, 874.0f, 1024.0f, 1174.0f, 1324.4f)
+
+        CharacterRole.entries.forEachIndexed { index, role ->
+            val point = ActionCoordinates.menuRole(role)
+            assertEquals(
+                expectedRoleXs[index],
+                GameCoordinateMapper.mapX(point.x, width, height, HorizontalAnchor.CENTER, includeCalibration = false),
+                1.5f
+            )
+            assertEquals(422.4f, GameCoordinateMapper.mapY(point.y, width, height), 1.5f)
+        }
+
+        assertEquals(
+            1024.0f,
+            GameCoordinateMapper.mapX(
+                ActionCoordinates.menuAuto.x,
+                width,
+                height,
+                HorizontalAnchor.CENTER,
+                includeCalibration = false
+            ),
+            1.5f
+        )
+        assertEquals(
+            629.3f,
+            GameCoordinateMapper.mapY(ActionCoordinates.menuAuto.y, width, height),
+            1.5f
+        )
     }
 }

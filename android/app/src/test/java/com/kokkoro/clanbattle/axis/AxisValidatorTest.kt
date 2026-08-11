@@ -122,4 +122,32 @@ class AxisValidatorTest {
 
         assertTrue(AxisValidator.validate(document).isValid)
     }
+
+    @Test
+    fun `accepts sequence pause frame auto without a second action`() {
+        val document = AxisParser.parse(
+            """
+            轴类型=顺序
+            [轴]
+            1:09 | 卡帧=AUTO
+            """.trimIndent()
+        )
+
+        assertTrue(AxisValidator.validate(document).isValid)
+    }
+
+    @Test
+    fun `rejects unknown sequence pause frame target`() {
+        val document = AxisParser.parse(
+            """
+            轴类型=顺序
+            [轴]
+            1:09 | 卡帧=角色9
+            """.trimIndent()
+        )
+
+        assertTrue(
+            AxisValidator.validate(document).issues.any { it.code == "invalid-pause-frame-target" }
+        )
+    }
 }

@@ -6,6 +6,7 @@ import com.kokkoro.clanbattle.axis.AxisEvent
 import com.kokkoro.clanbattle.axis.BossDelayTrigger
 import com.kokkoro.clanbattle.axis.CharacterUbTrigger
 import com.kokkoro.clanbattle.axis.PauseFrameTrigger
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
 import com.kokkoro.clanbattle.axis.TimedTrigger
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import com.kokkoro.clanbattle.scheduler.BossUbEvent
@@ -31,8 +32,15 @@ sealed interface SequenceRuntimeCommand {
 
     data class EnterPauseFrame(
         val nodeId: String,
-        val role: CharacterRole
-    ) : SequenceRuntimeCommand
+        val target: PauseFrameTarget
+    ) : SequenceRuntimeCommand {
+        val role: CharacterRole?
+            get() = (target as? PauseFrameTarget.Role)?.role
+    }
+
+    private fun AxisEvent.withPauseFrameAutoClickRemoved(): AxisEvent = copy(
+        actions = actions.filterNot { it.type == ActionType.CLICK_AUTO }
+    )
 }
 
 data class SequenceRuntimeSnapshot(
@@ -202,11 +210,15 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
             active = null
             activeCharacterUbObserved = false
             lastDispatchWasRole = false
-            val role = trigger.role ?: return SequenceRuntimeCommand.None
-            return SequenceRuntimeCommand.Dispatch(
-                current.event.withPauseFrameLifecycle(role),
-                rolesAlreadySet = setOf(role)
-            )
+            return when (val target = trigger.target ?: return SequenceRuntimeCommand.None) {
+                is PauseFrameTarget.Role -> SequenceRuntimeCommand.Dispatch(
+                    current.event.withPauseFrameLifecycle(target.role),
+                    rolesAlreadySet = setOf(target.role)
+                )
+                PauseFrameTarget.Auto -> SequenceRuntimeCommand.Dispatch(
+                    current.event.withPauseFrameAutoClickRemoved()
+                )
+            }
         }
         if (
             current.phase == ActivePhase.PAUSE_FRAME_ENTERED ||
@@ -215,9 +227,9 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
         ) {
             return SequenceRuntimeCommand.None
         }
-        val role = trigger.role ?: return SequenceRuntimeCommand.None
+        val target = trigger.target ?: return SequenceRuntimeCommand.None
         current.phase = ActivePhase.PAUSE_FRAME_ENTERED
-        return SequenceRuntimeCommand.EnterPauseFrame(current.event.id, role)
+        return SequenceRuntimeCommand.EnterPauseFrame(current.event.id, target)
     }
 
     private fun AxisEvent.withPauseFrameLifecycle(role: CharacterRole): AxisEvent {
@@ -229,6 +241,10 @@ class SequenceAxisRuntime(events: List<AxisEvent>) {
             actions = listOf(AxisAction(ActionType.CLICK_ROLE, role = canonicalName)) + remainingActions
         )
     }
+
+    private fun AxisEvent.withPauseFrameAutoClickRemoved(): AxisEvent = copy(
+        actions = actions.filterNot { it.type == ActionType.CLICK_AUTO }
+    )
 
     private fun BossUbEvent.isApplicableTo(nodeTimeSeconds: Int): Boolean =
         heldClockSeconds <= nodeTimeSeconds && nodeTimeSeconds - heldClockSeconds <= 2

@@ -63,4 +63,19 @@ class AxisParserTest {
 
         assertEquals(BossDelayTrigger(null, null), axis.events.single().trigger)
     }
+
+    @Test
+    fun `parses pause frame auto target case insensitively`() {
+        val axis = AxisParser.parse(
+            """
+            轴类型=顺序
+            [轴]
+            1:09 | 卡帧=auto
+            """.trimIndent()
+        )
+
+        val trigger = axis.events.single().trigger as PauseFrameTrigger
+        assertEquals(null, trigger.role)
+        assertEquals(PauseFrameTarget.Auto, trigger.target)
+    }
 }

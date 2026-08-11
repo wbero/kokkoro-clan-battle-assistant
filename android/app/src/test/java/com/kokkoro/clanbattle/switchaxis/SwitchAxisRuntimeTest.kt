@@ -4,6 +4,7 @@ import com.kokkoro.clanbattle.axis.AxisToggleState
 import com.kokkoro.clanbattle.axis.BossDelayTrigger
 import com.kokkoro.clanbattle.axis.CharacterUbTrigger
 import com.kokkoro.clanbattle.axis.PauseFrameTrigger
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
 import com.kokkoro.clanbattle.axis.SwitchAxisNode
 import com.kokkoro.clanbattle.axis.SwitchAxisOpening
 import com.kokkoro.clanbattle.axis.SwitchControlTarget
@@ -37,6 +38,18 @@ class SwitchAxisRuntimeTest {
             "opening-1",
             (runtime.update(frame(clock = 86, trustworthy = true)) as SwitchRuntimeCommand.Converge).nodeId
         )
+    }
+
+    @Test fun `pause frame auto enters menu then converges after confirmation`() {
+        val pause = node("pause-auto", 18, PauseFrameTrigger(null, "AUTO"))
+        val runtime = runtime(pause).openedAt(89)
+
+        val enter = runtime.update(frame(clock = 18)) as SwitchRuntimeCommand.EnterPauseFrame
+        assertEquals(PauseFrameTarget.Auto, enter.target)
+
+        runtime.confirmPauseFrame("pause-auto")
+        val converge = runtime.update(frame(clock = 18)) as SwitchRuntimeCommand.Converge
+        assertEquals("pause-auto", converge.nodeId)
     }
 
     @Test fun `matching character ub advances every role node`() {

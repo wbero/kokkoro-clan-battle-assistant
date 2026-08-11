@@ -74,6 +74,18 @@ class SwitchAxisValidatorTest {
         assertTrue(AxisValidator.validate(axis).issues.any { it.code == "invalid-boss-delay" })
     }
 
+    @Test fun `accepts switch pause frame auto with complete target`() {
+        val axis = AxisParser.parse(
+            """
+            轴类型=开关
+            [轴开局] | SET=关,关,关,关,关 | AUTO=关
+            1:09 | 卡帧=AUTO | SET=关,开,关,开,关 | AUTO=开
+            """.trimIndent()
+        )
+
+        assertTrue(AxisValidator.validate(axis).issues.toString(), AxisValidator.validate(axis).isValid)
+    }
+
     @Test fun `skill name mode requires all five battle roles`() {
         val axis = AxisParser.parse(
             """

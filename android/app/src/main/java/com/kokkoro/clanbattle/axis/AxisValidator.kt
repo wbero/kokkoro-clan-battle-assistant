@@ -130,8 +130,8 @@ object AxisValidator {
                     "Boss延迟必须为0到30秒"
                 )
             }
-            is PauseFrameTrigger -> if (trigger.role == null) {
-                issues += issue(event.sourceLine, "invalid-pause-frame-role", "卡帧必须指定角色1到角色5")
+            is PauseFrameTrigger -> if (trigger.target == null) {
+                issues += issue(event.sourceLine, "invalid-pause-frame-target", "卡帧必须指定角色1到角色5或AUTO")
             }
             is ConflictingSwitchTrigger -> issues += issue(
                 event.sourceLine,
@@ -186,11 +186,11 @@ object AxisValidator {
                     "conflicting-switch-triggers",
                     "同一节点不能同时声明UB后和卡帧"
                 )
-                is PauseFrameTrigger -> if (trigger.role == null || !node.target.isComplete()) {
+                is PauseFrameTrigger -> if (trigger.target == null || !node.target.isComplete()) {
                     issues += issue(
                         node.sourceLine,
                         "pause-frame-target-required",
-                        "卡帧节点必须指定一个角色及完整SET/AUTO目标"
+                        "卡帧节点必须指定角色1到角色5或AUTO，并包含完整SET/AUTO目标"
                     )
                 }
                 TimedTrigger -> Unit

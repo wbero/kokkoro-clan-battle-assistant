@@ -3,6 +3,7 @@ package com.kokkoro.clanbattle.switchaxis
 import com.kokkoro.clanbattle.axis.BossDelayTrigger
 import com.kokkoro.clanbattle.axis.CharacterUbTrigger
 import com.kokkoro.clanbattle.axis.PauseFrameTrigger
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
 import com.kokkoro.clanbattle.axis.SwitchAxisNode
 import com.kokkoro.clanbattle.axis.SwitchAxisOpening
 import com.kokkoro.clanbattle.axis.SwitchControlTarget
@@ -31,8 +32,11 @@ sealed interface SwitchRuntimeCommand {
 
     data class EnterPauseFrame(
         val nodeId: String,
-        val role: CharacterRole
-    ) : SwitchRuntimeCommand
+        val target: PauseFrameTarget
+    ) : SwitchRuntimeCommand {
+        val role: CharacterRole?
+            get() = (target as? PauseFrameTarget.Role)?.role
+    }
 
     data class MissedCharacterUb(
         val nodeId: String,
@@ -287,9 +291,9 @@ class SwitchAxisRuntime(
             return SwitchRuntimeCommand.Converge(active.node.id, active.node.target)
         }
         if (active.state == ActiveState.PauseFrameEntered) return SwitchRuntimeCommand.None
-        val role = trigger.role ?: return SwitchRuntimeCommand.None
+        val target = trigger.target ?: return SwitchRuntimeCommand.None
         active.state = ActiveState.PauseFrameEntered
-        return SwitchRuntimeCommand.EnterPauseFrame(active.node.id, role)
+        return SwitchRuntimeCommand.EnterPauseFrame(active.node.id, target)
     }
 
     private companion object {

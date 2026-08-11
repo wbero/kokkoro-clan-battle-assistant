@@ -1,5 +1,6 @@
 package com.kokkoro.clanbattle.control
 
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -65,6 +66,24 @@ class AuthoritativeControlStateTest {
 
         authority.rollback(action)
         assertEquals("XXXXX", mask(requireNotNull(authority.snapshot())))
+    }
+
+    @Test fun `pause menu role tap is tracked as a deterministic set toggle`() {
+        val authority = AuthoritativeControlState()
+        authority.seedIfAbsent(state("XXXXX", auto = VisualToggleState.OFF))
+
+        authority.applyPauseFrameTarget(PauseFrameTarget.Role(CharacterRole.ROLE_4))
+
+        assertEquals("XXXOX", mask(requireNotNull(authority.snapshot())))
+    }
+
+    @Test fun `pause menu auto tap is tracked as a deterministic auto toggle`() {
+        val authority = AuthoritativeControlState()
+        authority.seedIfAbsent(state("XXXXX", auto = VisualToggleState.OFF))
+
+        authority.applyPauseFrameTarget(PauseFrameTarget.Auto)
+
+        assertEquals(VisualToggleState.ON, authority.snapshot()?.auto)
     }
 
     private fun state(mask: String, auto: VisualToggleState = VisualToggleState.OFF) = BattleControlState(

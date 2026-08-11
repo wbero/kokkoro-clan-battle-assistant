@@ -176,7 +176,12 @@ class VerifiedActionCoordinator(
         return when (activePhase ?: ActivePhase.STARTING) {
             ActivePhase.STARTING -> {
                 if (alreadySetActionIds.remove(event.id)) {
-                    authoritativeControls.assumeRole(role, VisualToggleState.ON)
+                    val internal = authoritativeControls.snapshot()
+                    if (internal?.roles?.get(role) != VisualToggleState.ON) {
+                        val reason = "pause-frame-role-not-on:${role.name}"
+                        stateMachine.forceSafety(reason)
+                        return result(stateMachine.snapshot(reason), immediate, busy = true)
+                    }
                     activePhase = ActivePhase.WAITING_ROLE_UB
                     val ubDetected = recoveredRoleUbActionIds.remove(event.id) || hasRoleUb(role, triggeredRoles)
                     if (ubDetected) {
@@ -199,12 +204,11 @@ class VerifiedActionCoordinator(
 
                 val tapOn = ControlAction.TapRole(role)
                 authoritativeControls.apply(tapOn)
-                val ubDetected = hasRoleUb(role, triggeredRoles)
-                if (ubDetected) {
-                    // The ON tap is already queued first.  Keep waiting one frame
-                    // before cleanup so the action executor preserves ON -> OFF.
-                    activeRoleUbObserved = true
-                }
+                // Any UB evidence already present in this frame necessarily
+                // predates this SET-ON tap.  A freshly armed lifecycle must not
+                // consume that same event (for example, ROLE5 UB closes one
+                // lifecycle and the next chained ROLE5 is armed in the same
+                // frame).  Start accepting UB evidence from subsequent frames.
                 result(latest, immediate, busy = true, newControlAction = tapOn)
             }
             ActivePhase.WAITING_ROLE_UB -> {

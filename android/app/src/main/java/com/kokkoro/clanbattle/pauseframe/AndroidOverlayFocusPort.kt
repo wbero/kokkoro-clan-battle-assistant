@@ -31,6 +31,9 @@ class AndroidOverlayFocusPort(
     override fun tapMenuRole(role: CharacterRole): Boolean =
         tapCentered("menu-role:${role.name}", ActionCoordinates.menuRole(role))
 
+    override fun tapMenuAuto(): Boolean =
+        tapCentered("menu-auto", ActionCoordinates.menuAuto)
+
     override fun dismissMenu(): Boolean = tapCentered("menu-dismiss", ActionCoordinates.menuOutside)
 
     // 主菜单始终相对屏幕居中，不使用战斗 HUD 的水平校准偏移。

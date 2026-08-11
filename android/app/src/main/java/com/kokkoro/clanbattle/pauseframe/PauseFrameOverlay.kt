@@ -67,6 +67,7 @@ class PauseFrameOverlay private constructor(context: Context) {
             override fun releaseFocus(): Boolean = releaseWindowFocus()
             override fun sendBack(): Boolean = KokkoroAccessibilityService.instance?.sendBack() == true
             override fun tapMenuRole(role: com.kokkoro.clanbattle.recognition.CharacterRole): Boolean = false
+            override fun tapMenuAuto(): Boolean = false
             override fun dismissMenu(): Boolean = false
         },
         scheduler = PauseFrameScheduler { delayMs, action -> mainHandler.postDelayed(action, delayMs) },

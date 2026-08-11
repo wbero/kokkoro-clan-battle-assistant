@@ -3,6 +3,7 @@ package com.kokkoro.clanbattle.control
 import com.kokkoro.clanbattle.axis.ActionType
 import com.kokkoro.clanbattle.axis.AxisAction
 import com.kokkoro.clanbattle.axis.AxisEvent
+import com.kokkoro.clanbattle.axis.PauseFrameTarget
 import com.kokkoro.clanbattle.recognition.CharacterRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -78,6 +79,58 @@ class VerifiedActionCoordinatorTest {
         assertEquals("WAITING_ROLE_UB", role3On.phase)
     }
 
+    @Test fun `fresh same-role lifecycle cannot reuse ub event from frame that armed set`() {
+        val machine = BattleControlStateMachine()
+        val coordinator = coordinator(machine)
+
+        coordinator.enqueue(listOf(eventAt(51, AxisAction(ActionType.CLICK_ROLE, role = "角色5"))))
+        assertEquals(
+            ControlAction.TapRole(CharacterRole.ROLE_5),
+            coordinator.update(machine.snapshot(), 10, clockSeconds = 51).newControlAction
+        )
+
+        val firstRelease = coordinator.update(
+            machine.snapshot(),
+            20,
+            triggeredRoles = setOf(CharacterRole.ROLE_5),
+            clockSeconds = 51
+        )
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_5), firstRelease.newControlAction)
+        assertFalse(firstRelease.busy)
+
+        // The next plain ROLE5 line may be chained immediately while the first
+        // UB event is still present in this frame.  It must only arm SET here;
+        // the old ROLE5 event cannot satisfy the new lifecycle.
+        coordinator.enqueue(listOf(eventAt(48, AxisAction(ActionType.CLICK_ROLE, role = "角色5"))))
+        val rearmed = coordinator.update(
+            machine.snapshot(),
+            20,
+            triggeredRoles = setOf(CharacterRole.ROLE_5),
+            clockSeconds = 51
+        )
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_5), rearmed.newControlAction)
+        assertTrue(rearmed.busy)
+        assertEquals("WAITING_ROLE_UB", rearmed.phase)
+
+        val staleGone = coordinator.update(
+            machine.snapshot(),
+            21,
+            triggeredRoles = emptySet(),
+            clockSeconds = 51
+        )
+        assertEquals(ControlAction.None, staleGone.newControlAction)
+        assertTrue(staleGone.busy)
+
+        val secondRelease = coordinator.update(
+            machine.snapshot(),
+            100,
+            triggeredRoles = setOf(CharacterRole.ROLE_5),
+            clockSeconds = 48
+        )
+        assertEquals(ControlAction.TapRole(CharacterRole.ROLE_5), secondRelease.newControlAction)
+        assertFalse(secondRelease.busy)
+    }
+
     @Test fun `role already on internally waits without another on tap`() {
         val machine = BattleControlStateMachine()
         val authority = AuthoritativeControlState().apply {
@@ -100,7 +153,11 @@ class VerifiedActionCoordinatorTest {
 
     @Test fun `pause frame preset role skips set on and waits for ub`() {
         val machine = BattleControlStateMachine()
-        val coordinator = coordinator(machine)
+        val authority = AuthoritativeControlState().apply {
+            seedIfAbsent(state())
+            applyPauseFrameTarget(PauseFrameTarget.Role(CharacterRole.ROLE_4))
+        }
+        val coordinator = VerifiedActionCoordinator(machine, authority)
         coordinator.enqueue(
             listOf(eventAt(59, AxisAction(ActionType.CLICK_ROLE, role = "角色4"))),
             rolesAlreadySet = setOf(CharacterRole.ROLE_4),
@@ -122,7 +179,11 @@ class VerifiedActionCoordinatorTest {
 
     @Test fun `recent ub can close a just confirmed pause frame lifecycle`() {
         val machine = BattleControlStateMachine()
-        val coordinator = coordinator(machine)
+        val authority = AuthoritativeControlState().apply {
+            seedIfAbsent(state())
+            applyPauseFrameTarget(PauseFrameTarget.Role(CharacterRole.ROLE_1))
+        }
+        val coordinator = VerifiedActionCoordinator(machine, authority)
         coordinator.observeFrame(setOf(CharacterRole.ROLE_1), clockSeconds = 60, nowMs = 100)
         coordinator.enqueue(
             listOf(eventAt(60, AxisAction(ActionType.CLICK_ROLE, role = "角色1"))),
@@ -137,7 +198,11 @@ class VerifiedActionCoordinatorTest {
 
     @Test fun `clearing pause evidence prevents old ub from closing lifecycle`() {
         val machine = BattleControlStateMachine()
-        val coordinator = coordinator(machine)
+        val authority = AuthoritativeControlState().apply {
+            seedIfAbsent(state())
+            applyPauseFrameTarget(PauseFrameTarget.Role(CharacterRole.ROLE_1))
+        }
+        val coordinator = VerifiedActionCoordinator(machine, authority)
         coordinator.observeFrame(setOf(CharacterRole.ROLE_1), clockSeconds = 60, nowMs = 100)
         coordinator.clearRecentRoleUb(CharacterRole.ROLE_1)
         coordinator.enqueue(
