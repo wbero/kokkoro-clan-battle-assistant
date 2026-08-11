@@ -24,6 +24,9 @@
         <activity
             android:name=".SwitchAxisEditorActivity"
             android:exported="false" />
+        <activity
+            android:name=".SequenceAxisEditorActivity"
+            android:exported="false" />
 
         <activity
             android:name=".MainActivity"

@@ -257,6 +257,9 @@ class MainActivity : Activity() {
         val content = sectionContent("轴库", "导入、创建和维护战斗轴；战斗运行期间轴库会锁定。") {
             showPage(0)
         }
+        content.addView(secondaryButton("可视化制作顺序轴") {
+            startActivity(Intent(this, SequenceAxisEditorActivity::class.java))
+        }, matchWidth(top = 8))
         content.addView(secondaryButton("可视化制作开关轴") {
             startActivity(Intent(this, SwitchAxisEditorActivity::class.java))
         }, matchWidth(top = 8))
@@ -985,12 +988,16 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             setPadding(0, dp(4), 0, 0)
-            if (axis.type == AxisType.SWITCH && axis.valid) addView(
+            if (axis.valid) addView(
                 textButton("制轴", UiKit.ACCENT_DARK, enabled = !locked) {
-                    startActivity(
+                    val intent = if (axis.type == AxisType.SWITCH) {
                         Intent(this@MainActivity, SwitchAxisEditorActivity::class.java)
                             .putExtra(SwitchAxisEditorActivity.EXTRA_AXIS_ID, axis.id)
-                    )
+                    } else {
+                        Intent(this@MainActivity, SequenceAxisEditorActivity::class.java)
+                            .putExtra(SequenceAxisEditorActivity.EXTRA_AXIS_ID, axis.id)
+                    }
+                    startActivity(intent)
                 }
             )
             addView(textButton("编辑", UiKit.ACCENT_DARK, enabled = !locked) {
