@@ -50,6 +50,7 @@ import com.kokkoro.clanbattle.config.parsePauseFrameSettings
 import com.kokkoro.clanbattle.config.parseStandalonePauseTier
 import com.kokkoro.clanbattle.config.StandalonePauseSettings
 import com.kokkoro.clanbattle.pauseframe.PauseFrameOverlay
+import com.kokkoro.clanbattle.updates.ReleaseNotes
 import com.kokkoro.clanbattle.ui.UiKit
 
 class MainActivity : Activity() {
@@ -435,6 +436,17 @@ class MainActivity : Activity() {
             setPadding(0, dp(4), 0, 0)
         })
         content.addView(aboutCard, matchWidth(top = 12))
+
+        val releaseNotesCard = UiKit.card(this)
+        releaseNotesCard.addView(caption("更新日志"))
+        releaseNotesCard.addView(TextView(this).apply {
+            text = installedReleaseNotes()
+            textSize = 13f
+            setTextColor(UiKit.TEXT_PRIMARY)
+            setLineSpacing(dp(2).toFloat(), 1f)
+            setPadding(0, dp(4), 0, 0)
+        })
+        content.addView(releaseNotesCard, matchWidth(top = 12))
         return ScrollView(this).apply { addView(content) }
     }
 
@@ -445,6 +457,20 @@ class MainActivity : Activity() {
             null
         }
         return getString(R.string.about_version_format, versionName ?: BuildConfig.VERSION_NAME)
+    }
+
+    private fun installedReleaseNotes(): String {
+        val versionName = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: PackageManager.NameNotFoundException) {
+            null
+        } ?: BuildConfig.VERSION_NAME
+        val markdown = runCatching {
+            assets.open("CHANGELOG.md").bufferedReader(Charsets.UTF_8).use { it.readText() }
+        }.getOrNull()
+        return markdown
+            ?.let { ReleaseNotes.extractVersion(it, versionName) }
+            ?: "当前版本暂无更新日志。"
     }
 
     private fun buildEnergyThresholdCard(): LinearLayout {

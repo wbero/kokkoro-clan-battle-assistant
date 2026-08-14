@@ -13,6 +13,7 @@ val releasePropertiesPath = providers.environmentVariable("KOKKORO_KEYSTORE_PROP
 val releasePropertiesFile = releasePropertiesPath?.let(::file)
 val releaseProperties = Properties()
 val hasReleaseKeystore = releasePropertiesFile?.isFile == true
+val generatedChangelogAssets = layout.buildDirectory.dir("generated/changelogAssets")
 
 if (hasReleaseKeystore) {
     FileInputStream(releasePropertiesFile!!).use(releaseProperties::load)
@@ -37,7 +38,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    sourceSets["main"].assets.srcDirs("../../assets", "src/main/assets")
+    sourceSets["main"].assets.srcDirs("../../assets", "src/main/assets", generatedChangelogAssets)
     sourceSets["androidTest"].assets.srcDir(layout.buildDirectory.dir("generated/ubVideoReplayAssets"))
 
     signingConfigs {
@@ -79,6 +80,15 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
+}
+
+val syncChangelogAsset by tasks.registering(Copy::class) {
+    from(rootProject.file("../CHANGELOG.md"))
+    into(generatedChangelogAssets)
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(syncChangelogAsset)
 }
 
 tasks.configureEach {
