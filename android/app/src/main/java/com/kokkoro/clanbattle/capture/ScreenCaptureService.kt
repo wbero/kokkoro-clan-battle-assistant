@@ -638,6 +638,12 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
             ManualPauseUiMode.MENU_HANDOFF -> "下一：关闭菜单后点击恢复识别"
             ManualPauseUiMode.INACTIVE -> nextAction
         }
+        val statusVisible = AppPreferences.clockDebugEnabled(this) ||
+            executionWarning != null ||
+            safety == ControlSafetyState.SAFETY_PAUSING ||
+            safety == ControlSafetyState.SAFETY_PAUSED ||
+            manualPauseMode != ManualPauseUiMode.INACTIVE ||
+            captureState != CaptureState.ACTIVE
         overlay.render(
             resolveOverlayUiState(
                 axisName = name,
@@ -650,7 +656,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                 nextAction = displayNext,
                 presetA = AppPreferences.pauseFramePresetA(this),
                 presetB = AppPreferences.pauseFramePresetB(this)
-            )
+            ).copy(statusVisible = statusVisible)
         )
     }
 

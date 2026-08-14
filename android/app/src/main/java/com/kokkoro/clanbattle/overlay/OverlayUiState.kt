@@ -21,7 +21,8 @@ data class OverlayUiState(
     val statusText: String,
     val currentAction: String,
     val nextAction: String,
-    val manualPause: OverlayButtonState = OverlayButtonState("手动卡帧", false)
+    val manualPause: OverlayButtonState = OverlayButtonState("手动卡帧", false),
+    val statusVisible: Boolean = true
 ) {
     companion object {
         fun idle(

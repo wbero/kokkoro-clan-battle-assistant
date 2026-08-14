@@ -309,6 +309,7 @@ class OverlayController(
         apply(minimizeButton, state.minimize)
         apply(resetButton, state.reset)
         statusTextView?.text = state.statusText
+        statusTextView?.visibility = if (state.statusVisible) View.VISIBLE else View.GONE
         currentActionView?.text = state.currentAction
         nextActionView?.text = state.nextAction
         if (!state.selectAxis.enabled) hideAxisPanel()
