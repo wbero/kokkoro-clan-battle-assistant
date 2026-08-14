@@ -1,0 +1,98 @@
+name: Update character library
+
+on:
+  schedule:
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-character-library
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Refresh character aliases
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          source_file = Path("素材/来源.txt")
+          target_file = Path("素材/角色数据.txt")
+          url = source_file.read_text(encoding="utf-8").strip()
+          if not url:
+              raise RuntimeError("素材/来源.txt is empty")
+
+          request = Request(url, headers={"User-Agent": "KokkoroCharacterLibraryAction/1.0"})
+          with urlopen(request, timeout=30) as response:
+              text = response.read().decode("utf-8-sig")
+          if "CHARA_NAME" not in text:
+              raise RuntimeError("Alias source does not contain CHARA_NAME")
+          target_file.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Run generator unit tests
+        run: python -m unittest discover -s tools/tests -p "test_*.py"
+
+      - name: Generate latest CN character library
+        run: python tools/generate_character_library.py
+
+      - name: Validate generated library
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("android/app/src/main/assets/characters/character_library.json")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          characters = payload.get("characters") or []
+          source = str(payload.get("databaseSource") or "")
+
+          if payload.get("schemaVersion") != 2:
+              raise RuntimeError("Unexpected character library schema")
+          if not source.startswith("database-cn-"):
+              raise RuntimeError(f"Unexpected database source: {source}")
+          if len(characters) < 250:
+              raise RuntimeError(f"Character count is suspiciously low: {len(characters)}")
+          if any(not (entry.get("ub") or {}).get("name") for entry in characters):
+              raise RuntimeError("Generated library contains a character without UB data")
+
+          print(f"Validated {len(characters)} characters from {source}")
+          PY
+
+      - name: Commit updated data
+        shell: bash
+        run: |
+          git add -- \
+            "素材/角色数据.txt" \
+            android/app/src/main/assets/characters/character_library.json \
+            android/app/src/main/assets/characters/icons
+
+          if git diff --cached --quiet; then
+            echo "Character data is already current."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: update character library"
+          git pull --rebase origin master
+          git push origin HEAD:master
