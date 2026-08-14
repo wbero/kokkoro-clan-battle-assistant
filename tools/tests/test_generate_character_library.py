@@ -1,6 +1,10 @@
 import unittest
+import urllib.error
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import mock
 
-from tools.generate_character_library import build_entries
+from tools.generate_character_library import build_entries, download_icon
 
 
 def row(
@@ -82,6 +86,55 @@ class CharacterLibraryGeneratorTest(unittest.TestCase):
         self.assertEqual(1, len(entries))
         self.assertEqual("珠希", entries[0]["name"])
         self.assertEqual({"id": 1046011, "name": "猫猫幻影斩击"}, entries[0]["ubPlus"])
+
+    def test_icon_download_retries_transient_network_failure(self):
+        class Headers:
+            @staticmethod
+            def get_content_type():
+                return "image/webp"
+
+        class Response:
+            headers = Headers()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            @staticmethod
+            def read():
+                return b"webp-image"
+
+        opener = mock.Mock()
+        opener.open.side_effect = [urllib.error.URLError("temporary"), Response()]
+        with TemporaryDirectory() as temporary, \
+                mock.patch("tools.generate_character_library.build_url_opener", return_value=opener), \
+                mock.patch("tools.generate_character_library.time.sleep") as sleep:
+            result = download_icon(1354, Path(temporary))
+
+            self.assertIsNotNone(result)
+            self.assertEqual(b"webp-image", result.read_bytes())
+            self.assertEqual(2, opener.open.call_count)
+            sleep.assert_called_once_with(1.0)
+
+    def test_icon_download_does_not_retry_missing_portrait(self):
+        opener = mock.Mock()
+        opener.open.side_effect = urllib.error.HTTPError(
+            url="https://example.invalid/icon.webp",
+            code=404,
+            msg="not found",
+            hdrs=None,
+            fp=None,
+        )
+        with TemporaryDirectory() as temporary, \
+                mock.patch("tools.generate_character_library.build_url_opener", return_value=opener), \
+                mock.patch("tools.generate_character_library.time.sleep") as sleep:
+            result = download_icon(9999, Path(temporary))
+
+            self.assertIsNone(result)
+            self.assertEqual(1, opener.open.call_count)
+            sleep.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ import json
 import shutil
 import sqlite3
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -14,6 +16,7 @@ DATABASE_RELEASES_API = "https://api.github.com/repos/SonderXiaoming/priconne-da
 DATABASE_RELEASE_PREFIX = "database-cn-"
 ICON_BASE_URL = "https://redive.estertion.win/icon/unit/"
 USER_AGENT = "Mozilla/5.0 KokkoroCharacterLibrary/1.0"
+ICON_DOWNLOAD_RETRIES = 3
 
 
 def parse_args() -> argparse.Namespace:
@@ -300,7 +303,12 @@ def materialize_local_icon(source: Path, output_dir: Path) -> Path:
     return destination
 
 
-def download_icon(chara_id: int, output_dir: Path, proxy: str | None = None) -> Path | None:
+def download_icon(
+    chara_id: int,
+    output_dir: Path,
+    proxy: str | None = None,
+    retries: int = ICON_DOWNLOAD_RETRIES,
+) -> Path | None:
     resource_id = f"{chara_id:04d}31"
     filename = f"icon_unit_{resource_id}.webp"
     destination = output_dir / filename
@@ -310,15 +318,27 @@ def download_icon(chara_id: int, output_dir: Path, proxy: str | None = None) -> 
         f"{ICON_BASE_URL}{resource_id}.webp",
         headers={"User-Agent": USER_AGENT},
     )
-    try:
-        opener = build_url_opener(proxy)
-        with opener.open(request, timeout=20) as response:
-            if not response.headers.get_content_type().startswith("image/"):
+    opener = build_url_opener(proxy)
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            with opener.open(request, timeout=20) as response:
+                if not response.headers.get_content_type().startswith("image/"):
+                    return None
+                payload = response.read()
+                if not payload:
+                    raise OSError("empty icon response")
+                destination.write_bytes(payload)
+                return destination
+        except urllib.error.HTTPError as exc:
+            # A missing portrait is a real data condition, not a transient network
+            # failure. Retry server-side failures only; otherwise fail immediately.
+            if exc.code < 500 or attempt >= retries:
                 return None
-            destination.write_bytes(response.read())
-            return destination
-    except Exception:
-        return None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt >= retries:
+                return None
+        time.sleep(float(attempt))
+    return None
 
 
 def materialize_icons(

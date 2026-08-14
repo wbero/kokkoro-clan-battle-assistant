@@ -84,7 +84,22 @@ jobs:
           if any(not (entry.get("ub") or {}).get("name") for entry in characters):
               raise RuntimeError("Generated library contains a character without UB data")
 
-          print(f"Validated {len(characters)} characters from {source}")
+          assets_root = Path("android/app/src/main/assets")
+          missing_icons = []
+          for entry in characters:
+              icon_asset = str(entry.get("iconAsset") or "")
+              if not icon_asset.startswith("characters/icons/"):
+                  missing_icons.append(f"{entry.get('charaId')}:{icon_asset or '<empty>'}")
+                  continue
+              if not (assets_root / icon_asset).is_file():
+                  missing_icons.append(f"{entry.get('charaId')}:{icon_asset}")
+          if missing_icons:
+              preview = ", ".join(missing_icons[:10])
+              raise RuntimeError(
+                  f"Generated library contains {len(missing_icons)} missing portrait(s): {preview}"
+              )
+
+          print(f"Validated {len(characters)} characters and portraits from {source}")
           PY
 
       - name: Commit updated data
