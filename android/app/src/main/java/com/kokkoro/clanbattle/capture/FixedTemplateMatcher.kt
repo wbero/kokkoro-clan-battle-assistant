@@ -18,22 +18,28 @@ object FixedTemplateMatcher {
 
     fun score(image: PixelImage, template: PixelImage): Double {
         val count = template.width * template.height
-        var sumImage = 0.0
         val stats = templateStats(template)
-        repeat(template.height) { y ->
-            repeat(template.width) { x ->
-                sumImage += luminance(image[map(x, template.width, image.width), map(y, template.height, image.height)])
+        val imageLuma = luminanceArray(image)
+        val tw = template.width
+        val th = template.height
+        val iw = image.width
+        val ih = image.height
+        var sumImage = 0.0
+        repeat(th) { y ->
+            val rowBase = map(y, th, ih) * iw
+            repeat(tw) { x ->
+                sumImage += imageLuma[rowBase + map(x, tw, iw)]
             }
         }
         val meanImage = sumImage / count
         var numerator = 0.0
         var imageDenominator = 0.0
-        repeat(template.height) { y ->
-            repeat(template.width) { x ->
-                val imageDelta = luminance(
-                    image[map(x, template.width, image.width), map(y, template.height, image.height)]
-                ) - meanImage
-                val templateDelta = stats.luminance[y * template.width + x] - stats.mean
+        repeat(th) { y ->
+            val rowBase = map(y, th, ih) * iw
+            val tRow = y * tw
+            repeat(tw) { x ->
+                val imageDelta = imageLuma[rowBase + map(x, tw, iw)] - meanImage
+                val templateDelta = stats.luminance[tRow + x] - stats.mean
                 numerator += imageDelta * templateDelta
                 imageDenominator += imageDelta * imageDelta
             }
@@ -55,8 +61,10 @@ object FixedTemplateMatcher {
         require(left + width <= image.width)
         require(top + height <= image.height)
         val stats = templateStats(template)
+        val imageLuma = luminanceArray(image)
         return scoreWindow(
-            image = image,
+            imageLuma = imageLuma,
+            imageWidth = image.width,
             left = left,
             top = top,
             width = width,
@@ -81,6 +89,7 @@ object FixedTemplateMatcher {
         val templateMean = stats.mean
         val templateDenominator = stats.denominator
         if (templateDenominator == 0.0) return 0.0
+        val imageLuma = luminanceArray(image)
         var best = -1.0
         scales.forEach { scale ->
             val width = (template.width * scale).toInt().coerceIn(2, image.width)
@@ -93,7 +102,7 @@ object FixedTemplateMatcher {
                 best = maxOf(
                     best,
                     scoreWindow(
-                        image, left, top, width, height, template, stats.luminance,
+                        imageLuma, image.width, left, top, width, height, template, stats.luminance,
                         templateMean, templateDenominator
                     )
                 )
@@ -143,7 +152,8 @@ object FixedTemplateMatcher {
     }
 
     private fun scoreWindow(
-        image: PixelImage,
+        imageLuma: DoubleArray,
+        imageWidth: Int,
         left: Int,
         top: Int,
         width: Int,
@@ -156,27 +166,31 @@ object FixedTemplateMatcher {
         val count = template.width * template.height
         var sumImage = 0.0
         repeat(template.height) { y ->
-            val imageY = top + map(y, template.height, height)
+            val rowBase = (top + map(y, template.height, height)) * imageWidth + left
             repeat(template.width) { x ->
-                val imageX = left + map(x, template.width, width)
-                sumImage += luminance(image[imageX, imageY])
+                sumImage += imageLuma[rowBase + map(x, template.width, width)]
             }
         }
         val meanImage = sumImage / count
         var numerator = 0.0
         var imageDenominator = 0.0
         repeat(template.height) { y ->
-            val imageY = top + map(y, template.height, height)
+            val rowBase = (top + map(y, template.height, height)) * imageWidth + left
+            val tRow = y * template.width
             repeat(template.width) { x ->
-                val imageX = left + map(x, template.width, width)
-                val imageDelta = luminance(image[imageX, imageY]) - meanImage
-                val templateDelta = templateLuminance[y * template.width + x] - templateMean
+                val imageDelta = imageLuma[rowBase + map(x, template.width, width)] - meanImage
+                val templateDelta = templateLuminance[tRow + x] - templateMean
                 numerator += imageDelta * templateDelta
                 imageDenominator += imageDelta * imageDelta
             }
         }
         if (imageDenominator == 0.0) return 0.0
         return numerator / sqrt(imageDenominator * templateDenominator)
+    }
+
+    private fun luminanceArray(image: PixelImage): DoubleArray {
+        val pixels = image.pixels
+        return DoubleArray(pixels.size) { index -> luminance(pixels[index]) }
     }
 
     private val LOCAL_OFFSETS = arrayOf(0 to 0, -2 to 0, 2 to 0, 0 to -2, 0 to 2)
