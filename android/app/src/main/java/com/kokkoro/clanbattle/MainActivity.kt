@@ -38,7 +38,11 @@ import com.kokkoro.clanbattle.automation.KokkoroAccessibilityService
 import com.kokkoro.clanbattle.capture.ScreenCaptureService
 import com.kokkoro.clanbattle.axis.AndroidAxisRepository
 import com.kokkoro.clanbattle.axis.AxisLibrary
+import com.kokkoro.clanbattle.axis.AxisShareCode
 import com.kokkoro.clanbattle.axis.AxisType
+import com.kokkoro.clanbattle.character.AndroidCharacterLibrary
+import com.kokkoro.clanbattle.character.CharacterLibraryInstallStatus
+import com.kokkoro.clanbattle.character.CharacterLibraryUpdater
 import com.kokkoro.clanbattle.config.AppPreferences
 import com.kokkoro.clanbattle.config.parseBossUbEarlyConfirmationHoldMs
 import com.kokkoro.clanbattle.config.parseEnergyThresholdPercents
@@ -54,6 +58,8 @@ class MainActivity : Activity() {
     private lateinit var axisView: TextView
     private lateinit var dryRunCheckBox: CheckBox
     private lateinit var standalonePauseButton: Button
+    private lateinit var characterDataStatusView: TextView
+    private lateinit var characterDataUpdateButton: Button
     private lateinit var projectionManager: MediaProjectionManager
     private lateinit var axisLibrary: AxisLibrary
     private lateinit var axisList: LinearLayout
@@ -72,6 +78,79 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun buildCharacterDataCard(): LinearLayout {
+        val card = UiKit.card(this)
+        card.addView(caption("角色 / UB 数据"))
+        characterDataStatusView = TextView(this).apply {
+            textSize = 13f
+            setTextColor(UiKit.TEXT_PRIMARY)
+            setPadding(0, dp(4), 0, dp(6))
+        }
+        card.addView(characterDataStatusView, matchWidth())
+        card.addView(TextView(this).apply {
+            text = "从项目仓库下载已生成的国服角色、昵称、UB 与 UB+ 数据。下载或校验失败不会覆盖当前可用数据。"
+            textSize = 12f
+            setTextColor(UiKit.TEXT_SECONDARY)
+            setPadding(0, 0, 0, dp(6))
+        }, matchWidth())
+        characterDataUpdateButton = secondaryButton("检查更新") { checkCharacterDataUpdate() }
+        card.addView(characterDataUpdateButton, matchWidth())
+        refreshCharacterDataStatus()
+        return card
+    }
+
+    private fun refreshCharacterDataStatus() {
+        if (!::characterDataStatusView.isInitialized) return
+        val info = runCatching { AndroidCharacterLibrary.info(this) }.getOrElse { error ->
+            characterDataStatusView.text = "角色数据读取失败：${error.message ?: error::class.java.simpleName}"
+            return
+        }
+        characterDataStatusView.text = buildString {
+            append("当前数据：").append(info.databaseSource)
+            append("\n角色数量：").append(info.characterCount)
+            append(" · ").append(if (info.downloaded) "在线更新" else "APK 内置")
+        }
+    }
+
+    private fun checkCharacterDataUpdate() {
+        if (!::characterDataUpdateButton.isInitialized || !characterDataUpdateButton.isEnabled) return
+        characterDataUpdateButton.isEnabled = false
+        characterDataUpdateButton.text = "检查中…"
+        Thread {
+            val result = runCatching {
+                val json = CharacterLibraryUpdater.download()
+                AndroidCharacterLibrary.installUpdate(this, json)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                characterDataUpdateButton.isEnabled = true
+                characterDataUpdateButton.text = "检查更新"
+                result.onSuccess { installed ->
+                    refreshCharacterDataStatus()
+                    val message = when (installed.status) {
+                        CharacterLibraryInstallStatus.UPDATED ->
+                            "角色 / UB 数据已更新：${installed.info.databaseSource}"
+                        CharacterLibraryInstallStatus.UP_TO_DATE ->
+                            "角色 / UB 数据已经是最新"
+                        CharacterLibraryInstallStatus.OLDER_THAN_CURRENT ->
+                            "服务器数据比当前版本旧，已保留当前数据"
+                    }
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }.onFailure { error ->
+                    Toast.makeText(
+                        this,
+                        "角色 / UB 数据更新失败：${error.message ?: error::class.java.simpleName}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }.apply {
+            name = "character-library-update"
+            isDaemon = true
+            start()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         projectionManager = getSystemService(MediaProjectionManager::class.java)
@@ -86,6 +165,7 @@ class MainActivity : Activity() {
         refreshAxisLabel()
         refreshPermissionStatus()
         refreshStandalonePauseButton()
+        refreshCharacterDataStatus()
         if (AppPreferences.standalonePauseEnabled(this)) PauseFrameOverlay.show(this)
         if (!receiverRegistered) {
             val filter = IntentFilter(ScreenCaptureService.ACTION_STATUS)
@@ -288,6 +368,7 @@ class MainActivity : Activity() {
             )
         }, matchWidth(top = 8))
         content.addView(secondaryButton("粘贴轴文本") { showPasteAxisDialog() }, matchWidth(top = 8))
+        content.addView(secondaryButton("粘贴轴分享码") { importAxisShareCodeFromClipboard() }, matchWidth(top = 8))
         content.addView(secondaryButton("轴编写指南与标准示例") {
             startActivity(Intent(this, AxisGuideActivity::class.java))
         }, matchWidth(top = 8))
@@ -305,6 +386,8 @@ class MainActivity : Activity() {
         }
 
         content.addView(buildPermissionCard(), matchWidth(top = 4))
+
+        content.addView(buildCharacterDataCard(), matchWidth(top = 12))
 
         val diagnosticsCard = UiKit.card(this)
         diagnosticsCard.addView(caption("诊断"))
@@ -814,6 +897,29 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun importAxisShareCodeFromClipboard() {
+        val clipboardText = getSystemService(ClipboardManager::class.java)
+            ?.primaryClip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)
+            ?.coerceToText(this)
+            ?.toString()
+            .orEmpty()
+        if (clipboardText.isBlank()) {
+            Toast.makeText(this, "剪贴板里没有轴分享码", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val text = runCatching { AxisShareCode.decode(clipboardText) }.getOrElse { error ->
+            Toast.makeText(
+                this,
+                "分享码无效：${error.message ?: error::class.java.simpleName}",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        importAxis("分享码.txt", text)
+    }
+
     private fun showEditAxisDialog(axisId: String, sourceName: String) {
         val originalText = axisLibrary.text(axisId) ?: return
         showAxisEditor(
@@ -1015,6 +1121,17 @@ class MainActivity : Activity() {
                     startActivity(intent)
                 }
             )
+            addView(textButton("分享", UiKit.ACCENT_DARK, enabled = true) {
+                val text = axisLibrary.text(axis.id)
+                if (text == null) {
+                    Toast.makeText(this@MainActivity, "无法读取轴文本", Toast.LENGTH_SHORT).show()
+                } else {
+                    val code = AxisShareCode.encode(text)
+                    getSystemService(ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("轴分享码", code))
+                    Toast.makeText(this@MainActivity, "分享码已复制", Toast.LENGTH_SHORT).show()
+                }
+            })
             addView(textButton("编辑", UiKit.ACCENT_DARK, enabled = !locked) {
                 showEditAxisDialog(axis.id, axis.sourceName)
             })
