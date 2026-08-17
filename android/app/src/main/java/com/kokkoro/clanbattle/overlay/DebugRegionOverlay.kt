@@ -174,7 +174,11 @@ class DebugRegionOverlay(private val context: Context) {
         if (!Settings.canDrawOverlays(context)) return
         mainHandler.post {
             if (view != null || !Settings.canDrawOverlays(context)) return@post
-            val created = DebugRegionView(context)
+            val created = DebugRegionView(context).apply {
+                isClickable = false
+                isFocusable = false
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -189,6 +193,11 @@ class DebugRegionOverlay(private val context: Context) {
                 gravity = Gravity.TOP or Gravity.START
                 x = 0
                 y = 0
+                // Android 12+ may reject touch-through when a full-screen
+                // TYPE_APPLICATION_OVERLAY is considered too opaque, even with
+                // FLAG_NOT_TOUCHABLE. Keep the debug layer comfortably below
+                // that obscuring threshold so it remains diagnostic-only.
+                alpha = 0.50f
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS

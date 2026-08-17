@@ -64,6 +64,7 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
     private var captureWidth = 0
     private var captureHeight = 0
     private var captureGeneration = 0L
+    private var loggedPlaneGeneration = -1L
     private val frameDispatchGate = CaptureFrameDispatchGate(FRAME_INTERVAL_NANOS)
     private var battleLocked = false
     private val captureSessionGate = CaptureSessionGate()
@@ -346,6 +347,18 @@ class ScreenCaptureService : Service(), DisplayManager.DisplayListener {
                 Log.w(ENERGY_LOG_TAG, "unable to acquire next capture frame", error)
                 return
             } ?: return
+
+            if (loggedPlaneGeneration != generation) {
+                loggedPlaneGeneration = generation
+                val plane = image.planes.firstOrNull()
+                Log.i(
+                    "KokkoroCapture",
+                    "capture-plane generation=$generation image=${image.width}x${image.height} " +
+                        "format=${image.format} planes=${image.planes.size} " +
+                        "rowStride=${plane?.rowStride} pixelStride=${plane?.pixelStride} " +
+                        "bufferLimit=${plane?.buffer?.limit()} bufferCapacity=${plane?.buffer?.capacity()}"
+                )
+            }
 
             var handedToSlowProcessor = false
             try {

@@ -309,7 +309,10 @@ class OverlayController(
         apply(minimizeButton, state.minimize)
         apply(resetButton, state.reset)
         statusTextView?.text = state.statusText
-        statusTextView?.visibility = if (state.statusVisible) View.VISIBLE else View.GONE
+        // Keep the panel geometry identical to the pre-3.1.2 layout even when
+        // diagnostics are hidden. Some devices are sensitive to overlay bounds
+        // moving while Accessibility gestures / MediaProjection are active.
+        statusTextView?.visibility = if (state.statusVisible) View.VISIBLE else View.INVISIBLE
         currentActionView?.text = state.currentAction
         nextActionView?.text = state.nextAction
         if (!state.selectAxis.enabled) hideAxisPanel()
